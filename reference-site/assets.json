@@ -1,0 +1,406 @@
+[
+  {
+    "url": "https://challenges.cloudflare.com/turnstile/v0/g/c787ce48cf6b/api.js",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap",
+    "type": "text/css; charset=utf-8"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/cake/",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/tslib.es6-CKdMv162.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/_plugin-vue_export-helper-Dj7HTbfw-CAW-wwPi.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/i18nService-mn8h7uld-DS8-7Mxr.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/ariaEnums-Cg6XgIT--B4s3sNGp.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/isObjectLike-hkXPh9Tu-BZ677b2s.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/amplitudeEvent-BN27t5-z-qZ4xfhgM.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/purchases-DfVcC9IS-BFnOWLyq.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/BaseModal-B_C9BIFG-JFHf5edR.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/PremiumUpgradeModal-Ba2JsqVx-PdfAurCU.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/nodeDeployModels-Dc7LMVic-CbyHdCnF.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/visualEnums-BuDyVrtX-CQnC85I1.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/formEnums-B9fA87hq-tiaiZjSC.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/hostNavigation-BnPsn5eE-DhxCIqFr.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/credits-CsG5fcOk-C76hdaxM.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/chatRoles-Cajs-xF2-C1C054hA.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/websiteBuildModels-CQv_cGhA-Cg9zTKYQ.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/dialog-BWG640ai-B6rqXSjB.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/prefixedConversationIdSchema-BjaM1d8S-CUetJJHg.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useAsyncTask-B6da7UGA-Q-cG7gOQ.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/onboardingMigration-4X0O9eKO-knX02Bdz.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/OnboardingSelectionCard-B4Gybki4-BFUypmAr.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/formVisuals-CK1pgS1k-DfHXSbOz.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/schemas-D8pzfYUJ-CO1A92Q_.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/OnboardingServerSelect-Dt6Tf_3H-WW7KKhtr.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/FormCard-CpYg3ZG6-y4OYHzIN.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/onboardingQuestionRenderers-CtzPHeM2-eybZNycO.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/ChatVisualThumb-8WRXqVrQ-DN_wQkVS.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/MigrationCredentialsForm-CG5Kl64x-Dg9tPPbN.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/onboardingQuestionCopy-CwlAKCgU-CaxBFGIp.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useWidgetPopoverLayer-D1SD7l4h-x6e7INYI.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useWidgetStore-4HYEFhMM-D6iG-_-a.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/pickerBottomSheet-BOPf7FC4-DC6DYHsD.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/onboardingPromptEditor-CtHjKhVP-CB0Z3Xd8.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/UrlAnswerForm-CcBbOCZ0-JlmTjg-9.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/requestValidated-y8_lrqXe-CYdqxMAn.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/i18nService-mn8h7uld-CFtfxfQt.css",
+    "type": "text/css"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/index-mKz_JGTX.css",
+    "type": "text/css"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/migrationCredentials-BFxx-vNU-CkN5Ru5n.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/onboardingMigrationWebsiteRefusal-DoAoLaTE-B6vHLgye.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/formatFileSize-QoLPe1Zw-Dm4cp44d.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/AiBuilderPreviewFrame-Chv7tZAB-BLfdM6n8.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/widgetSessionState-BMisE1OE-Bef-pV7j.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useComposerLock-CcypoMo2-DY3LKpPZ.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/jobs-D0iITIG6-DoeAzejZ.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/PremiumFeatureCard-B7gLYcMX-C8VzxvwF.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/ticketSrc-DcOJ-ZV5-DMtijawu.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/uploadEnums-CZ1C0PAy-DviccY-M.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useCopyToClipboard-Bj9xlJEZ-CvWCZzTj.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useRunningPoll-CZnCk3Rg-DqZPyTNC.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/email-Bzt2phbd-DTkymt3j.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/formsRepo-BS9zjGye-CS69ALkg.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/typeGuards-ZCR70AVx-BqGGN-a4.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/nodeTemplates-CQOnAIgv-CbFuCfc4.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/formBuildLimit-DeMuoOro-C9aEoeaQ.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useFormStore-jfn5CQQd-DWbcqQ3b.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/migrationEnums-B4bGeBHC-CU6wRVto.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/CircleLoader-CO7aHH_P-0HheS2s9.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/providersRepo-D4c5WEJ5-C-_kMzAx.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useFileDrawerStore-x1UUiLwZ-CUs_T9ew.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/websiteFileUpload-wANQpWVG-BaEQmtJz.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/platformBuildOptions-D6MsG1PW-CsaCv2kf.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useV2ConversationStore-DdDe7XyW-Re3z1tQm.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/cdn-cgi/challenge-platform/h/g/scripts/jsd/c787ce48cf6b/main.js?ray=a53590816b07c74e",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/cake/RfAqp5JYL09pj86irHK6ls5qxPPaDFHvwtKuYIztgpWCNX3_tPQ",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/index-CcJae0hq.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtm.js?id=GTM-KL4FQVG&gtg_health=1",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useLoaderProgress-BvqiR3H5.css",
+    "type": "text/css"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/ChatView-BoBBZhiP.css",
+    "type": "text/css"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/ChatView-CzdBh71F.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/useLoaderProgress-BbPpQt0k.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "blob:https://ai-builder.hostinger.com/cdc384f5-51ae-40a1-a3d1-879ff908c995",
+    "type": "text/javascript"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/icons/loader-logo.svg",
+    "type": "image/svg+xml"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtm.js?id=GTM-KL4FQVG",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://ai-builder.hostinger.com/assets/favicon.svg",
+    "type": "image/svg+xml"
+  },
+  {
+    "url": "https://o215831.ingest.us.sentry.io/api/4508766085775360/envelope/?sentry_version=7&sentry_key=c343f9453bdb4a8939d5c78e3e5e6095&sentry_client=sentry.javascript.vue%2F11.8.0",
+    "type": "application/json"
+  },
+  {
+    "url": "https://auth.hostinger.com/assets/images/brand/hostinger/logo.svg",
+    "type": "image/svg+xml"
+  },
+  {
+    "url": "https://auth.hostinger.com/assets/css/auth_styles.css?v=1.40",
+    "type": "text/css"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtag/js?id=G-73N1QWLEMH",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://auth.hostinger.com/assets/images/oauth/google.svg",
+    "type": "image/svg+xml"
+  },
+  {
+    "url": "https://auth.hostinger.com/assets/images/oauth/facebook.svg?v=2",
+    "type": "image/svg+xml"
+  },
+  {
+    "url": "https://auth.hostinger.com/assets/images/oauth/github.svg",
+    "type": "image/svg+xml"
+  },
+  {
+    "url": "https://cdn.amplitude.com/libs/analytics-browser-2.45.7-min.js.gz",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtm.js?id=GTM-KL4FQVG",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap",
+    "type": "text/css; charset=utf-8"
+  },
+  {
+    "url": "https://auth.hostinger.com/cake/",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtag/js?id=AW-858978838&cx=c&gtm=4e6as1",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://cdn.jsdelivr.net/npm/@thumbmarkjs/thumbmarkjs/dist/thumbmark.umd.js",
+    "type": "application/javascript; charset=utf-8"
+  },
+  {
+    "url": "https://www.googletagmanager.com/gtm.js?id=GTM-KL4FQVG&gtg_health=1",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/17394968077/?random=1793480175948&cv=11&fst=1793480175948&bg=ffffff&guid=ON&async=1&en=gtag.config&gtm=45je6as1v871252345za208zd871252345xecxf1&gcd=13l3l3l3l1l1&dma=0&tag_exp=115938466~115938469~118131809~118897920~118897930~120213116~120385422~120412528~120420414~120469145~120469153~121246026~121246034~123620775~123691370&u_w=1440&u_h=900&url=https%3A%2F%2Fauth.hostinger.com%2Flogin%3FredirectUrl%3Dhttps%253A%252F%252Fai-builder.hostinger.com%252Fb7458240-f420-4d17-9ec0-c9e3daa9f2e9%253Flocation%253Dhpanel&ref=https%3A%2F%2Fai-builder.hostinger.com%2F&rcb=12&frm=0&did=dY2E1Nz&gdid=dY2E1Nz&hn=www.googleadservices.com&npa=0&pscdl=noapi&auid=646382025.1793480176&uaa=x86&uab=64&uafvl=Not%253AA-Brand%3B8.0.0.0%7CChromium%3B156.0.8078.48%7CGoogle%2520Chrome%3B156.0.8078.48&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&data=event%3Dgtag.config&ept=9&rfmt=3&fmt=4",
+    "type": "text/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://googleads.g.doubleclick.net/pagead/viewthroughconversion/858978838/?random=1793480175892&cv=11&fst=1793480175892&bg=ffffff&guid=ON&async=1&en=gtag.config&gtm=45je6as1v871252345za208zd871252345xecxf1&gcd=13l3l3l3l1l1&dma=0&tag_exp=115938466~115938469~118131809~118897920~118897930~120213116~120385422~120412528~120420414~120469145~120469153~121246026~121246034~123620775~123691370&u_w=1440&u_h=900&url=https%3A%2F%2Fauth.hostinger.com%2Flogin%3FredirectUrl%3Dhttps%253A%252F%252Fai-builder.hostinger.com%252Fb7458240-f420-4d17-9ec0-c9e3daa9f2e9%253Flocation%253Dhpanel&ref=https%3A%2F%2Fai-builder.hostinger.com%2F&rcb=12&frm=0&did=dY2E1Nz&gdid=dY2E1Nz&hn=www.googleadservices.com&npa=0&pscdl=noapi&auid=646382025.1793480176&uaa=x86&uab=64&uafvl=Not%253AA-Brand%3B8.0.0.0%7CChromium%3B156.0.8078.48%7CGoogle%2520Chrome%3B156.0.8078.48&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&data=event%3Dgtag.config&ept=9&rfmt=3&fmt=4",
+    "type": "text/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://www.google.com/pagead/1p-user-list/17394968077/?random=1793480175948&cv=11&fst=1793476800000&bg=ffffff&guid=ON&async=1&en=gtag.config&gtm=45je6as1v871252345za208zd871252345xecxf1&gcd=13l3l3l3l1l1&dma=0&tag_exp=115938466~115938469~118131809~118897920~118897930~120213116~120385422~120412528~120420414~120469145~120469153~121246026~121246034~123620775~123691370&u_w=1440&u_h=900&url=https%3A%2F%2Fauth.hostinger.com%2Flogin%3FredirectUrl%3Dhttps%253A%252F%252Fai-builder.hostinger.com%252Fb7458240-f420-4d17-9ec0-c9e3daa9f2e9%253Flocation%253Dhpanel&ref=https%3A%2F%2Fai-builder.hostinger.com%2F&rcb=12&frm=0&did=dY2E1Nz&gdid=dY2E1Nz&hn=www.googleadservices.com&npa=0&pscdl=noapi&auid=646382025.1793480176&uaa=x86&uab=64&uafvl=Not%253AA-Brand%3B8.0.0.0%7CChromium%3B156.0.8078.48%7CGoogle%2520Chrome%3B156.0.8078.48&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&data=event%3Dgtag.config&ept=9&rfmt=3&fmt=3&is_vtc=1&cid=CAQS1AEAQM4h3O4zUbIB3caItrRDK8B-pTtZRIYwmdqL4e1TJom2fuCqnClqzxlQAuk4WhZ6_SY5wuYaAKngs3aKGTA5dvSXTEVfj6rcJMh1LF66j6p1He2xbS8gN2Pk9eobzHfX4Gd6S-xyAfvujjyyAamET_qFq0Up4cIv-vzMfBiPSqxfKHILdmnI5WG4XtRPYQKQOFtJxG8TFB9rySzkcTj1-ORYFq8BhH_sV2BHI-NAx2utWxz4h5tgPWN034vsveAb2k1r-6QwOWeiyySE26Gig-DlUA&random=25174889&rmt_tld=0&ipr=y",
+    "type": "image/gif"
+  },
+  {
+    "url": "https://www.google.com/pagead/1p-user-list/858978838/?random=1793480175892&cv=11&fst=1793476800000&bg=ffffff&guid=ON&async=1&en=gtag.config&gtm=45je6as1v871252345za208zd871252345xecxf1&gcd=13l3l3l3l1l1&dma=0&tag_exp=115938466~115938469~118131809~118897920~118897930~120213116~120385422~120412528~120420414~120469145~120469153~121246026~121246034~123620775~123691370&u_w=1440&u_h=900&url=https%3A%2F%2Fauth.hostinger.com%2Flogin%3FredirectUrl%3Dhttps%253A%252F%252Fai-builder.hostinger.com%252Fb7458240-f420-4d17-9ec0-c9e3daa9f2e9%253Flocation%253Dhpanel&ref=https%3A%2F%2Fai-builder.hostinger.com%2F&rcb=12&frm=0&did=dY2E1Nz&gdid=dY2E1Nz&hn=www.googleadservices.com&npa=0&pscdl=noapi&auid=646382025.1793480176&uaa=x86&uab=64&uafvl=Not%253AA-Brand%3B8.0.0.0%7CChromium%3B156.0.8078.48%7CGoogle%2520Chrome%3B156.0.8078.48&uamb=0&uam=&uap=Windows&uapv=10.0&uaw=0&data=event%3Dgtag.config&ept=9&rfmt=3&fmt=3&is_vtc=1&cid=CAQS1AEAQM4h3GO2auptv4L6DQ9_1W0b-IUrcoMSyQbvOi7bS4qro-wBPSC0cEIzwABroQla473CR4LmOXsr76WHGY4m5pF3ttfqojXp56uC835vVVzIbN6M6o_0sxPrbEcN0xrHTMLxyyTM9wbHF3p9ZWoXASmsZJ1V-AtFgJ3WKujbIczzHnbqIzf5LfJ2A8kFwbdLqZVWeR8XBQjTCxwKZONbFUP-0ggBDUh5m-rGg9g2VoZD4m9X1ghMUmzh8cmsPTvhVMjnOZiAzCH4BLpAcTUtZJ93gQ&random=3707287028&rmt_tld=0&ipr=y",
+    "type": "image/gif"
+  },
+  {
+    "url": "https://auth.hostinger.com/cake/RfAqp5JYKTVzi7eqzRPA47ETxPPaDFHvwtKuYIztgpWCNbT0",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://auth.hostinger.com/cake/RfByupJaAQZj_de-yhHF5bsb26mTF1GxmMXlOszlicCUMnS9x7T0",
+    "type": "application/javascript; charset=UTF-8"
+  },
+  {
+    "url": "https://bat.bing.com/bat.js",
+    "type": "application/javascript"
+  },
+  {
+    "url": "https://bat.bing.com/p/action/25052732.js",
+    "type": "application/javascript; charset=utf-8"
+  },
+  {
+    "url": "https://bat.bing.com/p/insights/t/25052732",
+    "type": "application/x-javascript"
+  },
+  {
+    "url": "https://bat.bing.com/p/insights/s/0.8.72",
+    "type": "application/javascript;charset=utf-8"
+  }
+]
