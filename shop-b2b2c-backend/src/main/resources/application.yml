@@ -1,0 +1,56 @@
+server:
+  port: 8082
+  servlet:
+    context-path: /
+
+spring:
+  application:
+    name: shop-b2b2c-backend
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/shop_b2b2c?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    username: root
+    password: 89dfu*#$ewr87l
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      minimum-idle: 5
+      maximum-pool-size: 20
+      idle-timeout: 30000
+      pool-name: ShopB2b2cCP
+      max-lifetime: 1800000
+      connection-timeout: 30000
+
+  jpa:
+    database-platform: org.hibernate.dialect.MySQLDialect
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+      timeout: 5000ms
+
+# JWT 配置
+jwt:
+  secret: a9B8c7D6e5F4g3H2i1J0k9L8m7N6o5P4q3R2s1T0u9V8w7X6y5Z4
+  expiration: 86400000 # 24小时 (毫秒)
+  header: Authorization
+  prefix: "Bearer "
+
+# 平台分账与支付沙箱模拟配置
+payment:
+  mock: true # 第一阶段开启模拟分账桩 (零门槛全链路跑通)
+  default-commission-rate: 3.00
+
+# SpringDoc OpenAPI
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html

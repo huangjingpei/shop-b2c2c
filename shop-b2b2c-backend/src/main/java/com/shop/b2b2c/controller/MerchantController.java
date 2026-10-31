@@ -1,0 +1,166 @@
+package com.shop.b2b2c.controller;
+
+import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.R;
+import com.shop.b2b2c.common.SecurityUtils;
+import com.shop.b2b2c.entity.MerchantPaymentAccount;
+import com.shop.b2b2c.entity.MerchantStore;
+import com.shop.b2b2c.entity.SysUser;
+import com.shop.b2b2c.repository.MerchantPaymentAccountRepository;
+import com.shop.b2b2c.repository.MerchantStoreRepository;
+import com.shop.b2b2c.repository.SysUserRepository;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.bind.annotation.*;
+
+import java.math.BigDecimal;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@Tag(name = "商户管理 (Merchant)")
+@RestController
+@RequiredArgsConstructor
+public class MerchantController {
+
+    private final MerchantStoreRepository storeRepository;
+    private final MerchantPaymentAccountRepository paymentAccountRepository;
+    private final SysUserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+
+    // ==========================================
+    // 平台超级管理员视角 API (/api/v1/admin/merchants)
+    // ==========================================
+
+    @Operation(summary = "【超管】全平台入驻店铺列表")
+    @GetMapping("/api/v1/admin/merchants")
+    public R<List<MerchantStore>> listAllMerchants() {
+        return R.ok(storeRepository.findAll());
+    }
+
+    @Data
+    public static class CreateMerchantDTO {
+        private String storeCode;
+        private String storeName;
+        private Integer merchantType; // 1-个人, 2-个体, 3-企业
+        private String ownerName;
+        private String idCardNumber;
+        private String contactPhone;
+        private BigDecimal commissionRate;
+        private String adminUsername;
+        private String adminPassword;
+        private String bankAccountName;
+        private String bankAccountNumber;
+        private String bankName;
+    }
+
+    @Operation(summary = "【超管】审批/新增入驻商户并开通二级分账账户")
+    @PostMapping("/api/v1/admin/merchants")
+    @Transactional(rollbackFor = Exception.class)
+    public R<MerchantStore> createMerchant(@RequestBody CreateMerchantDTO dto) {
+        if (storeRepository.findByStoreCode(dto.getStoreCode()).isPresent()) {
+            throw new BusinessException("店铺编码已存在");
+        }
+        if (userRepository.findByUsername(dto.getAdminUsername()).isPresent()) {
+            throw new BusinessException("登录账号已存在");
+        }
+
+        // 1. 创建店铺
+        MerchantStore store = new MerchantStore();
+        store.setStoreCode(dto.getStoreCode());
+        store.setStoreName(dto.getStoreName());
+        store.setMerchantType(dto.getMerchantType() != null ? dto.getMerchantType() : 1);
+        store.setOwnerName(dto.getOwnerName());
+        store.setIdCardNumber(dto.getIdCardNumber());
+        store.setContactPhone(dto.getContactPhone());
+        store.setStatus(1); // 正常营业
+        store.setCommissionRate(dto.getCommissionRate() != null ? dto.getCommissionRate() : new BigDecimal("3.00"));
+        store = storeRepository.save(store);
+
+        // 2. 创建商户主管理员账号
+        SysUser user = new SysUser();
+        user.setMerchantId(store.getId());
+        user.setUsername(dto.getAdminUsername());
+        user.setPassword(passwordEncoder.encode(dto.getAdminPassword() != null ? dto.getAdminPassword() : "admin123"));
+        user.setRealName(dto.getOwnerName() + " (店长)");
+        user.setRoleCode("MERCHANT_ADMIN");
+        user.setIsActive(true);
+        userRepository.save(user);
+
+        // 3. 创建二级商户收付通进件记录
+        if (dto.getBankAccountNumber() != null) {
+            MerchantPaymentAccount account = new MerchantPaymentAccount();
+            account.setMerchantId(store.getId());
+            account.setChannel("WECHAT");
+            account.setSubMchid("SUB" + System.currentTimeMillis());
+            account.setBankAccountName(dto.getBankAccountName() != null ? dto.getBankAccountName() : dto.getOwnerName());
+            account.setBankAccountNumber(dto.getBankAccountNumber());
+            account.setBankName(dto.getBankName() != null ? dto.getBankName() : "中国工商银行");
+            account.setApplyStatus("PASSED");
+            paymentAccountRepository.save(account);
+        }
+
+        return R.ok("商户开通成功", store);
+    }
+
+    @Operation(summary = "【超管】变更店铺营业状态 (打烊/封禁/营业)")
+    @PutMapping("/api/v1/admin/merchants/{id}/status")
+    public R<Void> updateStatus(@PathVariable Long id, @RequestParam Integer status) {
+        MerchantStore store = storeRepository.findById(id)
+                .orElseThrow(() -> new BusinessException("店铺不存在"));
+        store.setStatus(status);
+        storeRepository.save(store);
+        return R.ok("状态更新成功", null);
+    }
+
+    @Operation(summary = "【超管】调整店铺平台抽成比率")
+    @PutMapping("/api/v1/admin/merchants/{id}/commission")
+    public R<Void> updateCommission(@PathVariable Long id, @RequestParam BigDecimal rate) {
+        MerchantStore store = storeRepository.findById(id)
+                .orElseThrow(() -> new BusinessException("店铺不存在"));
+        store.setCommissionRate(rate);
+        storeRepository.save(store);
+        return R.ok("费率调整成功", null);
+    }
+
+    // ==========================================
+    // 商家工作台视角 API (/api/v1/merchant/profile)
+    // ==========================================
+
+    @Operation(summary = "【商家】查看本店资料与进件分账状态")
+    @GetMapping("/api/v1/merchant/profile")
+    public R<Map<String, Object>> getMerchantProfile() {
+        Long merchantId = SecurityUtils.getCurrentMerchantId();
+        if (merchantId == null) {
+            throw new BusinessException("当前非商家账号或未绑定店铺");
+        }
+        MerchantStore store = storeRepository.findById(merchantId)
+                .orElseThrow(() -> new BusinessException("店铺不存在"));
+
+        MerchantPaymentAccount paymentAccount = paymentAccountRepository.findByMerchantId(merchantId).orElse(null);
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("store", store);
+        map.put("paymentAccount", paymentAccount);
+        return R.ok(map);
+    }
+
+    @Operation(summary = "【商家】更新店铺公告与展示资料")
+    @PutMapping("/api/v1/merchant/profile")
+    public R<Void> updateMerchantProfile(@RequestBody MerchantStore updateDTO) {
+        Long merchantId = SecurityUtils.getCurrentMerchantId();
+        MerchantStore store = storeRepository.findById(merchantId)
+                .orElseThrow(() -> new BusinessException("店铺不存在"));
+
+        if (updateDTO.getNotice() != null) store.setNotice(updateDTO.getNotice());
+        if (updateDTO.getLogoUrl() != null) store.setLogoUrl(updateDTO.getLogoUrl());
+        if (updateDTO.getContactPhone() != null) store.setContactPhone(updateDTO.getContactPhone());
+
+        storeRepository.save(store);
+        return R.ok("店铺资料保存成功", null);
+    }
+}
