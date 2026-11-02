@@ -163,7 +163,7 @@
                 <span>{{ locking ? '正在抢占锁定库存...' : '正在拉起微信支付...' }}</span>
               </span>
               <span v-else>
-                立即替TA付款 ¥{{ Number(detail.payAmount).toFixed(2) }}
+                支付暂未开放（待付 ¥{{ Number(detail.payAmount).toFixed(2) }}）
               </span>
             </button>
 
@@ -470,54 +470,7 @@ const loadAdBanner = async () => {
 
 // 核心一键支付：自动抢占原子预占并调起支付结算
 const quickPay = async () => {
-  selectedChannel.value = 'WECHAT'
-  if (detail.value?.peerStatus === 'INIT') {
-    locking.value = true
-    try {
-      const lockRes = await axios.post(`/api/v1/peer-pay/pre-lock/${token}`)
-      if (lockRes.data.code === 200) {
-        detail.value.peerStatus = 'RESERVED_LOCK'
-        startCountdownTimer(lockRes.data.data.lockSeconds || 900)
-      } else {
-        alert(lockRes.data.message || '抢占锁定失败')
-        return
-      }
-    } catch (err) {
-      alert(err.response?.data?.message || '锁定库存失败，可能有其他好友正在支付中')
-      loadDetail()
-      return
-    } finally {
-      locking.value = false
-    }
-  }
-  await executePay()
-}
-
-const executePay = async () => {
-  paying.value = true
-  try {
-    const payerId = 'GUEST_WECHAT_' + Math.floor(Math.random() * 899999 + 100000)
-    const res = await axios.post(`/api/v1/peer-pay/mock-pay/${token}`, {
-      payerId: payerId,
-      channel: selectedChannel.value
-    })
-
-    if (res.data.code === 200) {
-      isPaidSuccess.value = true
-      detail.value.peerStatus = 'PAID'
-      detail.value.orderStatus = res.data.data.orderStatus
-      deliveredVoucher.value = res.data.data.serviceVoucher
-      if (timer) clearInterval(timer)
-      lockCountdown.value = 0
-      loadAdBanner()
-    } else {
-      alert(res.data.message || '支付失败')
-    }
-  } catch (err) {
-    alert(err.response?.data?.message || '支付异常')
-  } finally {
-    paying.value = false
-  }
+  alert('支付通道暂未开放，当前账单不能付款，尚未扣款或交付商品。')
 }
 
 onMounted(() => {

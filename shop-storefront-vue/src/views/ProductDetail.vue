@@ -156,7 +156,7 @@
               class="flex-1 py-3.5 rounded-lg bg-orange-600 hover:bg-orange-700 disabled:bg-slate-300 text-white font-black text-sm tracking-wide transition shadow-sm flex items-center justify-center space-x-2"
             >
               <span v-if="submitting">正在调起收银台...</span>
-              <span v-else>立即支付 ￥{{ calculateTotal() }}</span>
+              <span v-else>创建订单 ￥{{ calculateTotal() }}</span>
             </button>
 
             <!-- ★ 找人代付核心通道 -->
@@ -172,14 +172,15 @@
       </div>
     </div>
 
-    <!-- 支付成功与履约交付弹窗 -->
+    <!-- 待付款订单信息 -->
     <div v-if="successResult" class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
       <div class="bg-white rounded-xl max-w-md w-full p-6 shadow-2xl border border-slate-200">
         <div class="text-center">
           <div class="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center text-2xl mx-auto mb-3">
             ✓
           </div>
-          <h2 class="text-lg font-bold text-slate-900">支付成功！订单已履约</h2>
+          <h2 class="text-lg font-bold text-slate-900">订单已创建，等待付款</h2>
+          <p class="text-xs text-amber-700 mt-2">支付通道暂未开放，尚未扣款或交付商品。</p>
           <p class="text-xs text-slate-500 mt-1">订单流水号：<code>{{ successResult.orderSn }}</code></p>
         </div>
 
@@ -199,7 +200,7 @@
           </p>
         </div>
         <div v-else class="mt-5 p-3.5 bg-blue-50 rounded-lg border border-blue-100 text-xs text-blue-800 leading-relaxed">
-          📦 实物订单已成功推送至商家工作台！卖家安排顺丰/圆通快递打单发货后，您可在查单中心实时追踪运单轨迹。
+          请保存订单号。订单当前尚未付款，付款确认前不会分配卡密或安排发货。
         </div>
 
         <div class="mt-6 flex space-x-3">
@@ -464,6 +465,10 @@ const handleCheckout = async () => {
       buyerContact: buyerContact.value.trim(),
       paymentChannel: 'WECHAT'
     })
+    if (res.data.code !== 200) {
+      alert(res.data.message || '下单失败')
+      return
+    }
     successResult.value = res.data.data
   } catch (e) {
     alert(e.response?.data?.message || '下单失败')

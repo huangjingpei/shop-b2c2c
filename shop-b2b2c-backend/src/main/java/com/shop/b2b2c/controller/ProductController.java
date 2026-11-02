@@ -3,6 +3,7 @@ package com.shop.b2b2c.controller;
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.SecurityUtils;
+import com.shop.b2b2c.common.TradeGuards;
 import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.entity.Product;
 import com.shop.b2b2c.entity.ProductSku;
@@ -105,10 +106,7 @@ public class ProductController {
     @Operation(summary = "【商家】查询本店商品列表")
     @GetMapping("/api/v1/merchant/products")
     public R<List<Product>> listMerchantProducts() {
-        Long merchantId = SecurityUtils.getCurrentMerchantId();
-        if (merchantId == null) {
-            return R.ok(productMapper.selectList(null)); // 超管视角看全部
-        }
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
         return R.ok(productMapper.findByMerchantId(merchantId));
     }
 
@@ -135,10 +133,7 @@ public class ProductController {
     @PostMapping("/api/v1/merchant/products")
     @Transactional(rollbackFor = Exception.class)
     public R<Product> createProduct(@RequestBody CreateProductDTO dto) {
-        Long merchantId = SecurityUtils.getCurrentMerchantId();
-        if (merchantId == null) {
-            merchantId = 1L; // 默认
-        }
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
 
         Product product = new Product();
         product.setMerchantId(merchantId);
@@ -178,11 +173,20 @@ public class ProductController {
     @PostMapping("/api/v1/merchant/cards/import")
     @Transactional(rollbackFor = Exception.class)
     public R<Map<String, Object>> importCards(@RequestBody BatchImportCardDTO dto) {
-        Long merchantId = SecurityUtils.getCurrentMerchantId();
-        if (merchantId == null) merchantId = 1L;
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
 
         ProductSku sku = skuMapper.findById(dto.getSkuId())
                 .orElseThrow(() -> new BusinessException("指定SKU不存在"));
+        Product product = productMapper.findById(dto.getProductId())
+                .orElseThrow(() -> new BusinessException("商品不存在"));
+        TradeGuards.requireSkuOwnership(product, sku);
+        if (!merchantId.equals(product.getMerchantId()) || !Integer.valueOf(2).equals(product.getGoodsType())) {
+            throw new BusinessException(403, "仅允许向本店虚拟商品导入卡密");
+        }
+        if (dto.getCardContents() == null || dto.getCardContents().isEmpty()) {
+            throw new BusinessException("请输入卡密内容");
+        }
+
 
         List<ProductVirtualCard> cards = new ArrayList<>();
         for (String content : dto.getCardContents()) {
@@ -201,25 +205,28 @@ public class ProductController {
         }
 
         // 更新 SKU 库存
-        sku.setStockQuantity(sku.getStockQuantity() + cards.size());
-        skuMapper.save(sku);
+        if (cards.isEmpty() || skuMapper.addStock(sku.getId(), merchantId, cards.size()) != 1) {
+            throw new BusinessException("卡密内容为空或库存更新失败");
+        }
 
         Map<String, Object> res = new HashMap<>();
         res.put("importedCount", cards.size());
-        res.put("newStock", sku.getStockQuantity());
+        res.put("newStock", skuMapper.findById(sku.getId()).orElseThrow().getStockQuantity());
         return R.ok("卡密批量导入成功", res);
     }
 
     @Operation(summary = "【商家】查询虚拟卡密库存")
     @GetMapping("/api/v1/merchant/cards")
     public R<List<ProductVirtualCard>> listCards(@RequestParam(required = false) Long skuId) {
-        Long merchantId = SecurityUtils.getCurrentMerchantId();
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
         if (skuId != null) {
-            return R.ok(cardMapper.findBySkuIdAndStatus(skuId, 0));
+            ProductSku sku = skuMapper.findById(skuId)
+                    .orElseThrow(() -> new BusinessException("SKU不存在"));
+            if (!merchantId.equals(sku.getMerchantId())) {
+                throw new BusinessException(403, "无权访问其他商户卡密");
+            }
+            return R.ok(cardMapper.findAvailableForMerchant(skuId, merchantId));
         }
-        if (merchantId != null) {
-            return R.ok(cardMapper.findByMerchantId(merchantId));
-        }
-        return R.ok(cardMapper.selectList(null));
+        return R.ok(cardMapper.findByMerchantId(merchantId));
     }
 }

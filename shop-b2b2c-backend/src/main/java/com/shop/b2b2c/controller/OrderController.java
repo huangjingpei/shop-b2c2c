@@ -3,6 +3,7 @@ package com.shop.b2b2c.controller;
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.SecurityUtils;
+import com.shop.b2b2c.common.TradeGuards;
 import com.shop.b2b2c.dto.PeerPayDTOs;
 import com.shop.b2b2c.entity.*;
 import com.shop.b2b2c.mapper.*;
@@ -48,7 +49,7 @@ public class OrderController {
         private String paymentChannel; // WECHAT / ALIPAY
     }
 
-    @Operation(summary = "【公开】单店极速下单支付 (支持实体/虚拟卡密自动发放)")
+    @Operation(summary = "【公开】创建单店待付款订单（不扣库存、不履约）")
     @PostMapping("/api/v1/public/orders/checkout")
     @Transactional(rollbackFor = Exception.class)
     public R<Map<String, Object>> checkout(@RequestBody CheckoutDTO dto) {
@@ -65,6 +66,11 @@ public class OrderController {
                 .orElseThrow(() -> new BusinessException("规格SKU不存在"));
         MerchantStore store = storeMapper.findById(product.getMerchantId())
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
+
+        TradeGuards.requireSkuOwnership(product, sku);
+        if (dto.getMerchantId() != null && !store.getId().equals(dto.getMerchantId())) {
+            throw new BusinessException("商户与商品不匹配");
+        }
 
         // 校验库存
         if (sku.getStockQuantity() < dto.getQuantity()) {
@@ -84,10 +90,6 @@ public class OrderController {
                 .divide(new BigDecimal(100), 2, RoundingMode.HALF_UP);
         BigDecimal merchantSettleAmount = totalAmount.subtract(commissionAmount);
 
-        // 扣减 SKU 库存
-        sku.setStockQuantity(sku.getStockQuantity() - dto.getQuantity());
-        skuMapper.save(sku);
-
         // 创建订单主表
         TradeOrder order = new TradeOrder();
         order.setOrderSn(orderSn);
@@ -100,31 +102,9 @@ public class OrderController {
         order.setCommissionAmount(commissionAmount);
         order.setMerchantSettleAmount(merchantSettleAmount);
         order.setPaymentChannel(dto.getPaymentChannel() != null ? dto.getPaymentChannel() : "WECHAT");
-        order.setPayTradeNo("PAY" + System.currentTimeMillis());
+        order.setOrderStatus("UNPAID");
+        order.setPeerStatus("INIT");
         order.setQueryToken(queryToken);
-
-        // 交付逻辑：如果是虚拟卡密商品，秒级分配库存
-        List<String> deliveredCards = new ArrayList<>();
-        if (product.getGoodsType() == 2) {
-            List<ProductVirtualCard> availableCards = cardMapper.findBySkuIdAndStatus(sku.getId(), 0);
-            if (availableCards.size() < dto.getQuantity()) {
-                throw new BusinessException("卡密可用库存不足，请联系客服补货");
-            }
-            for (int i = 0; i < dto.getQuantity(); i++) {
-                ProductVirtualCard card = availableCards.get(i);
-                card.setStatus(1); // 已售出
-                card.setOrderSn(orderSn);
-                cardMapper.save(card);
-                deliveredCards.add(card.getCardContent());
-            }
-            order.setOrderStatus("COMPLETED"); // 虚拟卡密自动完结
-            order.setSharingStatus("FINISHED"); // 自动触发二级分账
-            order.setFinishTime(LocalDateTime.now());
-        } else {
-            // 实物商品，标记为已支付待发货
-            order.setOrderStatus("PAID");
-            order.setSharingStatus("PENDING");
-        }
 
         order = orderMapper.save(order);
 
@@ -140,9 +120,6 @@ public class OrderController {
         item.setPrice(sku.getPrice());
         item.setQuantity(dto.getQuantity());
         item.setSubtotal(totalAmount);
-        if (!deliveredCards.isEmpty()) {
-            item.setCardDetails(String.join("\n", deliveredCards));
-        }
         itemMapper.save(item);
 
         Map<String, Object> result = new HashMap<>();
@@ -151,8 +128,9 @@ public class OrderController {
         result.put("orderStatus", order.getOrderStatus());
         result.put("payAmount", order.getPayAmount());
         result.put("goodsType", order.getGoodsType());
-        result.put("cards", deliveredCards);
-        return R.ok("下单支付成功", result);
+        result.put("cards", List.of());
+        result.put("paymentAvailable", false);
+        return R.ok("订单已创建，等待付款；支付通道暂未开放", result);
     }
 
     @Operation(summary = "【16688 招牌】免登录订单极速查单 (凭订单号 + 手机/邮箱)")
@@ -193,13 +171,8 @@ public class OrderController {
     @Operation(summary = "【商家】查询属于本店的全部订单")
     @GetMapping("/api/v1/merchant/orders")
     public R<List<Map<String, Object>>> listMerchantOrders() {
-        Long merchantId = SecurityUtils.getCurrentMerchantId();
-        List<TradeOrder> orders;
-        if (merchantId != null) {
-            orders = orderMapper.findByMerchantIdOrderByCreatedAtDesc(merchantId);
-        } else {
-            orders = orderMapper.findAllByOrderByCreatedAtDesc();
-        }
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        List<TradeOrder> orders = orderMapper.findByMerchantIdOrderByCreatedAtDesc(merchantId);
 
         List<Map<String, Object>> resList = new ArrayList<>();
         for (TradeOrder o : orders) {
@@ -219,9 +192,21 @@ public class OrderController {
 
     @Operation(summary = "【商家】实物订单录入运单发货")
     @PostMapping("/api/v1/merchant/orders/{id}/deliver")
+    @Transactional(rollbackFor = Exception.class)
     public R<Void> deliverOrder(@PathVariable Long id, @RequestBody DeliverDTO dto) {
-        TradeOrder order = orderMapper.findById(id)
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        TradeOrder order = Optional.ofNullable(orderMapper.lockById(id))
                 .orElseThrow(() -> new BusinessException("订单不存在"));
+        if (!merchantId.equals(order.getMerchantId())) {
+            throw new BusinessException(403, "无权操作其他商户订单");
+        }
+        if (!Integer.valueOf(1).equals(order.getGoodsType())) {
+            throw new BusinessException("仅实物订单可以录入物流发货");
+        }
+        if (dto.getTrackingNumber() == null || dto.getTrackingNumber().isBlank()
+                || dto.getLogisticsCompany() == null || dto.getLogisticsCompany().isBlank()) {
+            throw new BusinessException("请填写物流公司和运单号");
+        }
 
         if (!"PAID".equals(order.getOrderStatus())) {
             throw new BusinessException("订单状态非【待发货】，无法发货");

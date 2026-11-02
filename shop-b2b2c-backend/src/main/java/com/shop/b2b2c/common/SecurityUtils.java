@@ -39,6 +39,14 @@ public class SecurityUtils {
         return null;
     }
 
+    public static Long requireCurrentMerchantId() {
+        Long merchantId = getCurrentMerchantId();
+        if (merchantId == null) {
+            throw new BusinessException(403, "当前账号未绑定店铺，禁止访问商家资产");
+        }
+        return merchantId;
+    }
+
     public static String getCurrentRoleCode() {
         if (!StpUtil.isLogin()) {
             return null;

@@ -11,6 +11,28 @@ import java.util.Optional;
 @Mapper
 public interface ProductVirtualCardMapper extends BaseMapper<ProductVirtualCard> {
 
+    @org.apache.ibatis.annotations.Select("SELECT * FROM product_virtual_card WHERE sku_id = #{skuId} "
+            + "AND product_id = #{productId} AND merchant_id = #{merchantId} AND status = 0 "
+            + "ORDER BY id LIMIT #{quantity} FOR UPDATE")
+    List<ProductVirtualCard> lockAvailableCards(@org.apache.ibatis.annotations.Param("skuId") Long skuId,
+            @org.apache.ibatis.annotations.Param("productId") Long productId,
+            @org.apache.ibatis.annotations.Param("merchantId") Long merchantId,
+            @org.apache.ibatis.annotations.Param("quantity") int quantity);
+
+    @org.apache.ibatis.annotations.Update("UPDATE product_virtual_card SET status = 1, order_sn = #{orderSn} "
+            + "WHERE id = #{id} AND merchant_id = #{merchantId} AND sku_id = #{skuId} AND status = 0")
+    int claimCard(@org.apache.ibatis.annotations.Param("id") Long id,
+                  @org.apache.ibatis.annotations.Param("merchantId") Long merchantId,
+                  @org.apache.ibatis.annotations.Param("skuId") Long skuId,
+                  @org.apache.ibatis.annotations.Param("orderSn") String orderSn);
+
+    default List<ProductVirtualCard> findAvailableForMerchant(Long skuId, Long merchantId) {
+        return selectList(new LambdaQueryWrapper<ProductVirtualCard>()
+                .eq(ProductVirtualCard::getSkuId, skuId)
+                .eq(ProductVirtualCard::getMerchantId, merchantId)
+                .eq(ProductVirtualCard::getStatus, 0));
+    }
+
     default Optional<ProductVirtualCard> findById(Long id) {
         return Optional.ofNullable(selectById(id));
     }

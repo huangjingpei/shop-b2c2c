@@ -63,7 +63,7 @@ sa-token:
 
 # 平台分账与支付沙箱模拟配置
 payment:
-  mock: true # 第一阶段开启模拟分账桩 (零门槛全链路跑通)
+  mock: false # 公开 Mock 支付入口已移除；此配置不能开启模拟付款
   default-commission-rate: 3.00
 
 # 平台前台访问地址 (代付短链与二维码海报基准地址)

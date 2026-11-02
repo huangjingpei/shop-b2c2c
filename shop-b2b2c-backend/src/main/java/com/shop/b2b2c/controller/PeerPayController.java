@@ -50,19 +50,6 @@ public class PeerPayController {
         return R.ok("预占库存已释放", null);
     }
 
-    @Operation(summary = "【沙箱/Mock支付桩】模拟微信/支付宝代付成功 (真实扣减库存与三方对账)")
-    @PostMapping("/mock-pay/{token}")
-    public R<TradeOrder> mockPay(
-            @PathVariable String token,
-            @RequestBody(required = false) PeerPayDTOs.MockPayRequest req) {
-        String payerId = (req != null && req.getPayerId() != null) ? req.getPayerId() : "MOCK_PAYER_WECHAT_GUEST";
-        String channel = (req != null && req.getChannel() != null) ? req.getChannel() : "WECHAT";
-        String payTradeNo = "MOCK_WX_TRD_" + System.currentTimeMillis();
-
-        TradeOrder order = peerPayService.notifyPaymentSuccess(token, payerId, payTradeNo, channel);
-        return R.ok("代付成功！已为您完成支付", order);
-    }
-
     @Operation(summary = "【公开】获取代付成功页【我也想开店】引流转化广告位")
     @GetMapping("/success-ad")
     public R<PlatformAdConfig> getSuccessAd() {

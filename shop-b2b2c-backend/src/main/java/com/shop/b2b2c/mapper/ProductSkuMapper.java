@@ -11,6 +11,20 @@ import java.util.Optional;
 @Mapper
 public interface ProductSkuMapper extends BaseMapper<ProductSku> {
 
+    @org.apache.ibatis.annotations.Update("UPDATE product_sku SET stock_quantity = stock_quantity - #{quantity} "
+            + "WHERE id = #{id} AND product_id = #{productId} AND merchant_id = #{merchantId} "
+            + "AND #{quantity} > 0 AND stock_quantity >= #{quantity}")
+    int deductStock(@org.apache.ibatis.annotations.Param("id") Long id,
+                    @org.apache.ibatis.annotations.Param("productId") Long productId,
+                    @org.apache.ibatis.annotations.Param("merchantId") Long merchantId,
+                    @org.apache.ibatis.annotations.Param("quantity") int quantity);
+
+    @org.apache.ibatis.annotations.Update("UPDATE product_sku SET stock_quantity = stock_quantity + #{quantity} "
+            + "WHERE id = #{id} AND merchant_id = #{merchantId} AND #{quantity} > 0")
+    int addStock(@org.apache.ibatis.annotations.Param("id") Long id,
+                 @org.apache.ibatis.annotations.Param("merchantId") Long merchantId,
+                 @org.apache.ibatis.annotations.Param("quantity") int quantity);
+
     default Optional<ProductSku> findById(Long id) {
         return Optional.ofNullable(selectById(id));
     }

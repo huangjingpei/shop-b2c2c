@@ -34,7 +34,9 @@ public interface PeerPayService {
     void cancelPreLock(String token);
 
     /**
-     * 支付成功回调 (真实扣减物理库存、记录付款人三方对账单、绑定履约流程)
+     * 内部支付落账入口，不允许直接暴露为HTTP接口。
+     * 未来渠道适配器必须先验签、核对金额/商户/币种并持久化支付事件，再调用本方法。
+     * 当前没有真实支付适配器；生产购买只建待付款订单。
      */
     TradeOrder notifyPaymentSuccess(String token, String payerId, String payTradeNo, String channel);
 

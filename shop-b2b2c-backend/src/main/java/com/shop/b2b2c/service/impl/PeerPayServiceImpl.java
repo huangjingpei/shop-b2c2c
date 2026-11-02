@@ -1,6 +1,7 @@
 package com.shop.b2b2c.service.impl;
 
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.TradeGuards;
 import com.shop.b2b2c.common.PosterUtils;
 import com.shop.b2b2c.dto.PeerPayDTOs;
 import com.shop.b2b2c.entity.*;
@@ -57,6 +58,8 @@ public class PeerPayServiceImpl implements PeerPayService {
                 .orElseThrow(() -> new BusinessException("商品规格SKU不存在"));
         MerchantStore store = storeMapper.findById(product.getMerchantId())
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
+
+        TradeGuards.requireSkuOwnership(product, sku);
 
         // 阶段一意向校验：只查物理库存是否存在，不执行真实扣减 (防刷与防恶搞占库存)
         if (sku.getStockQuantity() < req.getQuantity()) {
@@ -154,6 +157,7 @@ public class PeerPayServiceImpl implements PeerPayService {
                 .orElseThrow(() -> new BusinessException("商品规格SKU不存在"));
         MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException("商户店铺不存在"));
+        TradeGuards.requireSkuOwnership(product, sku);
 
         if (sku.getStockQuantity() < req.getQuantity()) {
             throw new BusinessException("商品库存不足，剩余库存: " + sku.getStockQuantity());
@@ -235,7 +239,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PeerPayDTOs.DetailResponse getPeerPayDetail(String token) {
-        TradeOrder order = orderMapper.findByPeerPayToken(token)
+        TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
                 .orElseThrow(() -> new BusinessException("代付账单不存在或已失效"));
 
         // 自愈机制：如果状态为 RESERVED_LOCK 但已经超时超过 15 分钟，自动回退释放为 INIT
@@ -331,7 +335,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PeerPayDTOs.PreLockResult preLockInventory(String token) {
-        TradeOrder order = orderMapper.findByPeerPayToken(token)
+        TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
                 .orElseThrow(() -> new BusinessException("代付账单不存在"));
 
         if ("PAID".equals(order.getOrderStatus()) || "COMPLETED".equals(order.getOrderStatus())) {
@@ -380,7 +384,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void cancelPreLock(String token) {
-        TradeOrder order = orderMapper.findByPeerPayToken(token).orElse(null);
+        TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token).orElse(null);
         if (order != null && "RESERVED_LOCK".equals(order.getPeerStatus())) {
             order.setPeerStatus("INIT");
             order.setLockExpireTime(null);
@@ -393,55 +397,59 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public TradeOrder notifyPaymentSuccess(String token, String payerId, String payTradeNo, String channel) {
-        TradeOrder order = orderMapper.findByPeerPayToken(token)
+        TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
                 .orElseThrow(() -> new BusinessException("代付单不存在"));
 
-        if ("PAID".equals(order.getOrderStatus()) || "COMPLETED".equals(order.getOrderStatus())) {
-            log.warn("代付单 [{}] 已支付过，忽略重复通知", order.getOrderSn());
+        if (Set.of("PAID", "COMPLETED", "SHIPPED").contains(order.getOrderStatus())) {
             return order;
         }
+        if (payerId == null || payerId.isBlank() || payTradeNo == null || payTradeNo.isBlank()
+                || !("WECHAT".equals(channel) || "ALIPAY".equals(channel))) {
+            throw new BusinessException("缺少可信支付结果");
+        }
+        if (orderMapper.markPaidIfUnpaid(order.getId(), payerId, payTradeNo, channel) != 1) {
+            throw new BusinessException("订单状态或支付预占已失效");
+        }
+        order.setOrderStatus("PAID");
 
         List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
-        if (items.isEmpty()) {
-            throw new BusinessException("订单明细异常");
+        if (items.size() != 1) {
+            throw new BusinessException("当前支付仅支持单商品订单");
         }
 
-        // 阶段二两段式落地：真实扣减物理库存
+        // Conditional database updates are the final authority; any failure rolls back payment and fulfillment.
         for (TradeOrderItem item : items) {
-            ProductSku sku = skuMapper.findById(item.getSkuId())
-                    .orElseThrow(() -> new BusinessException("商品SKU不存在"));
-            if (sku.getStockQuantity() < item.getQuantity()) {
-                throw new BusinessException("商品库存不足，扣减失败");
+            if (item.getQuantity() == null || item.getQuantity() <= 0
+                    || skuMapper.deductStock(item.getSkuId(), item.getProductId(), order.getMerchantId(), item.getQuantity()) != 1) {
+                throw new BusinessException("商品库存不足或SKU归属异常，扣减失败");
             }
-            sku.setStockQuantity(sku.getStockQuantity() - item.getQuantity());
-            skuMapper.save(sku);
         }
 
         // 绑定三方完整对账角色 <卖家, 买家, 付款人>
         order.setPeerStatus("PAID");
-        order.setPeerPayerId(payerId != null && !payerId.isBlank() ? payerId : "WECHAT_GUEST_" + UUID.randomUUID().toString().substring(0, 8));
-        order.setPayTradeNo(payTradeNo != null && !payTradeNo.isBlank() ? payTradeNo : "MOCK_PAY_" + System.currentTimeMillis());
-        order.setPaymentChannel(channel != null ? channel : "MOCK");
+        order.setPeerPayerId(payerId);
+        order.setPayTradeNo(payTradeNo);
+        order.setPaymentChannel(channel);
         order.setLockExpireTime(null);
 
         // 如果是虚拟卡密，自动发放分配卡密库
         if (order.getGoodsType() == 2) {
             TradeOrderItem firstItem = items.get(0);
-            List<ProductVirtualCard> availableCards = cardMapper.findBySkuIdAndStatus(firstItem.getSkuId(), 0);
+            List<ProductVirtualCard> availableCards = cardMapper.lockAvailableCards(firstItem.getSkuId(), firstItem.getProductId(), order.getMerchantId(), firstItem.getQuantity());
             if (availableCards.size() >= firstItem.getQuantity()) {
                 List<String> deliveredCards = new ArrayList<>();
                 for (int i = 0; i < firstItem.getQuantity(); i++) {
                     ProductVirtualCard card = availableCards.get(i);
-                    card.setStatus(1); // 已售出
-                    card.setOrderSn(order.getOrderSn());
-                    cardMapper.save(card);
+                    if (cardMapper.claimCard(card.getId(), order.getMerchantId(), firstItem.getSkuId(), order.getOrderSn()) != 1) {
+                        throw new BusinessException("卡密已被分配，请重试");
+                    }
                     deliveredCards.add(card.getCardContent());
                 }
                 firstItem.setCardDetails(String.join("\n", deliveredCards));
                 itemMapper.save(firstItem);
 
                 order.setOrderStatus("COMPLETED");
-                order.setSharingStatus("FINISHED");
+                order.setSharingStatus("PENDING");
                 order.setServiceVoucher("系统卡密秒级自动交付: " + String.join(" | ", deliveredCards));
                 order.setFinishTime(LocalDateTime.now());
             } else {
@@ -457,7 +465,18 @@ public class PeerPayServiceImpl implements PeerPayService {
         }
 
         order = orderMapper.save(order);
-        redisTemplate.delete(PRELOCK_REDIS_PREFIX + order.getOrderSn());
+        final String tokenOrderSn = order.getOrderSn();
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        try {
+                            redisTemplate.delete(PRELOCK_REDIS_PREFIX + tokenOrderSn);
+                        } catch (Exception e) {
+                            log.warn("支付已提交，Redis锁等待TTL释放: {}", tokenOrderSn);
+                        }
+                    }
+                });
         log.info("代付单 [{}] 支付成功落地！三方角色绑定完成: 卖家ID={}, 买家={}, 付款人={}",
                 order.getOrderSn(), order.getMerchantId(), order.getBuyerContact(), order.getPeerPayerId());
 
@@ -467,7 +486,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void fulfillVirtualOrder(Long orderId, String serviceVoucher, Long currentMerchantId) {
-        TradeOrder order = orderMapper.findById(orderId)
+        TradeOrder order = Optional.ofNullable(orderMapper.lockById(orderId))
                 .orElseThrow(() -> new BusinessException("订单不存在"));
 
         if (!order.getMerchantId().equals(currentMerchantId)) {
@@ -488,7 +507,7 @@ public class PeerPayServiceImpl implements PeerPayService {
 
         order.setServiceVoucher(serviceVoucher.trim());
         order.setOrderStatus("COMPLETED");
-        order.setSharingStatus("FINISHED");
+        order.setSharingStatus("PENDING");
         order.setFinishTime(LocalDateTime.now());
         orderMapper.save(order);
 
@@ -505,7 +524,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String regeneratePoster(String token) {
-        TradeOrder order = orderMapper.findByPeerPayToken(token)
+        TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
                 .orElseThrow(() -> new BusinessException("代付单不存在"));
 
         MerchantStore store = storeMapper.findById(order.getMerchantId()).orElse(null);
