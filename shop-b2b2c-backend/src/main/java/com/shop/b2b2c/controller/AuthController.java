@@ -32,6 +32,16 @@ public class AuthController {
         private String password;
     }
 
+    @Operation(summary = "系统健康探测接口 (运维监控与部署就绪探测)")
+    @GetMapping("/health")
+    public R<Map<String, Object>> health() {
+        Map<String, Object> map = new HashMap<>();
+        map.put("status", "UP");
+        map.put("app", "shop-b2b2c-backend");
+        map.put("timestamp", System.currentTimeMillis());
+        return R.ok(map);
+    }
+
     @Operation(summary = "管理员/商家后台统一登录 (基于 Sa-Token 多端会话)")
     @PostMapping("/login")
     public R<Map<String, Object>> login(@RequestBody LoginDTO dto) {
