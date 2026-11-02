@@ -47,6 +47,7 @@ E:\shop-b2b2c\
 ## 核心设计与交付文档索引
 
 所有业务方案、架构设计、排版文档均已规范化归档至 `docs/` 目录：
+- 🌟 [Spring Boot 3 + Vue 3 敏捷工程化与架构决策指南 (脚手架基线)](file:///E:/shop-b2b2c/docs/SPRINGBOOT3_VUE3_MVP_ARCH_DECISION_GUIDE.md)
 - 📄 [业务与技术设计规范 (Markdown)](file:///E:/shop-b2b2c/docs/B2B2C_MVP_PEER_PAY_SPECIFICATION.md)
 - 📑 [业务与技术设计规范 (Word 版)](file:///E:/shop-b2b2c/docs/B2B2C_MVP_PEER_PAY_SPECIFICATION.docx)
 - 📑 [业务与技术设计规范 (PDF 版)](file:///E:/shop-b2b2c/docs/B2B2C_MVP_PEER_PAY_SPECIFICATION.pdf)
