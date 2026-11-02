@@ -122,6 +122,9 @@ public class PeerPayServiceImpl implements PeerPayService {
         item.setSubtotal(totalAmount);
         itemMapper.save(item);
 
+        String wechatShareText = String.format("【%s】\n🎁 好友求助代付：%s\n💰 代付金额：￥%s\n👉 微信直接点开付款：%s\n（免注册免登录，微信内直接打开即可完成支付）",
+                order.getPeerMessage(), product.getTitle(), totalAmount.toPlainString(), cashierUrl);
+
         Map<String, Object> result = new HashMap<>();
         result.put("orderSn", orderSn);
         result.put("peerPayToken", peerPayToken);
@@ -130,6 +133,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         result.put("peerMessage", order.getPeerMessage());
         result.put("payAmount", totalAmount);
         result.put("queryToken", queryToken);
+        result.put("wechatShareText", wechatShareText);
         return result;
     }
 
@@ -214,6 +218,9 @@ public class PeerPayServiceImpl implements PeerPayService {
         item.setSubtotal(totalAmount);
         itemMapper.save(item);
 
+        String wechatShareText = String.format("【%s · 专属定制账单】\n尊贵的客户您好，这是为您定制的专属订单，请查收：\n📦 商品：%s\n💰 协议专享价：￥%s\n👉 微信点开直接付款：%s\n（微信内打开直接支付，无需加购选规格）",
+                store.getStoreName(), product.getTitle(), totalAmount.toPlainString(), cashierUrl);
+
         Map<String, Object> result = new HashMap<>();
         result.put("orderSn", orderSn);
         result.put("peerPayToken", peerPayToken);
@@ -221,6 +228,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         result.put("posterBase64", posterBase64);
         result.put("unitPrice", unitPrice);
         result.put("payAmount", totalAmount);
+        result.put("wechatShareText", wechatShareText);
         return result;
     }
 
@@ -293,11 +301,26 @@ public class PeerPayServiceImpl implements PeerPayService {
             resp.setMaskedBuyerContact("尾号***买家");
         }
 
-        // 计算剩余锁秒数
-        if ("RESERVED_LOCK".equals(order.getPeerStatus()) && order.getLockExpireTime() != null) {
-            long remaining = Duration.between(LocalDateTime.now(), order.getLockExpireTime()).getSeconds();
+        // 计算美团风格 15 分钟倒计时剩余秒数
+        LocalDateTime now = LocalDateTime.now();
+        if ("PAID".equals(order.getPeerStatus())) {
+            resp.setLockSecondsRemaining(0L);
+        } else if ("RESERVED_LOCK".equals(order.getPeerStatus()) && order.getLockExpireTime() != null) {
+            long remaining = Duration.between(now, order.getLockExpireTime()).getSeconds();
             resp.setLockSecondsRemaining(Math.max(0, remaining));
             resp.setLockExpireTime(order.getLockExpireTime());
+        } else if ("INIT".equals(order.getPeerStatus()) && order.getCreatedAt() != null) {
+            LocalDateTime orderExpireAt = order.getCreatedAt().plusMinutes(15);
+            if (now.isAfter(orderExpireAt)) {
+                order.setPeerStatus("EXPIRED");
+                orderMapper.save(order);
+                resp.setPeerStatus("EXPIRED");
+                resp.setLockSecondsRemaining(0L);
+            } else {
+                long remaining = Duration.between(now, orderExpireAt).getSeconds();
+                resp.setLockSecondsRemaining(Math.max(0, remaining));
+                resp.setLockExpireTime(orderExpireAt);
+            }
         } else {
             resp.setLockSecondsRemaining(0L);
         }

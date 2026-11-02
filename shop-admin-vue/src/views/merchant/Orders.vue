@@ -269,10 +269,15 @@
         <h3 style="margin: 0; color: #0f172a; font-size: 16px; font-weight: bold;">代客推单账单已生成！</h3>
         <p style="font-size: 12px; color: #64748b; margin: 4px 0 16px;">复制链接发给微信客户，或将海报发送至微信群/朋友圈</p>
 
-        <!-- 专属收银台链接 -->
-        <div style="display: flex; gap: 8px; margin-bottom: 16px;">
-          <el-input :value="pushPayResult.cashierUrl" readonly />
-          <el-button type="primary" @click="copyPushLink">复制链接</el-button>
+        <!-- 专属收银台链接与微信卡片复制 -->
+        <div style="margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px;">
+          <el-button type="success" size="default" @click="copyPushWechatCard" style="width: 100%; font-weight: bold;">
+            🟢 复制微信推单卡片 (直接发微信客户)
+          </el-button>
+          <div style="display: flex; gap: 8px;">
+            <el-input :value="pushPayResult.cashierUrl" readonly />
+            <el-button type="primary" plain @click="copyPushLink">复制链接</el-button>
+          </div>
         </div>
 
         <!-- 微信防封海报预览 -->
@@ -495,10 +500,45 @@ const handleCreatePushPay = async () => {
   }
 }
 
+const safeCopy = (text, successMsg) => {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => {
+      ElMessage.success(successMsg)
+    }).catch(() => {
+      fallbackCopy(text, successMsg)
+    })
+  } else {
+    fallbackCopy(text, successMsg)
+  }
+}
+
+const fallbackCopy = (text, successMsg) => {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  document.body.appendChild(ta)
+  ta.focus()
+  ta.select()
+  try {
+    document.execCommand('copy')
+    ElMessage.success(successMsg)
+  } catch (e) {
+    ElMessage.error('复制失败，请手动长按复制')
+  }
+  document.body.removeChild(ta)
+}
+
+const copyPushWechatCard = () => {
+  if (!pushPayResult.value) return
+  const text = pushPayResult.value.wechatShareText || 
+    `【商户专属定制账单】\n尊贵的客户您好，这是为您定制的专属订单，请查收：\n💰 协议专享价：￥${pushPayResult.value.payAmount}\n👉 微信点开直接付款：${pushPayResult.value.cashierUrl}\n（微信内直接打开即可完成付款，无需加购选规格）`
+  safeCopy(text, '✅ 微信专属推单卡片已复制！直接粘贴发送给微信客户即可，客户点开直接付款。')
+}
+
 const copyPushLink = () => {
   if (pushPayResult.value?.cashierUrl) {
-    navigator.clipboard.writeText(pushPayResult.value.cashierUrl)
-    ElMessage.success('推单代付短链已复制到剪贴板！')
+    safeCopy(pushPayResult.value.cashierUrl, '推单代付短链已复制到剪贴板！')
   }
 }
 

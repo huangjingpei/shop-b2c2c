@@ -1,5 +1,8 @@
 <template>
-  <div class="min-h-screen flex flex-col">
+  <div v-if="route.meta?.pureLayout" class="min-h-screen bg-[#F5F5F7]">
+    <router-view />
+  </div>
+  <div v-else class="min-h-screen flex flex-col">
     <Navbar />
     <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
       <router-view />
@@ -14,5 +17,8 @@
 </template>
 
 <script setup>
+import { useRoute } from 'vue-router'
 import Navbar from './components/Navbar.vue'
+
+const route = useRoute()
 </script>

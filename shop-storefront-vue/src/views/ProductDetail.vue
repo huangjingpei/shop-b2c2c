@@ -299,33 +299,53 @@
 
         <!-- 步骤 B: 生成成功，展示复制链接与 9:16 防封海报 -->
         <div v-else class="space-y-4 text-center">
-          <div class="w-12 h-12 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center text-2xl mx-auto shadow-inner">
+          <div class="w-12 h-12 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center text-2xl mx-auto shadow-inner">
             🎉
           </div>
           <div>
-            <h3 class="text-base font-black text-slate-900">求助代付单已生成！</h3>
-            <p class="text-xs text-slate-500 mt-1">您可以直接复制链接发给微信好友，或保存下方海报发朋友圈</p>
+            <h3 class="text-base font-black text-slate-900">微信代付卡片已生成！</h3>
+            <p class="text-xs text-slate-500 mt-1">好友在微信内点击链接即可打开直接买单，免注册免登录</p>
           </div>
 
-          <!-- 链接复制框 -->
-          <div class="flex items-center space-x-2">
-            <input 
-              :value="peerPayResult.cashierUrl" 
-              readonly 
-              class="flex-1 px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono text-slate-600 select-all"
-            />
+          <!-- 核心微信专属复制与分享按钮组 -->
+          <div class="space-y-2">
+            <!-- 1. 复制微信卡片消息 (最适合直接发微信) -->
             <button 
-              @click="copyPeerPayLink"
-              class="px-4 py-2 bg-rose-600 text-white text-xs font-bold rounded-lg hover:bg-rose-700 transition"
+              @click="copyWechatShareCard"
+              class="w-full py-3 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black shadow-md shadow-emerald-600/20 transition flex items-center justify-center space-x-2"
             >
-              复制链接
+              <span>🟢 复制微信代付卡片 (直接粘贴发微信)</span>
             </button>
+
+            <!-- 2. 微信内置浏览器端专属：调起右上角指引 -->
+            <button 
+              v-if="isWeChat"
+              @click="showWechatGuide = true"
+              class="w-full py-2.5 px-4 rounded-xl bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 text-xs font-bold transition flex items-center justify-center space-x-1.5"
+            >
+              <span>💬 立即发送给微信好友 / 发群</span>
+            </button>
+
+            <!-- 3. 纯链接复制框 -->
+            <div class="flex items-center space-x-2 pt-1">
+              <input 
+                :value="peerPayResult.cashierUrl" 
+                readonly 
+                class="flex-1 px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono text-slate-600 select-all"
+              />
+              <button 
+                @click="copyOnlyLink"
+                class="px-3.5 py-2 bg-slate-800 text-white text-xs font-bold rounded-lg hover:bg-slate-900 transition whitespace-nowrap"
+              >
+                仅复制链接
+              </button>
+            </div>
           </div>
 
           <!-- 9:16 微信海报预览 -->
           <div v-if="peerPayResult.posterBase64" class="p-3 bg-slate-50 rounded-xl border border-slate-200">
-            <div class="text-[11px] font-bold text-slate-600 mb-2">微信裂变防封买单海报 (长按可直接保存)：</div>
-            <div class="max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white">
+            <div class="text-[11px] font-bold text-slate-600 mb-2">9:16 微信裂变防封海报 (长按保存发朋友圈)：</div>
+            <div class="max-h-56 overflow-y-auto rounded-lg border border-slate-200 bg-white">
               <img :src="peerPayResult.posterBase64" class="w-full object-contain" />
             </div>
           </div>
@@ -343,13 +363,32 @@
               :to="`/peer-pay/${peerPayResult.peerPayToken}`"
               class="flex-1 py-2.5 rounded-xl bg-slate-900 text-white font-bold text-xs hover:bg-slate-800 transition block text-center"
             >
-              前往代付收银台预览 ›
+              打开收银台预览 ›
             </router-link>
           </div>
         </div>
 
       </div>
     </div>
+
+    <!-- 微信右上角分享指引蒙层 -->
+    <div 
+      v-if="showWechatGuide" 
+      @click="showWechatGuide = false" 
+      class="fixed inset-0 z-50 bg-black/85 flex flex-col items-end p-6 text-white cursor-pointer"
+    >
+      <div class="flex items-start space-x-2 mr-4 mt-2 animate-bounce">
+        <span class="text-4xl">↗️</span>
+      </div>
+      <div class="bg-white/10 backdrop-blur-md rounded-2xl p-5 mt-3 max-w-xs text-sm leading-relaxed border border-white/20">
+        <p class="font-bold text-amber-300 text-base mb-1.5">请点击右上角【···】</p>
+        <p class="text-xs text-slate-100 leading-normal">
+          选择 <span class="text-emerald-400 font-bold">“发送给朋友”</span> 或 <span class="text-emerald-400 font-bold">“分享到朋友圈”</span>，好友点开直接替您买单！
+        </p>
+        <div class="mt-4 pt-3 border-t border-white/10 text-[11px] text-slate-400 text-center">点击任意位置关闭</div>
+      </div>
+    </div>
+
   </div>
 </template>
 
@@ -490,12 +529,52 @@ const handleCreatePeerPay = async () => {
   }
 }
 
-const copyPeerPayLink = () => {
-  if (peerPayResult.value?.cashierUrl) {
-    navigator.clipboard.writeText(peerPayResult.value.cashierUrl)
-    alert('微信代付链接已成功复制到剪贴板！可以直接粘贴发送给好友或群聊。')
+const isWeChat = ref(/MicroMessenger/i.test(navigator.userAgent))
+const showWechatGuide = ref(false)
+
+const copyToClipboard = (text, successMsg) => {
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(() => {
+      alert(successMsg)
+    }).catch(() => {
+      fallbackCopy(text, successMsg)
+    })
+  } else {
+    fallbackCopy(text, successMsg)
   }
 }
+
+const fallbackCopy = (text, successMsg) => {
+  const ta = document.createElement('textarea')
+  ta.value = text
+  ta.style.position = 'fixed'
+  ta.style.left = '-9999px'
+  document.body.appendChild(ta)
+  ta.focus()
+  ta.select()
+  try {
+    document.execCommand('copy')
+    alert(successMsg)
+  } catch (e) {
+    alert('复制失败，请手动长按复制：' + text)
+  }
+  document.body.removeChild(ta)
+}
+
+const copyWechatShareCard = () => {
+  if (!peerPayResult.value) return
+  const text = peerPayResult.value.wechatShareText || 
+    `【${peerPayResult.value.peerMessage || '江湖救急，帮我买个单呗~'}】\n🎁 好友求助代付：${product.value?.title || '优质好物'}\n💰 代付金额：￥${peerPayResult.value.payAmount}\n👉 微信点开直接买单：${peerPayResult.value.cashierUrl}\n（微信内打开直接支付，免注册免登录）`
+  copyToClipboard(text, '✅ 微信专属代付卡片已复制到剪贴板！\n\n您可以直接在微信聊天或群聊中粘贴发送，好友点开直接微信付款。')
+}
+
+const copyOnlyLink = () => {
+  if (peerPayResult.value?.cashierUrl) {
+    copyToClipboard(peerPayResult.value.cashierUrl, '代付链接已复制到剪贴板！')
+  }
+}
+
+const copyPeerPayLink = copyOnlyLink
 
 onMounted(() => {
   loadProduct()

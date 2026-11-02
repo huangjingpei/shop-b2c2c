@@ -28,7 +28,8 @@ const routes = [
   {
     path: '/peer-pay/:token',
     name: 'PeerPayCashier',
-    component: () => import('../views/PeerPayCashier.vue')
+    component: () => import('../views/PeerPayCashier.vue'),
+    meta: { pureLayout: true }
   }
 ]
 
