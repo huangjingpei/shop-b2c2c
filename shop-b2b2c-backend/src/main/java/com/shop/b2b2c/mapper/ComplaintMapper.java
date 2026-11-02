@@ -1,3 +1,8 @@
+/*
+ * 文件：ComplaintMapper.java
+ * 用途：Complaint领域的MyBatis基础持久化接口。
+ * 维护注意：投诉工单基础持久化；投诉流转尚未闭环，新增接口须校验订单与参与方，不能跨店读取举证信息。 普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

@@ -1,3 +1,8 @@
+<!--
+文件：Profile.vue
+用途：本店展示资料与渠道账户信息页面。
+维护注意：仅能访问会话绑定店铺；银行资料应受权限和脱敏控制。保存成功不代表真实渠道变更，展示字段需与后端白名单一致。
+-->
 <template>
   <div class="merchant-profile">
     <div class="page-title">

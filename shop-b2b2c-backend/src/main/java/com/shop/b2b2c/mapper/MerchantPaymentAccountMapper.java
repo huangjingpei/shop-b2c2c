@@ -1,3 +1,8 @@
+/*
+ * 文件：MerchantPaymentAccountMapper.java
+ * 用途：MerchantPaymentAccount领域的MyBatis基础持久化接口。
+ * 维护注意：渠道账户基础查询；银行卡和进件字段应按权限读取，不可直接作为公开响应。 普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

@@ -1,3 +1,8 @@
+/*
+ * 文件：StpInterfaceImpl.java
+ * 用途：为Sa-Token提供当前会话角色和权限集合。
+ * 维护注意：角色从会话读取，细粒度权限当前为空；新增员工权限需要服务端授权设计，不能仅改前端菜单。
+ */
 package com.shop.b2b2c.config;
 
 import cn.dev33.satoken.stp.StpInterface;

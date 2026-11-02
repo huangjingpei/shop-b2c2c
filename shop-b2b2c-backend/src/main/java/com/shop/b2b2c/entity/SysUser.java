@@ -1,3 +1,8 @@
+/*
+ * 文件：SysUser.java
+ * 用途：平台/商户后台账号、角色及店铺绑定模型。
+ * 维护注意：password保存BCrypt散列，实体不可直接公开；角色与merchantId变更需同步会话撤销，修改isActive不自动保证旧会话立刻失效。
+ */
 package com.shop.b2b2c.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;

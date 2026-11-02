@@ -1,3 +1,8 @@
+<!--
+文件：Dashboard.vue
+用途：商家商品、订单数量和快捷入口看板。
+维护注意：页面部分经营/结算文案仍是历史演示，统计口径与真实支付待完善；不得据此认定收付通已开通或资金已结算。
+-->
 <template>
   <div class="merchant-dashboard">
     <div class="store-banner">

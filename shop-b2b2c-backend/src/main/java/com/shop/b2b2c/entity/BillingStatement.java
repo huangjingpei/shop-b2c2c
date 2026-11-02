@@ -1,3 +1,8 @@
+/*
+ * 文件：BillingStatement.java
+ * 用途：商户日/月对账汇总的持久化模型。
+ * 维护注意：目前仅有模型与基础映射，未形成账单生成和渠道对账闭环；金额与状态不能当作真实结算结果。改字段须同步SQL、迁移和测试结构。
+ */
 package com.shop.b2b2c.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;

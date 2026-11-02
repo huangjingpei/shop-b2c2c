@@ -1,3 +1,8 @@
+/*
+ * 文件：PlatformAdConfigMapper.java
+ * 用途：PlatformAdConfig领域的MyBatis基础持久化接口。
+ * 维护注意：广告位置与启用配置读取；排序与启用不等于目标URL安全，业务层还需审核跳转目标。 普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

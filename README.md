@@ -1,3 +1,8 @@
+<!--
+文件：README.md
+用途：项目入口说明、三端工程结构及本地启动参考。
+维护注意：此处描述包含规划或历史验收记录，不代表当前代码已全部实现；现状以问题台账及最新Sprint记录为准，旧截图/链接不能替代可重复测试。
+-->
 # Shop B2B2C 电商平台 (Spring Boot 3 + Vue 3)
 
 > **技术栈**：Spring Boot 3.2.5 (JDK 17) + Vue 3 (Vite + Element Plus + Tailwind CSS) + MySQL 8.0 + Redis 7  

@@ -1,3 +1,8 @@
+/*
+ * 文件：Complaint.java
+ * 用途：买家投诉、商家响应及平台仲裁数据模型。
+ * 维护注意：目前未形成完整业务流转；包含举证和用户信息，不应直接公开。新增状态或字段须同步业务状态机、SQL和权限。
+ */
 package com.shop.b2b2c.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;

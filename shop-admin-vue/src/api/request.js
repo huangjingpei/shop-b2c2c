@@ -1,3 +1,8 @@
+/*
+ * 文件：request.js
+ * 用途：封装管理端Axios请求、Bearer令牌及错误处理。
+ * 维护注意：令牌来自本地存储但权限由后端决定；注意业务code与HTTP状态区别，退出应撤销服务端会话，响应/错误日志不能泄露凭证。
+ */
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 

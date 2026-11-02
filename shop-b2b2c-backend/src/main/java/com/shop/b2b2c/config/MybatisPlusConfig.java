@@ -1,3 +1,8 @@
+/*
+ * 文件：MybatisPlusConfig.java
+ * 用途：注册MyBatis-Plus分页插件及Mapper扫描。
+ * 维护注意：插件注册不代表所有查询已分页；新Mapper应处于扫描范围，SQL分页及MySQL兼容性仍须测试。
+ */
 package com.shop.b2b2c.config;
 
 import com.baomidou.mybatisplus.annotation.DbType;

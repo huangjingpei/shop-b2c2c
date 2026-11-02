@@ -1,3 +1,8 @@
+<!--
+文件：B2B2C_MVP_PEER_PAY_DELIVERY_REPORT.md
+用途：找人代付MVP的历史交付与演示验收记录。
+维护注意：此处描述包含规划或历史验收记录，不代表当前代码已全部实现；现状以问题台账及最新Sprint记录为准，旧截图/链接不能替代可重复测试。
+-->
 # B2B2C 找人代付与两段式库存锁控电商平台 · 全闭环交付报告
 
 > **项目名称**：Shop B2B2C Multi-Tenant E-Commerce Platform (找人代付裂变版)  

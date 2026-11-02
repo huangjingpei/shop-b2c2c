@@ -1,3 +1,8 @@
+/*
+ * 文件：CategoryController.java
+ * 用途：公开类目列表及平台类目创建入口。
+ * 维护注意：创建须依赖后台角色拦截；请求实体的ID/父子关系和字段校验尚待加强，不能把当前CRUD解释成完整类目治理。
+ */
 package com.shop.b2b2c.controller;
 
 import com.shop.b2b2c.common.R;

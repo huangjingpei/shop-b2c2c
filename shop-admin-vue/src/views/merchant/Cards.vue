@@ -1,3 +1,8 @@
+<!--
+文件：Cards.vue
+用途：商家卡密库存浏览与批量导入页面。
+维护注意：卡密是敏感资产，导入需要后端验证商品/SKU/租户关系；页面显示库存不代表最终并发可售量，禁止把卡密写调试日志。
+-->
 <template>
   <div class="merchant-cards">
     <div class="page-header">

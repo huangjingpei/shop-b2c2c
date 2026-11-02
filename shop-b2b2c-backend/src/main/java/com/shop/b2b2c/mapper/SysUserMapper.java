@@ -1,3 +1,8 @@
+/*
+ * 文件：SysUserMapper.java
+ * 用途：SysUser领域的MyBatis基础持久化接口。
+ * 维护注意：账号基础查询；不得公开散列密码，账号/角色/店铺变更需要额外的授权与会话处理。 普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

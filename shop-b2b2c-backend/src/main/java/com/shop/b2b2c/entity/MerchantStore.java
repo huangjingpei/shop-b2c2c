@@ -1,3 +1,8 @@
+/*
+ * 文件：MerchantStore.java
+ * 用途：商户经营身份、展示资料、费用与收款模式模型。
+ * 维护注意：含经营者身份及内部费用，公开接口必须转PublicStoreView；状态用于交易资格，历史服务费编码兼容待统一。不要直接绑定实体全字段更新。
+ */
 package com.shop.b2b2c.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;

@@ -1,3 +1,8 @@
+<!--
+文件：Merchants.vue
+用途：平台商户资料、佣金、服务费、营业状态和收款模式配置页面。
+维护注意：进件仍有模拟数据，不能把成功提示当真实渠道开通；后台校验为权威，费率/状态编码变更须同步契约与测试。
+-->
 <template>
   <div class="merchants-page">
     <div class="page-header">

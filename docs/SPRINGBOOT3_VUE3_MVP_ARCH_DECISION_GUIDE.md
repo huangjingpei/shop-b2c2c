@@ -1,3 +1,8 @@
+<!--
+文件：SPRINGBOOT3_VUE3_MVP_ARCH_DECISION_GUIDE.md
+用途：Spring Boot与Vue工程化基线及架构取舍参考。
+维护注意：此处描述包含规划或历史验收记录，不代表当前代码已全部实现；现状以问题台账及最新Sprint记录为准，旧截图/链接不能替代可重复测试。
+-->
 # Spring Boot 3 + Vue 3 敏捷工程化与架构决策指南 (Scaffolding & Decision Matrix)
 
 > **文档性质**：全栈团队敏捷研发脚手架基线与场景决策矩阵（Single Source of Truth）  

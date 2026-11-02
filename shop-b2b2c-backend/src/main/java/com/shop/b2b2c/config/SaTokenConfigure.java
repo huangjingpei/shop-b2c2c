@@ -1,3 +1,8 @@
+/*
+ * 文件：SaTokenConfigure.java
+ * 用途：配置API角色拦截、公开路径与CORS。
+ * 维护注意：公开路由不得加入可信支付落账；角色检查不替代对象归属校验。当前跨域策略较宽，生产治理仍待处理，不可把注释当成安全加固实现。
+ */
 package com.shop.b2b2c.config;
 
 import cn.dev33.satoken.interceptor.SaInterceptor;

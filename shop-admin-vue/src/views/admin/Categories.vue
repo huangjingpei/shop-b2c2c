@@ -1,3 +1,8 @@
+<!--
+文件：Categories.vue
+用途：平台类目浏览与新增页面。
+维护注意：菜单和表单校验不是授权或层级合法性边界；扩展编辑/删除需同步后端引用校验。
+-->
 <template>
   <div class="categories-page">
     <div class="page-header">

@@ -1,3 +1,8 @@
+/*
+ * 文件：PosterUtils.java
+ * 用途：生成代付分享二维码与海报的图片工具。
+ * 维护注意：海报不保证社交平台免封；注意中文字体、长文本、图像内存与生成耗时。仅编码分享地址，不证明支付到账；不要在图中加入卡密或内部凭证。
+ */
 package com.shop.b2b2c.common;
 
 import com.google.zxing.BarcodeFormat;

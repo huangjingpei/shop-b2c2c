@@ -1,3 +1,8 @@
+/*
+ * 文件：R.java
+ * 用途：统一API响应的code/message/data封装。
+ * 维护注意：业务code和HTTP状态并非自动同步；调用方须校验业务码，敏感实体应转换白名单响应后再放入data。
+ */
 package com.shop.b2b2c.common;
 
 import lombok.AllArgsConstructor;

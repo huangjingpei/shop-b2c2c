@@ -1,3 +1,8 @@
+/*
+ * 文件：Category.java
+ * 用途：平台商品类目的持久化模型。
+ * 维护注意：parentId表示层级关系；完整树校验、循环关系及删除影响需业务层处理，不能仅凭save保证类目有效。
+ */
 package com.shop.b2b2c.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;

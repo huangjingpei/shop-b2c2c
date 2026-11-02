@@ -1,3 +1,8 @@
+/*
+ * 文件：AuthController.java
+ * 用途：管理员和商家登录、退出、当前身份及存活探针接口。
+ * 维护注意：密码用BCrypt验证，退出需撤销服务端会话；health仅为存活响应，不代表数据库和Redis就绪。登录节流等安全能力尚待完善。
+ */
 package com.shop.b2b2c.controller;
 
 import cn.dev33.satoken.secure.BCrypt;

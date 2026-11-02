@@ -1,3 +1,8 @@
+/*
+ * 文件：MerchantStoreMapper.java
+ * 用途：MerchantStore领域的MyBatis基础持久化接口。
+ * 维护注意：店铺基础查询；普通商家必须限定会话店铺，公开展示使用白名单，状态变更影响交易资格。 普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

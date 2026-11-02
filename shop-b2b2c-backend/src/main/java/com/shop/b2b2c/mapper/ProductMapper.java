@@ -1,3 +1,8 @@
+/*
+ * 文件：ProductMapper.java
+ * 用途：Product领域的MyBatis基础持久化接口。
+ * 维护注意：商品基础筛选；公开读取须校验在售与营业状态，组合过滤/分页不能仅依赖方法名推断已支持。 普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

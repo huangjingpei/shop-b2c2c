@@ -1,3 +1,8 @@
+/*
+ * 文件：ProductVirtualCard.java
+ * 用途：虚拟卡密资产、售出状态与订单归属模型。
+ * 维护注意：cardContent为敏感交付资产，不得写公开日志；分配必须使用条件认领和事务，查询必须校验租户。明文存储治理仍待完成。
+ */
 package com.shop.b2b2c.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;

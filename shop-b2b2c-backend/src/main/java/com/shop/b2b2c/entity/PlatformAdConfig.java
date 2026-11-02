@@ -1,3 +1,8 @@
+/*
+ * 文件：PlatformAdConfig.java
+ * 用途：代付成功页广告位置、素材与跳转配置模型。
+ * 维护注意：跳转目标和素材需运营审核；当前只有广告读取等基础能力，不代表完整广告管理或入驻转化流程已实现。
+ */
 package com.shop.b2b2c.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;

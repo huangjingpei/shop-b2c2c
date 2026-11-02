@@ -1,3 +1,8 @@
+/*
+ * 文件：BillingStatementMapper.java
+ * 用途：BillingStatement领域的MyBatis基础持久化接口。
+ * 维护注意：商户账单基础查询；当前没有自动生成/渠道对账业务，新增查询必须约束商户和账期。 普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

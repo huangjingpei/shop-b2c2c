@@ -1,3 +1,8 @@
+<!--
+文件：Login.vue
+用途：管理端登录表单和会话信息初始化。
+维护注意：本地存储的token/角色不可视为可信授权；不要在日志中输出密码或令牌，修改响应字段要同步身份接口。
+-->
 <template>
   <div class="login-container">
     <div class="login-card">

@@ -1,3 +1,8 @@
+<!--
+文件：Navbar.vue
+用途：商城公共导航与页面跳转入口。
+维护注意：前端入口不代表用户已授权；新增查单或支付链接时不能把领取凭证或私人联系方式放入可公开传播内容。
+-->
 <template>
   <header class="bg-white border-b border-slate-200 sticky top-0 z-50">
     <!-- 顶部微型服务栏 -->

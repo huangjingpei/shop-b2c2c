@@ -1,3 +1,8 @@
+/*
+ * 文件：TradeOrderItemMapper.java
+ * 用途：TradeOrderItem领域的MyBatis基础持久化接口。
+ * 维护注意：订单明细基础查询；按orderSn查出数据前须确认订单访问权，不能把通用查询直接暴露给未授权调用方。 普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
