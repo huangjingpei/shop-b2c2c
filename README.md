@@ -9,17 +9,17 @@
 
 ```
 E:\shop-b2b2c\
-├── init_db.sql                  # MySQL 8.0 全套数据库建表与种子初始数据
 ├── start_all.bat                # 一键启动全套三个前后端服务
 │
 ├── shop-b2b2c-backend/          # 【后端服务】Spring Boot 3.2 + JDK 17 (端口: 8082)
 │   ├── src/main/java/com/shop/b2b2c/
 │   │   ├── config/              # Security, JWT, Redis, CORS
 │   │   ├── controller/          # Auth, Merchant, Category, Product, Order
-│   │   ├── entity/              # JPA 领域模型 (商户、商品、SKU、卡密库、订单)
+│   │   ├── entity/              # JPA 领域模型 (商户、商品、SKU、两段式代付订单等)
 │   │   └── repository/          # Spring Data JPA 仓储接口
 │   └── src/main/resources/
-│       └── application.yml
+│       ├── application.yml      # Spring Boot 配置 (含 spring.sql.init 自动初始化)
+│       └── schema.sql           # 【单一权威建表与全量种子数据】(应用启动自动自愈)
 │
 ├── shop-admin-vue/              # 【管理中台】Vue 3 + Element Plus (端口: 3001)
 │   ├── src/views/layout/        # 平台超管 & 商家工作台双重视角切换框架
