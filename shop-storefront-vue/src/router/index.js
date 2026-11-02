@@ -24,6 +24,11 @@ const routes = [
     path: '/quick-query',
     name: 'QuickQuery',
     component: QuickQuery
+  },
+  {
+    path: '/peer-pay/:token',
+    name: 'PeerPayCashier',
+    component: () => import('../views/PeerPayCashier.vue')
   }
 ]
 

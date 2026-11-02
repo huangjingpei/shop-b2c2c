@@ -158,6 +158,15 @@
               <span v-if="submitting">正在调起收银台...</span>
               <span v-else>立即支付 ￥{{ calculateTotal() }}</span>
             </button>
+
+            <!-- ★ 找人代付核心通道 -->
+            <button
+              @click="openPeerPayModal"
+              :disabled="submitting || !currentSku || currentSku.stockQuantity <= 0"
+              class="px-5 py-3.5 rounded-lg bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 disabled:bg-slate-300 text-white font-black text-sm tracking-wide transition shadow-sm flex items-center justify-center space-x-1.5"
+            >
+              <span>🤝 找人代付</span>
+            </button>
           </div>
         </div>
       </div>
@@ -207,6 +216,138 @@
             完成并继续选购
           </button>
         </div>
+      </div>
+    </div>
+
+    <!-- ★ 找人代付专属求助弹窗 -->
+    <div v-if="peerPayModalOpen" class="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+      <div class="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 relative max-h-[90vh] overflow-y-auto">
+        <button 
+          @click="closePeerPayModal"
+          class="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 font-bold"
+        >
+          ✕
+        </button>
+
+        <!-- 步骤 A: 填写求助信息与留言 -->
+        <div v-if="!peerPayResult" class="space-y-4">
+          <div class="flex items-center space-x-2">
+            <span class="text-2xl">🤝</span>
+            <div>
+              <h3 class="text-base font-black text-slate-900">找人代付 · 生成微信求助买单卡片</h3>
+              <p class="text-xs text-slate-400">生成代付短链与 9:16 微信防封海报，好友直接扫码即可替您付款</p>
+            </div>
+          </div>
+
+          <!-- 商品简报 -->
+          <div class="p-3 bg-slate-50 rounded-xl border border-slate-200/80 flex space-x-3 items-center">
+            <img :src="product.mainImage" class="w-14 h-14 rounded-lg object-cover" />
+            <div class="flex-1 min-w-0">
+              <h4 class="text-xs font-bold text-slate-800 truncate">{{ product.title }}</h4>
+              <div class="text-[11px] text-slate-500 mt-0.5">{{ formatSpec(currentSku.specData) }} × {{ quantity }}</div>
+              <div class="text-xs font-black text-rose-600 mt-1">代付金额: ￥{{ calculateTotal() }}</div>
+            </div>
+          </div>
+
+          <!-- 买家联系方式 -->
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">
+              您的查单手机号 / 邮箱 <span class="text-rose-500">*</span>
+            </label>
+            <input 
+              v-model="buyerContact" 
+              type="text" 
+              placeholder="请输入您的手机号（好友代付成功后商品归您所有）" 
+              class="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-xs focus:outline-none focus:border-rose-500"
+            />
+          </div>
+
+          <!-- 求助代付留言 -->
+          <div>
+            <label class="block text-xs font-bold text-slate-700 mb-1">
+              想对代付好友说的话 (个性求助留言)
+            </label>
+            <textarea 
+              v-model="peerMessage" 
+              rows="2" 
+              placeholder="好心人帮我买个单呗，谢谢老铁！❤️"
+              class="w-full px-3.5 py-2 rounded-lg border border-slate-300 text-xs focus:outline-none focus:border-rose-500"
+            ></textarea>
+            
+            <!-- 快捷热词 -->
+            <div class="flex flex-wrap gap-1.5 mt-2">
+              <span 
+                v-for="(msg, i) in quickMessages" 
+                :key="i"
+                @click="peerMessage = msg"
+                class="px-2 py-1 rounded-md bg-rose-50 hover:bg-rose-100 text-rose-700 text-[10px] font-medium cursor-pointer transition border border-rose-200/60"
+              >
+                {{ msg }}
+              </span>
+            </div>
+          </div>
+
+          <button 
+            @click="handleCreatePeerPay"
+            :disabled="generatingPeerPay"
+            class="w-full py-3.5 rounded-xl bg-gradient-to-r from-rose-500 to-rose-600 hover:from-rose-600 hover:to-rose-700 text-white text-xs font-black shadow-lg shadow-rose-500/20 transition flex items-center justify-center space-x-1.5 disabled:opacity-50"
+          >
+            <span v-if="generatingPeerPay">正在生成代付链接与微信海报...</span>
+            <span v-else>立即生成微信代付卡片与买单海报 ›</span>
+          </button>
+        </div>
+
+        <!-- 步骤 B: 生成成功，展示复制链接与 9:16 防封海报 -->
+        <div v-else class="space-y-4 text-center">
+          <div class="w-12 h-12 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center text-2xl mx-auto shadow-inner">
+            🎉
+          </div>
+          <div>
+            <h3 class="text-base font-black text-slate-900">求助代付单已生成！</h3>
+            <p class="text-xs text-slate-500 mt-1">您可以直接复制链接发给微信好友，或保存下方海报发朋友圈</p>
+          </div>
+
+          <!-- 链接复制框 -->
+          <div class="flex items-center space-x-2">
+            <input 
+              :value="peerPayResult.cashierUrl" 
+              readonly 
+              class="flex-1 px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-xs font-mono text-slate-600 select-all"
+            />
+            <button 
+              @click="copyPeerPayLink"
+              class="px-4 py-2 bg-rose-600 text-white text-xs font-bold rounded-lg hover:bg-rose-700 transition"
+            >
+              复制链接
+            </button>
+          </div>
+
+          <!-- 9:16 微信海报预览 -->
+          <div v-if="peerPayResult.posterBase64" class="p-3 bg-slate-50 rounded-xl border border-slate-200">
+            <div class="text-[11px] font-bold text-slate-600 mb-2">微信裂变防封买单海报 (长按可直接保存)：</div>
+            <div class="max-h-64 overflow-y-auto rounded-lg border border-slate-200 bg-white">
+              <img :src="peerPayResult.posterBase64" class="w-full object-contain" />
+            </div>
+          </div>
+
+          <!-- 操作按钮行 -->
+          <div class="flex space-x-2">
+            <a 
+              :href="peerPayResult.posterBase64" 
+              download="微信好友买单海报.png"
+              class="flex-1 py-2.5 rounded-xl border border-rose-300 text-rose-600 font-bold text-xs hover:bg-rose-50 transition block text-center"
+            >
+              保存海报图片
+            </a>
+            <router-link 
+              :to="`/peer-pay/${peerPayResult.peerPayToken}`"
+              class="flex-1 py-2.5 rounded-xl bg-slate-900 text-white font-bold text-xs hover:bg-slate-800 transition block text-center"
+            >
+              前往代付收银台预览 ›
+            </router-link>
+          </div>
+        </div>
+
       </div>
     </div>
   </div>
@@ -296,6 +437,63 @@ const copyAllCards = () => {
   if (successResult.value?.cards) {
     navigator.clipboard.writeText(successResult.value.cards.join('\n'))
     alert('卡密已成功复制到剪贴板！')
+  }
+}
+
+// ★ 找人代付核心响应式变量与逻辑
+const peerPayModalOpen = ref(false)
+const generatingPeerPay = ref(false)
+const peerPayResult = ref(null)
+const peerMessage = ref('好心人帮我买个单呗，谢谢老铁！❤️')
+const quickMessages = [
+  '江湖救急，帮我买个单呗~',
+  '老铁求代付，回头请你喝奶茶！☕',
+  '生日礼物就是它了，球球了~ 🎁',
+  '这个太超值了，快帮我拿下！✨',
+  '独乐乐不如众乐乐，送你一个么么哒~'
+]
+
+const openPeerPayModal = () => {
+  peerPayResult.value = null
+  peerPayModalOpen.value = true
+}
+
+const closePeerPayModal = () => {
+  peerPayModalOpen.value = false
+  peerPayResult.value = null
+}
+
+const handleCreatePeerPay = async () => {
+  if (!buyerContact.value.trim()) {
+    alert('请输入联系手机号或邮箱，用于接收商品与免密查单！')
+    return
+  }
+  generatingPeerPay.value = true
+  try {
+    const res = await axios.post('/api/v1/peer-pay/buyer/create', {
+      merchantId: product.value.merchantId,
+      productId: product.value.id,
+      skuId: currentSku.value.id,
+      quantity: quantity.value,
+      buyerContact: buyerContact.value.trim(),
+      peerMessage: peerMessage.value.trim()
+    })
+    if (res.data.code === 200) {
+      peerPayResult.value = res.data.data
+    } else {
+      alert(res.data.message || '生成代付失败')
+    }
+  } catch (err) {
+    alert(err.response?.data?.message || '生成代付单失败，请检查库存')
+  } finally {
+    generatingPeerPay.value = false
+  }
+}
+
+const copyPeerPayLink = () => {
+  if (peerPayResult.value?.cashierUrl) {
+    navigator.clipboard.writeText(peerPayResult.value.cashierUrl)
+    alert('微信代付链接已成功复制到剪贴板！可以直接粘贴发送给好友或群聊。')
   }
 }
 
