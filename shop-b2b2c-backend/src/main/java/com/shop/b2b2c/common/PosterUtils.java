@@ -20,6 +20,88 @@ import java.util.Map;
 @Slf4j
 public class PosterUtils {
 
+    private static volatile String CHINESE_FONT_FAMILY = null;
+
+    /**
+     * 智能初始化并注册跨平台高品质中文字体 (解决 Linux 无中文字体导致方块口口口乱码问题)
+     */
+    public static synchronized String resolveChineseFontFamily() {
+        if (CHINESE_FONT_FAMILY != null) {
+            return CHINESE_FONT_FAMILY;
+        }
+
+        GraphicsEnvironment ge = GraphicsEnvironment.getLocalGraphicsEnvironment();
+
+        // 1. 如果是 Linux/Docker 环境，探测常见中文字体文件并主动注册进 JVM
+        String[] fontPaths = new String[] {
+                "/usr/share/fonts/truetype/windows/msyh.ttc",
+                "/usr/share/fonts/truetype/windows/simhei.ttf",
+                "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc"
+        };
+        for (String fp : fontPaths) {
+            java.io.File file = new java.io.File(fp);
+            if (file.exists() && file.isFile()) {
+                try {
+                    Font font = Font.createFont(Font.TRUETYPE_FONT, file);
+                    ge.registerFont(font);
+                    log.info("PosterUtils 成功向 JVM 注册中文字体文件: {}", fp);
+                } catch (Exception e) {
+                    log.debug("注册字体文件失败: {} - {}", fp, e.getMessage());
+                }
+            }
+        }
+
+        // 2. 获取当前系统已注册的所有字体家族名称
+        String[] availableFamilies = ge.getAvailableFontFamilyNames();
+        java.util.Set<String> set = new java.util.HashSet<>(java.util.Arrays.asList(availableFamilies));
+
+        // 3. 优先级候选列表：跨平台优质无衬线中文字体
+        String[] preferred = new String[] {
+                "Microsoft YaHei",          // Windows 默认微软雅黑
+                "微软雅黑",
+                "SimHei",                   // 黑体
+                "黑体",
+                "WenQuanYi Micro Hei",      // Linux 文泉驿微米黑
+                "文泉驿微米黑",
+                "WenQuanYi Zen Hei",        // Linux 文泉驿正黑
+                "文泉驿正黑",
+                "Noto Sans CJK SC",         // Google Noto 思源黑体简体
+                "Source Han Sans CN",       // 思源黑体
+                "PingFang SC",              // macOS 苹方
+                "苹方-简",
+                "STHeiti",                  // 华文黑体
+                "Songti SC",                // 宋体
+                "SansSerif"                 // 兜底逻辑字体
+        };
+
+        for (String fontName : preferred) {
+            if (set.contains(fontName)) {
+                CHINESE_FONT_FAMILY = fontName;
+                log.info("PosterUtils 海报生成引擎已锁定高质量中文字体: [{}]", fontName);
+                return fontName;
+            }
+        }
+
+        CHINESE_FONT_FAMILY = "SansSerif";
+        log.warn("PosterUtils 未能匹配到专用中文字体，降级为系统逻辑字体 [SansSerif]");
+        return CHINESE_FONT_FAMILY;
+    }
+
+    public static Font getFont(int style, int size) {
+        return new Font(resolveChineseFontFamily(), style, size);
+    }
+
+    /**
+     * 过滤 4 字节 Emoji 字符，防止在 Java AWT 文本字体渲染时产生方块方格口口
+     */
+    public static String sanitizeText(String text) {
+        if (text == null) return "";
+        return text.replaceAll("[\\ud800\\udc00-\\udbff\\udfff\\ud800-\\udfff]", "").trim();
+    }
+
     /**
      * 生成通用二维码的 Base64 字符串
      */
@@ -85,10 +167,10 @@ public class PosterUtils {
 
             // 3. 顶部 Header 标头
             g2.setColor(Color.WHITE);
-            g2.setFont(new Font("Microsoft YaHei", Font.BOLD, 36));
+            g2.setFont(getFont(Font.BOLD, 36));
             g2.drawString("【帮我买单】来自好友的购物求助", 60, 90);
 
-            g2.setFont(new Font("Microsoft YaHei", Font.PLAIN, 22));
+            g2.setFont(getFont(Font.PLAIN, 22));
             g2.setColor(new Color(255, 255, 255, 210));
             g2.drawString("16688 优选供应链 · 担保交易 · 极速代付", 60, 130);
 
@@ -107,8 +189,9 @@ public class PosterUtils {
             g2.setColor(new Color(241, 245, 249)); // Slate 100
             g2.fill(new RoundRectangle2D.Float(cardX + 30, cardY + 35, cardW - 60, 60, 20, 20));
             g2.setColor(new Color(71, 85, 105)); // Slate 600
-            g2.setFont(new Font("Microsoft YaHei", Font.BOLD, 22));
-            String storeDisplay = "🏪 " + (storeName != null ? storeName : "官方授权优选店");
+            g2.setFont(getFont(Font.BOLD, 22));
+            String safeStoreName = sanitizeText(storeName);
+            String storeDisplay = "【优选好店】 " + (!safeStoreName.isEmpty() ? safeStoreName : "官方授权优选店");
             g2.drawString(storeDisplay, cardX + 50, cardY + 73);
 
             // 6. 买家求助留言气泡
@@ -116,10 +199,13 @@ public class PosterUtils {
             g2.setColor(new Color(254, 243, 199)); // Amber 100
             g2.fill(new RoundRectangle2D.Float(cardX + 30, bubbleY, cardW - 60, 100, 24, 24));
             g2.setColor(new Color(180, 83, 9)); // Amber 700
-            g2.setFont(new Font("Microsoft YaHei", Font.BOLD, 22));
-            g2.drawString("💬 好友留言：", cardX + 55, bubbleY + 40);
-            g2.setFont(new Font("Microsoft YaHei", Font.PLAIN, 22));
-            String msg = (peerMessage != null && !peerMessage.isBlank()) ? peerMessage : "好心人帮我买个单呗，救急谢谢老铁！❤️";
+            g2.setFont(getFont(Font.BOLD, 22));
+            g2.drawString("好友代付留言：", cardX + 55, bubbleY + 40);
+            g2.setFont(getFont(Font.PLAIN, 22));
+            String msg = sanitizeText(peerMessage);
+            if (msg.isEmpty()) {
+                msg = "好心人帮我买个单呗，救急谢谢老铁！";
+            }
             if (msg.length() > 24) msg = msg.substring(0, 24) + "...";
             g2.drawString("“" + msg + "”", cardX + 55, bubbleY + 75);
 
@@ -132,13 +218,15 @@ public class PosterUtils {
             g2.setColor(new Color(225, 29, 72));
             g2.fill(new RoundRectangle2D.Float(cardX + 55, prodBoxY + 30, 140, 36, 12, 12));
             g2.setColor(Color.WHITE);
-            g2.setFont(new Font("Microsoft YaHei", Font.BOLD, 18));
-            g2.drawString(goodsTypeName != null ? goodsTypeName : "精选好物", cardX + 75, prodBoxY + 55);
+            g2.setFont(getFont(Font.BOLD, 18));
+            String safeGoodsTypeName = sanitizeText(goodsTypeName);
+            g2.drawString(!safeGoodsTypeName.isEmpty() ? safeGoodsTypeName : "精选好物", cardX + 75, prodBoxY + 55);
 
             // 商品标题
             g2.setColor(new Color(15, 23, 42)); // Slate 900
-            g2.setFont(new Font("Microsoft YaHei", Font.BOLD, 28));
-            String title = productTitle != null ? productTitle : "精选商品";
+            g2.setFont(getFont(Font.BOLD, 28));
+            String title = sanitizeText(productTitle);
+            if (title.isEmpty()) title = "精选商品";
             if (title.length() > 18) {
                 g2.drawString(title.substring(0, 18), cardX + 55, prodBoxY + 115);
                 String sub = title.length() > 36 ? title.substring(18, 35) + "..." : title.substring(18);
@@ -149,9 +237,9 @@ public class PosterUtils {
 
             // 代付应付金额 (醒目大字体)
             g2.setColor(new Color(225, 29, 72));
-            g2.setFont(new Font("Microsoft YaHei", Font.BOLD, 24));
+            g2.setFont(getFont(Font.BOLD, 24));
             g2.drawString("代付总额: ¥", cardX + 55, prodBoxY + 225);
-            g2.setFont(new Font("Arial", Font.BOLD, 48));
+            g2.setFont(getFont(Font.BOLD, 48));
             g2.drawString(price != null ? price.setScale(2).toString() : "0.00", cardX + 185, prodBoxY + 225);
 
             // 8. 微信支付二维码区域
@@ -175,12 +263,12 @@ public class PosterUtils {
 
             // 9. 底部说明文字
             g2.setColor(new Color(15, 23, 42));
-            g2.setFont(new Font("Microsoft YaHei", Font.BOLD, 26));
+            g2.setFont(getFont(Font.BOLD, 26));
             String callToAction = "长按识别上方二维码 · 极速替TA买单";
             int ctaWidth = g2.getFontMetrics().stringWidth(callToAction);
             g2.drawString(callToAction, cardX + (cardW - ctaWidth) / 2, qrY + qrSize + 48);
 
-            g2.setFont(new Font("Microsoft YaHei", Font.PLAIN, 20));
+            g2.setFont(getFont(Font.PLAIN, 20));
             g2.setColor(new Color(100, 116, 139));
             String tip = "支持微信 / 支付宝支付 · 代付人免注册";
             int tipWidth = g2.getFontMetrics().stringWidth(tip);
@@ -188,7 +276,7 @@ public class PosterUtils {
 
             // 10. 底部防伪防封印标
             g2.setColor(new Color(255, 255, 255, 180));
-            g2.setFont(new Font("Microsoft YaHei", Font.PLAIN, 18));
+            g2.setFont(getFont(Font.PLAIN, 18));
             String footer = "安全提示：代付商品将直接发货给买家，请核对商品后完成付款";
             int footW = g2.getFontMetrics().stringWidth(footer);
             g2.drawString(footer, (width - footW) / 2, height - 35);
