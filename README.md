@@ -9,12 +9,19 @@
 
 ```
 E:\shop-b2b2c\
+├── docs/                        # 【业务设计与规范交付文档归档】
+│   ├── B2B2C_MVP_PEER_PAY_SPECIFICATION.md   # 核心业务架构与找人代付引擎设计规范 (Markdown)
+│   ├── B2B2C_MVP_PEER_PAY_SPECIFICATION.docx # Word 排版交付件
+│   ├── B2B2C_MVP_PEER_PAY_SPECIFICATION.pdf  # 矢量 PDF 交付件
+│   ├── B2B2C_MVP_PEER_PAY_DELIVERY_REPORT.md # 全流程交付与测试验收报告
+│   └── 00-项目介绍.md                         # 初始项目背景与 16688 对标概述
+│
 ├── start_all.bat                # 一键启动全套三个前后端服务
 │
 ├── shop-b2b2c-backend/          # 【后端服务】Spring Boot 3.2 + JDK 17 (端口: 8082)
 │   ├── src/main/java/com/shop/b2b2c/
 │   │   ├── config/              # Security, JWT, Redis, CORS
-│   │   ├── controller/          # Auth, Merchant, Category, Product, Order
+│   │   ├── controller/          # Auth, Merchant, Category, Product, Order, PeerPay
 │   │   ├── entity/              # JPA 领域模型 (商户、商品、SKU、两段式代付订单等)
 │   │   └── repository/          # Spring Data JPA 仓储接口
 │   └── src/main/resources/
@@ -23,16 +30,28 @@ E:\shop-b2b2c\
 │
 ├── shop-admin-vue/              # 【管理中台】Vue 3 + Element Plus (端口: 3001)
 │   ├── src/views/layout/        # 平台超管 & 商家工作台双重视角切换框架
-│   ├── src/views/admin/         # 平台超管视角 (交易大盘、商户审批进件、统一类目、订单监察)
-│   └── src/views/merchant/      # 商家工作台视角 (经营看板、店铺资料与结算卡、商品SKU、16688虚拟卡密库、发货)
+│   ├── src/views/admin/         # 平台超管视角 (交易大盘、商户SaaS技术服务费治理、类目监管、订单三方全息监察)
+│   └── src/views/merchant/      # 商家工作台视角 (代客推单、经营看板、商品进销存、双轨履约发货)
 │
-└── shop-storefront-vue/         # 【买家商城】Vue 3 + Tailwind CSS (端口: 3002)
+└── shop-storefront-vue/         # 【买家与代付端商城】Vue 3 + Tailwind CSS (端口: 3002)
     └── src/views/
         ├── Home.vue             # 16688 高密度货源大厅 (卡片流、现货秒发)
         ├── Store.vue            # 商户独立店铺主页 (公告、全品陈列)
-        ├── ProductDetail.vue    # 详情与单店轻量收银台 (立即支付秒发卡密)
-        └── QuickQuery.vue       # 16688 招牌功能：免登录凭订单号/手机极速查单
+        ├── ProductDetail.vue    # 商品详情、买家代付分享弹窗 & 9:16带参海报生成
+        ├── PeerPayCashier.vue   # 【代付人免密收银台】(15分钟两段式预占、防并发互斥、拉起支付)
+        └── QuickQuery.vue       # 免登录凭订单号/手机极速查单
 ```
+
+---
+
+## 核心设计与交付文档索引
+
+所有业务方案、架构设计、排版文档均已规范化归档至 `docs/` 目录：
+- 📄 [业务与技术设计规范 (Markdown)](file:///E:/shop-b2b2c/docs/B2B2C_MVP_PEER_PAY_SPECIFICATION.md)
+- 📑 [业务与技术设计规范 (Word 版)](file:///E:/shop-b2b2c/docs/B2B2C_MVP_PEER_PAY_SPECIFICATION.docx)
+- 📑 [业务与技术设计规范 (PDF 版)](file:///E:/shop-b2b2c/docs/B2B2C_MVP_PEER_PAY_SPECIFICATION.pdf)
+- 📋 [全流程功能交付与验收测试报告 (Markdown)](file:///E:/shop-b2b2c/docs/B2B2C_MVP_PEER_PAY_DELIVERY_REPORT.md)
+- 📖 [项目初始介绍与模式对标](file:///E:/shop-b2b2c/docs/00-%E9%A1%B9%E7%9B%AE%E4%BB%8B%E7%BB%8D.md)
 
 ---
 
