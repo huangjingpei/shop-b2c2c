@@ -43,6 +43,22 @@ public class MerchantStore {
     @Column(name = "commission_rate")
     private BigDecimal commissionRate = new BigDecimal("3.00");
 
+    // ==================== 增量商业变现与合规直收扩展 ====================
+    @Column(name = "monthly_fee", nullable = false)
+    private BigDecimal monthlyFee = BigDecimal.ZERO; // 月度技术服务费 (前期=0)
+
+    @Column(name = "fee_free_until")
+    private LocalDateTime feeFreeUntil; // 免费试用截止日期
+
+    @Column(name = "fee_status", nullable = false)
+    private String feeStatus = "NORMAL"; // NORMAL(正常), TRIAL(免费期), OVERDUE(欠费只读限制)
+
+    @Column(name = "payment_channel_type", nullable = false)
+    private String paymentChannelType = "C"; // B(商户自主直收-免EDI二清), C(Mock沙箱-研发期), A(电商收付通-成熟期)
+
+    @Column(name = "custom_pay_qrcode")
+    private String customPayQrcode; // 商家自主微信/支付宝收款二维码图片URL
+
     @Column(name = "created_at", insertable = false, updatable = false)
     private LocalDateTime createdAt;
 
