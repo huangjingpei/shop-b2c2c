@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1378.0700000000002 771.1999999999999" width="1378.0700000000002" height="771.1999999999999" style="--bg:#FFFFFF;--fg:#1E293B;--line:#64748B;--muted:#475569;--surface:#F8FAFC;--border:#CBD5E1;background:var(--bg)">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;display=swap');
+  text { font-family: 'Inter', system-ui, sans-serif; }
+  svg {
+    /* Derived from --bg and --fg (overridable via --line, --accent, etc.) */
+    --_text:          var(--fg);
+    --_text-sec:      var(--muted, color-mix(in srgb, var(--fg) 60%, var(--bg)));
+    --_text-muted:    var(--muted, color-mix(in srgb, var(--fg) 40%, var(--bg)));
+    --_text-faint:    color-mix(in srgb, var(--fg) 25%, var(--bg));
+    --_line:          var(--line, color-mix(in srgb, var(--fg) 50%, var(--bg)));
+    --_arrow:         var(--accent, color-mix(in srgb, var(--fg) 85%, var(--bg)));
+    --_node-fill:     var(--surface, color-mix(in srgb, var(--fg) 3%, var(--bg)));
+    --_node-stroke:   var(--border, color-mix(in srgb, var(--fg) 20%, var(--bg)));
+    --_group-fill:    var(--bg);
+    --_group-hdr:     color-mix(in srgb, var(--fg) 5%, var(--bg));
+    --_inner-stroke:  color-mix(in srgb, var(--fg) 12%, var(--bg));
+    --_key-badge:     color-mix(in srgb, var(--fg) 10%, var(--bg));
+  }
+</style>
+<defs>
+  <marker id="arrowhead" markerWidth="8" markerHeight="5" refX="7" refY="2.5" orient="auto">
+    <polygon points="0 0, 8 2.5, 0 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+  <marker id="arrowhead-start" markerWidth="8" markerHeight="5" refX="1" refY="2.5" orient="auto-start-reverse">
+    <polygon points="8 0, 0 2.5, 8 5" fill="var(--_arrow)" stroke="var(--_arrow)" stroke-width="0.75" stroke-linejoin="round" />
+  </marker>
+</defs>
+<g class="subgraph" data-id="Core1" data-label="核心功能一：双轨制代付与待支付收银台">
+  <rect x="40" y="40" width="540.0390000000001" height="691.1999999999999" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="40" y="40" width="540.0390000000001" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="52" y="54" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">核心功能一：双轨制代付与待支付收银台</text>
+</g>
+<g class="subgraph" data-id="Core2" data-label="核心功能二：合规资金流与二级分账 (零二清)">
+  <rect x="608.0390000000002" y="40" width="730.031" height="436.5" rx="0" ry="0" fill="var(--_group-fill)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <rect x="608.0390000000002" y="40" width="730.031" height="28" rx="0" ry="0" fill="var(--_group-hdr)" stroke="var(--_node-stroke)" stroke-width="1" />
+  <text x="620.0390000000002" y="54" font-size="12" font-weight="600" fill="var(--_text-sec)" dy="4.199999999999999">核心功能二：合规资金流与二级分账 (零二清)</text>
+</g>
+<polyline class="edge" data-from="A1" data-to="B1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="422.42900000000003,120.9 422.42900000000003,144.9 310.01950000000005,144.9 310.01950000000005,168.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="A2" data-to="B1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="197.61000000000007,120.9 197.61000000000007,144.9 310.01950000000005,144.9 310.01950000000005,168.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="B1" data-to="C1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="310.01950000000005,205.8 310.01950000000005,253.8" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="C1" data-to="D1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="310.01950000000005,290.70000000000005 310.01950000000005,338.70000000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="D1" data-to="E1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="310.01950000000005,375.6 310.01950000000005,423.6" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="E1" data-to="F1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="310.01950000000005,460.5 310.01950000000005,508.5" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="F1" data-to="G1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="310.01950000000005,545.4 310.01950000000005,593.4" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="G1" data-to="H1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="310.01950000000005,630.3 310.01950000000005,678.3" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="I1" data-to="J1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="961.0132500000002,120.9 961.0132500000002,168.9" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="J1" data-to="K1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="961.0132500000002,205.8 961.0132500000002,253.8" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="K1" data-to="L1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="961.0132500000002,290.70000000000005 961.0132500000002,338.70000000000005" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="L1" data-to="M1" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="961.0132500000001,375.6 961.0132500000001,399.6 779.5055000000002,399.6 779.5055000000002,423.6" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<polyline class="edge" data-from="L1" data-to="M2" data-style="solid" data-arrow-start="false" data-arrow-end="true" points="961.0132500000001,375.6 961.0132500000001,399.6 1142.5210000000002,399.6 1142.5210000000002,423.6" fill="none" stroke="var(--_line)" stroke-width="1" marker-end="url(#arrowhead)" />
+<g class="node" data-id="A1" data-label="买家求助代付 (Peer Pay)" data-shape="rectangle">
+  <rect x="324.39000000000004" y="84" width="196.078" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="422.42900000000003" y="102.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">买家求助代付 (Peer Pay)</text>
+</g>
+<g class="node" data-id="B1" data-label="生成唯一代付短链与 9:16 防封海报" data-shape="rectangle">
+  <rect x="180.11750000000006" y="168.9" width="259.804" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="310.01950000000005" y="187.35000000000002" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">生成唯一代付短链与 9:16 防封海报</text>
+</g>
+<g class="node" data-id="A2" data-label="商家主动推单 (Push Pay)" data-shape="rectangle">
+  <rect x="98.83000000000007" y="84" width="197.55999999999997" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="197.61000000000007" y="102.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">商家主动推单 (Push Pay)</text>
+</g>
+<g class="node" data-id="C1" data-label="微信端内免登录直开 (HTTPS)" data-shape="rectangle">
+  <rect x="195.30800000000005" y="253.8" width="229.42299999999997" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="310.01950000000005" y="272.25" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">微信端内免登录直开 (HTTPS)</text>
+</g>
+<g class="node" data-id="D1" data-label="美团级收银台 (大额现价 + 15分钟黑底倒计时 + 付款须知)" data-shape="rectangle">
+  <rect x="111.5750000000001" y="338.70000000000005" width="396.8889999999999" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="310.01950000000005" y="357.15000000000003" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">美团级收银台 (大额现价 + 15分钟黑底倒计时 + 付款须知)</text>
+</g>
+<g class="node" data-id="E1" data-label="两段式库存锁 (Stage 1 意向生成 -&gt; Stage 2 支付原子抢占 RESERVED_LOCK)" data-shape="rectangle">
+  <rect x="56" y="423.6" width="508.0390000000001" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="310.01950000000005" y="442.05" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">两段式库存锁 (Stage 1 意向生成 -&gt; Stage 2 支付原子抢占 RESERVED_LOCK)</text>
+</g>
+<g class="node" data-id="F1" data-label="代付成功：三方完整对账绑定 &lt;卖家, 买家, 付款人&gt;" data-shape="rectangle">
+  <rect x="127.13600000000011" y="508.5" width="365.7669999999999" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="310.01950000000005" y="526.95" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">代付成功：三方完整对账绑定 &lt;卖家, 买家, 付款人&gt;</text>
+</g>
+<g class="node" data-id="G1" data-label="虚拟卡密自动核销秒发 / 实物待卖家发货" data-shape="rectangle">
+  <rect x="158.99900000000005" y="593.4" width="302.041" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="310.01950000000005" y="611.85" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">虚拟卡密自动核销秒发 / 实物待卖家发货</text>
+</g>
+<g class="node" data-id="H1" data-label="展示交付凭证 + 【我也想开店】私域推单招募引流" data-shape="rectangle">
+  <rect x="127.50650000000005" y="678.3" width="365.026" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="310.01950000000005" y="696.75" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">展示交付凭证 + 【我也想开店】私域推单招募引流</text>
+</g>
+<g class="node" data-id="I1" data-label="《电商法》第十条：个人身份证+银行卡免照入驻" data-shape="rectangle">
+  <rect x="780.7232500000002" y="84" width="360.58" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="961.0132500000002" y="102.45" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">《电商法》第十条：个人身份证+银行卡免照入驻</text>
+</g>
+<g class="node" data-id="J1" data-label="微信收付通 / 支付宝直付通二级商户进件 (sub_mchid)" data-shape="rectangle">
+  <rect x="773.3132500000002" y="168.9" width="375.4" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="961.0132500000002" y="187.35000000000002" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">微信收付通 / 支付宝直付通二级商户进件 (sub_mchid)</text>
+</g>
+<g class="node" data-id="K1" data-label="买家资金直入央行备付金专户 (平台资金零接触)" data-shape="rectangle">
+  <rect x="787.0217500000002" y="253.8" width="347.98299999999995" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="961.0132500000002" y="272.25" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">买家资金直入央行备付金专户 (平台资金零接触)</text>
+</g>
+<g class="node" data-id="L1" data-label="履约完毕触发系统自动二级分账指令" data-shape="rectangle">
+  <rect x="821.4782500000001" y="338.70000000000005" width="279.06999999999994" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="961.0132500000001" y="357.15000000000003" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">履约完毕触发系统自动二级分账指令</text>
+</g>
+<g class="node" data-id="M1" data-label="平台收取 3% 技术服务费 (仅就3%合规报税)" data-shape="rectangle">
+  <rect x="624.0390000000002" y="423.6" width="310.93299999999994" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="779.5055000000002" y="442.05" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">平台收取 3% 技术服务费 (仅就3%合规报税)</text>
+</g>
+<g class="node" data-id="M2" data-label="97% 货款直达商户个人银行卡 (彻底规避虚高税负)" data-shape="rectangle">
+  <rect x="962.9720000000002" y="423.6" width="359.09799999999996" height="36.900000000000006" rx="0" ry="0" fill="var(--_node-fill)" stroke="var(--_node-stroke)" stroke-width="0.75" />
+  <text x="1142.5210000000002" y="442.05" text-anchor="middle" font-size="13" font-weight="500" fill="var(--_text)" dy="4.55">97% 货款直达商户个人银行卡 (彻底规避虚高税负)</text>
+</g>
+</svg>
