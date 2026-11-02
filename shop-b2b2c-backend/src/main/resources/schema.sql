@@ -4,6 +4,9 @@
 -- 位置: src/main/resources/schema.sql
 -- ========================================================
 
+CREATE DATABASE IF NOT EXISTS `shop_b2b2c` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+USE `shop_b2b2c`;
+
 SET FOREIGN_KEY_CHECKS = 0;
 
 -- 1. 商户店铺表
