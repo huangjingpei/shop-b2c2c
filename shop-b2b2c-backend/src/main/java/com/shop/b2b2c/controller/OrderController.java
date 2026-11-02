@@ -3,8 +3,10 @@ package com.shop.b2b2c.controller;
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.SecurityUtils;
+import com.shop.b2b2c.dto.PeerPayDTOs;
 import com.shop.b2b2c.entity.*;
 import com.shop.b2b2c.repository.*;
+import com.shop.b2b2c.service.PeerPayService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
@@ -34,6 +36,7 @@ public class OrderController {
     private final ProductSkuRepository skuRepository;
     private final ProductVirtualCardRepository cardRepository;
     private final StringRedisTemplate redisTemplate;
+    private final PeerPayService peerPayService;
 
     @Data
     public static class CheckoutDTO {
@@ -231,6 +234,28 @@ public class OrderController {
         orderRepository.save(order);
 
         return R.ok("发货成功", null);
+    }
+
+    @Operation(summary = "【商家】★ 代客推单：一键生成定制代付账单短链与海报")
+    @PostMapping("/api/v1/merchant/orders/push-pay")
+    public R<Map<String, Object>> createPushPayOrder(@RequestBody PeerPayDTOs.PushPayCreateRequest req) {
+        Long merchantId = SecurityUtils.getCurrentMerchantId();
+        if (merchantId == null) {
+            throw new BusinessException("仅限商家账号操作推单");
+        }
+        Map<String, Object> res = peerPayService.createPushPayOrder(req, merchantId);
+        return R.ok("代客推单生成成功", res);
+    }
+
+    @Operation(summary = "【商家】★ 线上服务录入交付凭证 (一经交付锁定退款仲裁)")
+    @PostMapping("/api/v1/merchant/orders/{id}/fulfill-virtual")
+    public R<Void> fulfillVirtualOrder(@PathVariable Long id, @RequestBody PeerPayDTOs.VirtualFulfillRequest req) {
+        Long merchantId = SecurityUtils.getCurrentMerchantId();
+        if (merchantId == null) {
+            throw new BusinessException("仅限商家账号履约交付");
+        }
+        peerPayService.fulfillVirtualOrder(id, req.getServiceVoucher(), merchantId);
+        return R.ok("线上服务交付凭证已成功录入，订单已完结", null);
     }
 
     // ==========================================

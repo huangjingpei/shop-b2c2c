@@ -83,8 +83,8 @@ public class TradeOrder {
     @Column(name = "peer_message")
     private String peerMessage; // 买家个性求助留言 (如: 江湖救急，帮我买个单呗~)
 
-    @Column(name = "poster_url")
-    private String posterUrl; // 生成的带参代付海报图片访问路径
+    @Column(name = "poster_url", columnDefinition = "MEDIUMTEXT")
+    private String posterUrl; // 生成的带参代付海报图片访问路径或Base64
 
     @Column(name = "service_voucher")
     private String serviceVoucher; // 线上服务/虚拟履约凭证 (卡密/网盘/交付报告)

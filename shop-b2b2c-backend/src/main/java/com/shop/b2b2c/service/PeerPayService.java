@@ -1,0 +1,55 @@
+package com.shop.b2b2c.service;
+
+import com.shop.b2b2c.dto.PeerPayDTOs;
+import com.shop.b2b2c.entity.PlatformAdConfig;
+import com.shop.b2b2c.entity.TradeOrder;
+
+import java.util.Map;
+
+public interface PeerPayService {
+
+    /**
+     * 买家发起求助代付 (生成待付短链与海报，两段式 Stage 1: 意向不扣物理库存)
+     */
+    Map<String, Object> createBuyerPeerPay(PeerPayDTOs.BuyerCreateRequest req);
+
+    /**
+     * 卖家代客推单 (生成定制账单代付码/短链)
+     */
+    Map<String, Object> createPushPayOrder(PeerPayDTOs.PushPayCreateRequest req, Long merchantId);
+
+    /**
+     * 免注册公开代付详情查询 (含自愈到期检查、脱敏买家隐私)
+     */
+    PeerPayDTOs.DetailResponse getPeerPayDetail(String token);
+
+    /**
+     * 两段式核心：调起支付收银台时原子预占库存 (锁 15 分钟)
+     */
+    PeerPayDTOs.PreLockResult preLockInventory(String token);
+
+    /**
+     * 付款人主动关闭/离开收银台：主动释放预占锁
+     */
+    void cancelPreLock(String token);
+
+    /**
+     * 支付成功回调 (真实扣减物理库存、记录付款人三方对账单、绑定履约流程)
+     */
+    TradeOrder notifyPaymentSuccess(String token, String payerId, String payTradeNo, String channel);
+
+    /**
+     * 卖家录入交付凭证完成【线上服务】履约 (锁定退款仲裁限制)
+     */
+    void fulfillVirtualOrder(Long orderId, String serviceVoucher, Long currentMerchantId);
+
+    /**
+     * 获取代付成功页【我也想开店】平台招商引流位配置
+     */
+    PlatformAdConfig getSuccessAdBanner();
+
+    /**
+     * 重新生成代付海报 (Base64)
+     */
+    String regeneratePoster(String token);
+}

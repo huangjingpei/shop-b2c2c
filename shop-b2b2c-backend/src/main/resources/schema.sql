@@ -147,7 +147,7 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `peer_payer_id` VARCHAR(128) DEFAULT NULL COMMENT '实际代付付款人标识 (OpenID/UID/流水号)',
   `peer_status` VARCHAR(32) NOT NULL DEFAULT 'INIT' COMMENT 'INIT, RESERVED_LOCK, PAID, EXPIRED, CANCELLED',
   `peer_message` VARCHAR(255) DEFAULT NULL COMMENT '买家个性求助留言',
-  `poster_url` VARCHAR(512) DEFAULT NULL COMMENT '生成的带参代付海报图片访问路径',
+  `poster_url` MEDIUMTEXT DEFAULT NULL COMMENT '生成的带参代付海报图片访问路径或Base64',
   `service_voucher` TEXT DEFAULT NULL COMMENT '线上服务交付凭证 (卡密/网盘/交付报告)',
   `lock_expire_time` DATETIME DEFAULT NULL COMMENT '两段式库存预扣到期时间',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -326,6 +326,14 @@ VALUES (5, 2, 7, '每日坚果大礼包 750g 礼盒装 混合坚果干果果仁 
 
 INSERT IGNORE INTO `product_sku` (`id`, `product_id`, `merchant_id`, `sku_code`, `spec_data`, `price`, `stock_quantity`) VALUES
 (10, 5, 2, 'NUT-BOX-750G', '{"规格": "750g 欢享礼盒 (30包/盒)", "等级": "特级混合果仁"}', 58.00, 80);
+
+-- 初始演示商品 6 (线上定制服务: 专家一对一咨询服务与技术定制)
+INSERT IGNORE INTO `product` (`id`, `merchant_id`, `category_id`, `title`, `sub_title`, `goods_type`, `main_image`, `service_desc`, `min_price`, `status`, `sort_order`)
+VALUES (6, 1, 2, '【专家一对一】全域私域代付商城系统架构设计与搭建辅导', '资深架构师在线指导，包含源码部署、收付通道调通与上线验收报告', 2, 'https://images.unsplash.com/photo-1551836022-d5d88e9218df?w=500', '线上定制服务一经卖家录入交付报告与源码凭据，非平台超管仲裁不可极速退款。', 499.00, 1, 6);
+
+INSERT IGNORE INTO `product_sku` (`id`, `product_id`, `merchant_id`, `sku_code`, `spec_data`, `price`, `stock_quantity`) VALUES
+(11, 6, 1, 'CONSULT-BASIC', '{"规格": "基础咨询版 (远程部署+操作手册)", "交付": "技术文档+远程调试"}', 499.00, 50),
+(12, 6, 1, 'CONSULT-PRO', '{"规格": "企业尊享版 (定制开发+1年运维保障)", "交付": "专属工程师+全天候支持"}', 1999.00, 20);
 
 -- 6. 代付成功页【我也想开店】引流广告种子
 INSERT IGNORE INTO `platform_ad_config` (`id`, `ad_location`, `ad_title`, `ad_sub_title`, `banner_url`, `target_type`, `target_url`, `is_enabled`, `sort_order`)
