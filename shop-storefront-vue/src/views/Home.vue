@@ -193,6 +193,7 @@
         <div class="relative aspect-video bg-slate-100 overflow-hidden">
           <img :src="p.mainImage" :alt="p.title" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
           <div class="absolute top-2.5 left-2.5 flex space-x-1.5">
+            <span v-if="p.goodsType === 3" class="text-xs font-bold text-blue-700">定制服务 · 人工交付</span>
             <span
               v-if="p.goodsType === 2"
               class="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-500 text-white shadow-sm flex items-center space-x-1"
@@ -200,7 +201,7 @@
               <span>⚡ 自动秒发卡密</span>
             </span>
             <span
-              v-else
+              v-else-if="p.goodsType === 1"
               class="px-2 py-0.5 rounded text-[11px] font-bold bg-blue-600 text-white shadow-sm"
             >
               📦 实物现货发货

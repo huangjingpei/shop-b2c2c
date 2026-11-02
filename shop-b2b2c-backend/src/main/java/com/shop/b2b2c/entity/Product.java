@@ -17,7 +17,7 @@ public class Product {
     private Long categoryId;
     private String title;
     private String subTitle;
-    private Integer goodsType = 1; // 1-实物物流发货, 2-线上服务/虚拟免物流
+    private Integer goodsType = 1; // 1-实物物流发货, 2-自动卡密, 3-定制服务
     private String mainImage;
     private String detailImages;
     private String serviceDesc; // 线上服务履约交付指引说明与不可逆防白嫖退款强警示

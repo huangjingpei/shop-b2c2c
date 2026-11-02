@@ -25,7 +25,7 @@
         <el-table-column label="交付类型" width="130">
           <template #default="{ row }">
             <el-tag :type="row.goodsType === 2 ? 'warning' : 'info'">
-              {{ row.goodsType === 2 ? '⚡ 虚拟卡密(秒发)' : '📦 实物(需填快递)' }}
+              {{ goodsTypeLabel(row.goodsType) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -62,6 +62,7 @@
         <el-form-item label="商品交付类型" required>
           <el-radio-group v-model="form.goodsType">
             <el-radio :label="2">⚡ 虚拟商品 (卡密自动秒发，16688 模式)</el-radio>
+            <el-radio :label="3">定制服务 (人工录入交付凭证)</el-radio>
             <el-radio :label="1">📦 实物商品 (卖家填运单发货)</el-radio>
           </el-radio-group>
         </el-form-item>
@@ -95,6 +96,7 @@
 </template>
 
 <script setup>
+import { goodsTypeLabel } from '../../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'

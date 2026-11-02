@@ -66,6 +66,7 @@ public class ProductController {
 
             MerchantStore store = storeCache.computeIfAbsent(p.getMerchantId(),
                     id -> storeMapper.findById(id).orElse(null));
+            if (store == null || !Integer.valueOf(1).equals(store.getStatus())) continue;
             if (store != null) {
                 vo.put("storeName", store.getStoreName());
                 vo.put("storeCode", store.getStoreCode());
@@ -93,6 +94,7 @@ public class ProductController {
         MerchantStore store = storeMapper.findById(product.getMerchantId()).orElse(null);
 
         Map<String, Object> res = new HashMap<>();
+        TradeGuards.requirePurchasable(product, store);
         res.put("product", product);
         res.put("skus", skus);
         res.put("store", store);
@@ -135,6 +137,25 @@ public class ProductController {
     public R<Product> createProduct(@RequestBody CreateProductDTO dto) {
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
 
+        if (dto.getTitle() == null || dto.getTitle().isBlank() || dto.getTitle().length() > 255
+                || dto.getMainImage() == null || dto.getMainImage().isBlank() || dto.getMainImage().length() > 255
+                || dto.getCategoryId() == null || dto.getCategoryId() <= 0
+                || dto.getSkus() == null || dto.getSkus().isEmpty()) throw new BusinessException(400, "商品必填项不完整");
+        TradeGuards.requireGoodsType(dto.getGoodsType());
+        TradeGuards.requireMoney(dto.getMinPrice());
+        Set<String> codes = new HashSet<>();
+        for (SkuDTO sku : dto.getSkus()) {
+            if (sku == null || sku.getSkuCode() == null || sku.getSkuCode().isBlank() || sku.getSkuCode().length() > 64
+                    || !codes.add(sku.getSkuCode()) || sku.getStockQuantity() == null || sku.getStockQuantity() < 0) {
+                throw new BusinessException(400, "SKU编码或库存不合法");
+            }
+            TradeGuards.requireMoney(sku.getPrice());
+            try {
+                if (sku.getSpecData() == null || !new com.fasterxml.jackson.databind.ObjectMapper().readTree(sku.getSpecData()).isObject()) {
+                    throw new IllegalArgumentException();
+                }
+            } catch (Exception e) { throw new BusinessException(400, "规格须为JSON对象"); }
+        }
         Product product = new Product();
         product.setMerchantId(merchantId);
         product.setCategoryId(dto.getCategoryId());

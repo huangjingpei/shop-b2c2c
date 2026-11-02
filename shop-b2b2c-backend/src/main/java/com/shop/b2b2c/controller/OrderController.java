@@ -21,7 +21,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 @Slf4j
@@ -53,6 +52,7 @@ public class OrderController {
     @PostMapping("/api/v1/public/orders/checkout")
     @Transactional(rollbackFor = Exception.class)
     public R<Map<String, Object>> checkout(@RequestBody CheckoutDTO dto) {
+        TradeGuards.requireQuantity(dto.getQuantity());
         if (dto.getQuantity() == null || dto.getQuantity() <= 0) {
             throw new BusinessException("购买数量必须大于0");
         }
@@ -68,6 +68,8 @@ public class OrderController {
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
 
         TradeGuards.requireSkuOwnership(product, sku);
+        TradeGuards.requirePurchasable(product, store);
+        TradeGuards.requireMoney(sku.getPrice());
         if (dto.getMerchantId() != null && !store.getId().equals(dto.getMerchantId())) {
             throw new BusinessException("商户与商品不匹配");
         }
@@ -78,13 +80,12 @@ public class OrderController {
         }
 
         // 生成唯一订单号 SN
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
-        String randomSuffix = String.format("%04d", new Random().nextInt(10000));
-        String orderSn = "ORD" + timestamp + randomSuffix;
+        String orderSn = "ORD" + UUID.randomUUID().toString().replace("-", "");
         String queryToken = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
 
         // 计算金额与抽佣
         BigDecimal totalAmount = sku.getPrice().multiply(new BigDecimal(dto.getQuantity()));
+        TradeGuards.requireMoney(totalAmount);
         BigDecimal commissionRate = store.getCommissionRate();
         BigDecimal commissionAmount = totalAmount.multiply(commissionRate)
                 .divide(new BigDecimal(100), 2, RoundingMode.HALF_UP);

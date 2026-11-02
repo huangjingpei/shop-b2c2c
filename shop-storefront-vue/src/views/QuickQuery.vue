@@ -97,6 +97,10 @@
         </div>
       </div>
 
+      <div v-if="orderResult.order.goodsType === 3" class="p-3 bg-blue-50 rounded-lg text-xs">
+        <div class="font-bold">定制服务交付凭证</div>
+        <pre class="whitespace-pre-wrap">{{ serviceVoucherText(orderResult.order.serviceVoucher) }}</pre>
+      </div>
       <!-- 实物物流追踪信息 -->
       <div v-if="orderResult.order.goodsType === 1" class="mt-2 p-3 bg-blue-50 rounded-lg border border-blue-100 text-xs">
         <div class="font-bold text-blue-900 mb-1">📦 实物包裹物流信息</div>
@@ -114,6 +118,7 @@
 </template>
 
 <script setup>
+import { serviceVoucherText } from '../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'

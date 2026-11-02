@@ -123,7 +123,7 @@
 
             <!-- 线上定制服务录入交付凭证 -->
             <el-button
-              v-else-if="row.order.goodsType === 2 && row.order.orderStatus === 'PAID'"
+              v-else-if="canFulfillService(row.order.goodsType, row.order.orderStatus)"
               type="success"
               size="small"
               @click="openVirtualFulfillDialog(row.order)"
@@ -327,6 +327,7 @@
 </template>
 
 <script setup>
+import { canFulfillService } from '../../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'

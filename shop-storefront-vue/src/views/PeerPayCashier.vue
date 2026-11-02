@@ -251,7 +251,7 @@
 
           <!-- 双轨履约交付提示 -->
           <div class="pt-2 text-[11px] text-slate-400 border-t border-slate-50 flex items-center justify-between">
-            <span v-if="detail.goodsType === 2" class="text-amber-700 font-medium">
+            <span v-if="detail.goodsType !== 1" class="text-amber-700 font-medium">
               ⚡ 线上数字服务 / 自动发卡
             </span>
             <span v-else class="text-blue-700 font-medium">

@@ -20,6 +20,7 @@
           </div>
           <!-- 交付类型标签 -->
           <div class="mt-3 flex items-center space-x-2">
+            <span v-if="product.goodsType === 3" class="text-xs font-bold text-blue-700">定制服务 · 人工交付</span>
             <span
               v-if="product.goodsType === 2"
               class="px-2.5 py-1 rounded bg-amber-500 text-white font-bold text-xs flex items-center space-x-1"
@@ -27,7 +28,7 @@
               <span>⚡ 虚拟数字权益 · 付款秒发卡密</span>
             </span>
             <span
-              v-else
+              v-else-if="product.goodsType === 1"
               class="px-2.5 py-1 rounded bg-blue-600 text-white font-bold text-xs"
             >
               📦 实体物流商品 · 顺丰/中通极速发货

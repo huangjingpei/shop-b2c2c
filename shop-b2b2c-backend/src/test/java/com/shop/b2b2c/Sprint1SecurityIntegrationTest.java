@@ -248,7 +248,10 @@ class Sprint1SecurityIntegrationTest {
     void concurrentOrdersCannotAssignTheSameCardEvenWhenSkuStockIsHigher() throws Exception {
         jdbc.update("UPDATE product_sku SET stock_quantity=2 WHERE id=1");
         unpaid("card-one", 1); unpaid("card-two", 1);
-        race(2, i -> pay(i == 0 ? "card-one" : "card-two"));
+        race(2, i -> {
+            try { pay(i == 0 ? "card-one" : "card-two"); }
+            catch (BusinessException expected) { }
+        });
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM trade_order_item WHERE card_details IS NOT NULL", Integer.class));
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM trade_order WHERE order_status='COMPLETED'", Integer.class));
         assertTrue(List.of("ORD-card-one", "ORD-card-two").contains(cards.selectById(1).getOrderSn()));
@@ -362,6 +365,100 @@ class Sprint1SecurityIntegrationTest {
         assertEquals(1, cards.claimCard(1L, 1L, 1L, "winner"));
         assertEquals(0, cards.claimCard(1L, 1L, 1L, "loser"));
         assertEquals("winner", cards.selectById(1).getOrderSn());
+    }
+
+    @Test
+    void cardShortageRollsBackInsteadOfBecomingManualService() {
+        TradeOrder order = unpaid("no-cards", 1);
+        jdbc.update("DELETE FROM product_virtual_card");
+        assertThrows(BusinessException.class, () -> pay("no-cards"));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertThrows(BusinessException.class, () -> payments.fulfillVirtualOrder(order.getId(), "manual", 1L));
+    }
+
+    @Test
+    void explicitCustomServiceRequiresManualFulfillmentAndNeverAllocatesCards() {
+        jdbc.update("UPDATE product SET goods_type=3 WHERE id=1");
+        TradeOrder order = unpaid("service", 1); order.setGoodsType(3); orders.save(order);
+        assertEquals("PAID", pay("service").getOrderStatus());
+        assertEquals(0, cards.selectById(1).getStatus());
+        payments.fulfillVirtualOrder(order.getId(), "service-result", 1L);
+        assertEquals("COMPLETED", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals("service-result", orders.selectById(order.getId()).getServiceVoucher());
+    }
+
+    @Test
+    void banAfterReservationRejectsPaymentAndOwnerCanRecoverStock() {
+        TradeOrder order = intent("banned-after-hold");
+        var held = payments.preLockInventory("banned-after-hold");
+        jdbc.update("UPDATE merchant_store SET status=3 WHERE id=1");
+        assertThrows(BusinessException.class, () -> pay("banned-after-hold"));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals(0, cards.selectById(1).getStatus());
+        payments.cancelPreLock("banned-after-hold", held.getOwnerToken());
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void offShelfOrBannedGoodsCannotBeViewedOrderedOrReserved() {
+        TradeOrder order = intent("blocked");
+        jdbc.update("UPDATE product SET status=0 WHERE id=1");
+        assertThrows(BusinessException.class, () -> products.getProductDetail(1L));
+        assertThrows(BusinessException.class, () -> payments.preLockInventory("blocked"));
+        jdbc.update("UPDATE product SET status=1 WHERE id=1");
+        jdbc.update("UPDATE merchant_store SET status=3 WHERE id=1");
+        assertThrows(BusinessException.class, () -> products.getProductDetail(1L));
+        assertTrue(products.listPublicProducts(null, 1L).getData().isEmpty());
+        assertThrows(BusinessException.class, () -> payments.preLockInventory("blocked"));
+        OrderController.CheckoutDTO checkout = new OrderController.CheckoutDTO();
+        checkout.setProductId(1L); checkout.setSkuId(1L); checkout.setQuantity(1); checkout.setBuyerContact("buyer");
+        assertThrows(BusinessException.class, () -> orderController.checkout(checkout));
+        PeerPayDTOs.BuyerCreateRequest buyer = new PeerPayDTOs.BuyerCreateRequest();
+        buyer.setProductId(1L); buyer.setSkuId(1L); buyer.setQuantity(1); buyer.setBuyerContact("buyer");
+        assertThrows(BusinessException.class, () -> payments.createBuyerPeerPay(buyer));
+        PeerPayDTOs.PushPayCreateRequest push = new PeerPayDTOs.PushPayCreateRequest();
+        push.setProductId(1L); push.setSkuId(1L); push.setQuantity(1);
+        assertThrows(BusinessException.class, () -> payments.createPushPayOrder(push, 1L));
+        assertEquals(1, orders.selectCount(null));
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
+    void productValidationRejectsInvalidSkuBeforePersistingAnyProduct() {
+        ProductController.CreateProductDTO dto = new ProductController.CreateProductDTO();
+        dto.setTitle("new"); dto.setMainImage("image"); dto.setCategoryId(1L); dto.setGoodsType(3);
+        dto.setMinPrice(java.math.BigDecimal.TEN);
+        ProductController.SkuDTO sku = new ProductController.SkuDTO();
+        sku.setSkuCode("unique"); sku.setPrice(java.math.BigDecimal.TEN); sku.setStockQuantity(1); sku.setSpecData("[]");
+        dto.setSkus(List.of(sku));
+        try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
+            security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
+            assertThrows(BusinessException.class, () -> products.createProduct(dto));
+            sku.setSpecData("{}"); sku.setPrice(new java.math.BigDecimal("-1"));
+            assertThrows(BusinessException.class, () -> products.createProduct(dto));
+            sku.setPrice(java.math.BigDecimal.TEN); sku.setStockQuantity(-1);
+            assertThrows(BusinessException.class, () -> products.createProduct(dto));
+            sku.setStockQuantity(1); dto.setSkus(List.of(sku, sku));
+            assertThrows(BusinessException.class, () -> products.createProduct(dto));
+            assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM product", Integer.class));
+            dto.setSkus(List.of(sku));
+            assertEquals(3, products.createProduct(dto).getData().getGoodsType());
+        }
+    }
+
+    @Test
+    void newOrderNumbersUseFullUuidAndRejectInvalidNegotiation() {
+        OrderController.CheckoutDTO dto = new OrderController.CheckoutDTO();
+        dto.setProductId(1L); dto.setSkuId(1L); dto.setQuantity(1); dto.setBuyerContact("buyer");
+        String first = (String) orderController.checkout(dto).getData().get("orderSn");
+        String second = (String) orderController.checkout(dto).getData().get("orderSn");
+        assertTrue(first.matches("ORD[0-9a-f]{32}")); assertNotEquals(first, second);
+        PeerPayDTOs.PushPayCreateRequest push = new PeerPayDTOs.PushPayCreateRequest();
+        push.setProductId(1L); push.setSkuId(1L); push.setQuantity(1); push.setNegotiatedPrice(new java.math.BigDecimal("-1"));
+        assertThrows(BusinessException.class, () -> payments.createPushPayOrder(push, 1L));
+        assertEquals(2, orders.selectCount(null));
     }
 
     private void race(int count, java.util.function.IntConsumer action) throws Exception {

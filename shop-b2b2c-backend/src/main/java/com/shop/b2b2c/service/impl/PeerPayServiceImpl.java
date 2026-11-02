@@ -17,7 +17,6 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 @Slf4j
@@ -42,6 +41,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> createBuyerPeerPay(PeerPayDTOs.BuyerCreateRequest req) {
+        TradeGuards.requireQuantity(req.getQuantity());
         if (req.getQuantity() == null || req.getQuantity() <= 0) {
             throw new BusinessException("购买数量必须大于0");
         }
@@ -57,6 +57,8 @@ public class PeerPayServiceImpl implements PeerPayService {
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
 
         TradeGuards.requireSkuOwnership(product, sku);
+        TradeGuards.requirePurchasable(product, store);
+        TradeGuards.requireMoney(sku.getPrice());
 
         // 阶段一意向校验：只查物理库存是否存在，不执行真实扣减 (防刷与防恶搞占库存)
         if (sku.getStockQuantity() < req.getQuantity()) {
@@ -64,13 +66,12 @@ public class PeerPayServiceImpl implements PeerPayService {
         }
 
         // 生成全局流水号与防撞代付短码
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
-        String randomSuffix = String.format("%04d", new Random().nextInt(10000));
-        String orderSn = "ORD" + timestamp + randomSuffix;
+        String orderSn = "ORD" + UUID.randomUUID().toString().replace("-", "");
         String queryToken = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         String peerPayToken = "PAY" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
 
         BigDecimal totalAmount = sku.getPrice().multiply(new BigDecimal(req.getQuantity()));
+        TradeGuards.requireMoney(totalAmount);
         BigDecimal commissionRate = store.getCommissionRate() != null ? store.getCommissionRate() : new BigDecimal("3.00");
         BigDecimal commissionAmount = totalAmount.multiply(commissionRate).divide(new BigDecimal(100), 2, RoundingMode.HALF_UP);
         BigDecimal merchantSettleAmount = totalAmount.subtract(commissionAmount);
@@ -100,7 +101,7 @@ public class PeerPayServiceImpl implements PeerPayService {
 
         // 生成 9:16 微信裂变防封海报
         String cashierUrl = storefrontUrl + "/peer-pay/" + peerPayToken;
-        String goodsTypeName = product.getGoodsType() == 2 ? "虚拟服务/卡密" : "实物商品";
+        String goodsTypeName = product.getGoodsType() == 3 ? "定制服务" : product.getGoodsType() == 2 ? "自动卡密" : "实物商品";
         String posterBase64 = PosterUtils.generatePeerPayPoster(
                 cashierUrl, store.getStoreName(), product.getTitle(), totalAmount, order.getPeerMessage(), goodsTypeName
         );
@@ -140,6 +141,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> createPushPayOrder(PeerPayDTOs.PushPayCreateRequest req, Long merchantId) {
+        TradeGuards.requireQuantity(req.getQuantity());
         if (req.getQuantity() == null || req.getQuantity() <= 0) {
             throw new BusinessException("商品数量必须大于0");
         }
@@ -155,23 +157,25 @@ public class PeerPayServiceImpl implements PeerPayService {
         MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException("商户店铺不存在"));
         TradeGuards.requireSkuOwnership(product, sku);
+        TradeGuards.requirePurchasable(product, store);
+        TradeGuards.requireMoney(sku.getPrice());
 
         if (sku.getStockQuantity() < req.getQuantity()) {
             throw new BusinessException("商品库存不足，剩余库存: " + sku.getStockQuantity());
         }
 
+        if (req.getNegotiatedPrice() != null) TradeGuards.requireMoney(req.getNegotiatedPrice());
         // 商家议价定价：支持自主协商优惠改价推单
         BigDecimal unitPrice = (req.getNegotiatedPrice() != null && req.getNegotiatedPrice().compareTo(BigDecimal.ZERO) > 0)
                 ? req.getNegotiatedPrice() : sku.getPrice();
         BigDecimal totalAmount = unitPrice.multiply(new BigDecimal(req.getQuantity()));
 
+        TradeGuards.requireMoney(totalAmount);
         BigDecimal commissionRate = store.getCommissionRate() != null ? store.getCommissionRate() : new BigDecimal("3.00");
         BigDecimal commissionAmount = totalAmount.multiply(commissionRate).divide(new BigDecimal(100), 2, RoundingMode.HALF_UP);
         BigDecimal merchantSettleAmount = totalAmount.subtract(commissionAmount);
 
-        String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMddHHmmss"));
-        String randomSuffix = String.format("%04d", new Random().nextInt(10000));
-        String orderSn = "ORD" + timestamp + randomSuffix;
+        String orderSn = "ORD" + UUID.randomUUID().toString().replace("-", "");
         String queryToken = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
         String peerPayToken = "PUSH" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
 
@@ -198,7 +202,7 @@ public class PeerPayServiceImpl implements PeerPayService {
                 ? req.getSellerNote().trim() : "这是商家为您定制的支付账单，请查收完成付款");
 
         String cashierUrl = storefrontUrl + "/peer-pay/" + peerPayToken;
-        String goodsTypeName = product.getGoodsType() == 2 ? "虚拟服务/卡密" : "实物商品";
+        String goodsTypeName = product.getGoodsType() == 3 ? "定制服务" : product.getGoodsType() == 2 ? "自动卡密" : "实物商品";
         String posterBase64 = PosterUtils.generatePeerPayPoster(
                 cashierUrl, store.getStoreName(), product.getTitle(), totalAmount, order.getPeerMessage(), goodsTypeName
         );
@@ -272,7 +276,7 @@ public class PeerPayServiceImpl implements PeerPayService {
             resp.setProductTitle(product.getTitle());
             resp.setProductImage(product.getMainImage());
             resp.setServiceDesc(product.getServiceDesc());
-            resp.setIsOnlineService(product.getGoodsType() == 2);
+            resp.setIsOnlineService(product.getGoodsType() == 3);
         }
 
         if (firstItem != null) {
@@ -333,6 +337,9 @@ public class PeerPayServiceImpl implements PeerPayService {
         List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
         if (items.size() != 1) throw new BusinessException("当前仅支持单商品订单");
         TradeOrderItem item = items.get(0);
+        Product product = productMapper.findById(item.getProductId()).orElseThrow(() -> new BusinessException("商品不存在"));
+        TradeGuards.requirePurchasable(product, storeMapper.findById(order.getMerchantId()).orElse(null));
+        if (!product.getGoodsType().equals(order.getGoodsType())) throw new BusinessException("商品交付类型已变化，请重新下单");
         if (item.getQuantity() == null || item.getQuantity() <= 0
                 || skuMapper.deductStock(item.getSkuId(), item.getProductId(), order.getMerchantId(), item.getQuantity()) != 1) {
             throw new BusinessException("商品库存不足或SKU归属异常");
@@ -428,6 +435,13 @@ public class PeerPayServiceImpl implements PeerPayService {
             throw new BusinessException("当前支付仅支持单商品订单");
         }
 
+        Product payableProduct = productMapper.findById(items.get(0).getProductId())
+                .orElseThrow(() -> new BusinessException("商品不存在"));
+        TradeGuards.requirePurchasable(payableProduct, storeMapper.findById(order.getMerchantId()).orElse(null));
+        if (!payableProduct.getGoodsType().equals(order.getGoodsType())) {
+            throw new BusinessException("商品交付类型已变化，禁止继续交付");
+        }
+
         InventoryReservation held = reservationMapper.find(order.getId());
         if (held != null) {
             TradeOrderItem item = items.get(0);
@@ -475,10 +489,7 @@ public class PeerPayServiceImpl implements PeerPayService {
                 order.setServiceVoucher("系统卡密秒级自动交付: " + String.join(" | ", deliveredCards));
                 order.setFinishTime(LocalDateTime.now());
             } else {
-                // 无预置卡密，则为【线上定制服务】，标记待卖家录入凭证
-                order.setOrderStatus("PAID");
-                order.setSharingStatus("PENDING");
-                log.info("线上服务代付单 [{}] 付款成功，等待卖家提供交付凭证", order.getOrderSn());
+                throw new BusinessException("卡密库存不足，不能转为人工服务");
             }
         } else {
             // 实物商品：标记待发货
@@ -503,8 +514,8 @@ public class PeerPayServiceImpl implements PeerPayService {
             throw new BusinessException("无权操作其他商户订单");
         }
 
-        if (order.getGoodsType() != 2) {
-            throw new BusinessException("该订单为实物商品，请走快递发货流程");
+        if (order.getGoodsType() != 3) {
+            throw new BusinessException("仅定制服务订单可以手工履约");
         }
 
         if (!"PAID".equals(order.getOrderStatus())) {
@@ -543,7 +554,7 @@ public class PeerPayServiceImpl implements PeerPayService {
 
         String storeName = store != null ? store.getStoreName() : "官方授权店";
         String productTitle = item != null ? item.getProductTitle() : "精选商品";
-        String goodsTypeName = order.getGoodsType() == 2 ? "虚拟服务/卡密" : "实物商品";
+        String goodsTypeName = order.getGoodsType() == 3 ? "定制服务" : order.getGoodsType() == 2 ? "自动卡密" : "实物商品";
         String cashierUrl = storefrontUrl + "/peer-pay/" + order.getPeerPayToken();
 
         String posterBase64 = PosterUtils.generatePeerPayPoster(

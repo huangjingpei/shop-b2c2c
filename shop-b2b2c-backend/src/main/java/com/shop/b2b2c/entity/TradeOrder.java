@@ -16,7 +16,7 @@ public class TradeOrder {
     private String orderSn;
     private Long merchantId;
     private String buyerContact; // 手机号或邮箱，免密查单核心依据
-    private Integer goodsType = 1; // 1-实物商品, 2-线上服务/虚拟卡密
+    private Integer goodsType = 1; // 1-实物商品, 2-自动卡密, 3-定制服务
     private BigDecimal totalAmount;
     private BigDecimal payAmount;
     private BigDecimal commissionRate;

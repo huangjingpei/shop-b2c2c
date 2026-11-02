@@ -39,7 +39,8 @@
       >
         <div class="aspect-video bg-slate-100 overflow-hidden relative">
           <img :src="p.mainImage" :alt="p.title" class="w-full h-full object-cover" />
-          <span
+          <span v-if="p.goodsType === 3" class="text-xs font-bold text-blue-700">定制服务 · 人工交付</span>
+            <span
             v-if="p.goodsType === 2"
             class="absolute top-2 left-2 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500 text-white"
           >

@@ -99,7 +99,7 @@
         <el-table-column label="商品交付类型" width="130">
           <template #default="{ row }">
             <el-tag :type="row.goodsType === 2 ? 'warning' : 'info'" size="small">
-              {{ row.goodsType === 2 ? '⚡ 线上服务/卡密' : '📦 实物物流' }}
+              {{ goodsTypeLabel(row.goodsType) }}
             </el-tag>
             <div v-if="row.serviceVoucher" class="voucher-preview" title="交付凭证已录入">
               ✓ 凭据已存档
@@ -139,6 +139,7 @@
 </template>
 
 <script setup>
+import { goodsTypeLabel } from '../../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
 import request from '../../api/request'
 
