@@ -13,11 +13,11 @@
             <span>⚡ 免登录极速查单</span>
           </router-link>
           <span class="text-slate-300">|</span>
-          <a href="http://localhost:3001" target="_blank" class="hover:text-orange-600 flex items-center space-x-1">
+          <a href="/console/" target="_blank" class="hover:text-orange-600 flex items-center space-x-1">
             <span>🏪 商家工作台</span>
           </a>
           <span class="text-slate-300">|</span>
-          <a href="http://localhost:3001" target="_blank" class="hover:text-orange-600 flex items-center space-x-1">
+          <a href="/console/" target="_blank" class="hover:text-orange-600 flex items-center space-x-1">
             <span>👑 平台管理中心</span>
           </a>
         </div>

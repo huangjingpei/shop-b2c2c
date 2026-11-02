@@ -72,7 +72,7 @@
 
             <div class="space-y-2 mt-4">
               <a
-                href="http://localhost:3001"
+                href="/console/"
                 target="_blank"
                 class="w-full block text-center py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-sm"
               >
