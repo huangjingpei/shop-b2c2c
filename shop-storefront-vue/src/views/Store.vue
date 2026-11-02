@@ -1,3 +1,8 @@
+<!--
+文件：Store.vue
+用途：按商户浏览店铺商品。
+维护注意：服务与卡密分别展示；当前公告/客服仍含历史演示值，店铺独立资料接口及空店体验尚待整改，不能将演示值当真实资料。
+-->
 <template>
   <div v-if="loading" class="text-center py-12 text-slate-400 text-sm">
     正在加载店铺资料与货源...

@@ -1,3 +1,8 @@
+/*
+ * 文件：TradeGuards.java
+ * 用途：统一商品/SKU归属、可交易资格、交付类型及交易金额/数量校验。
+ * 维护注意：类型1实物、2自动卡密、3定制服务；金额校验与管理端零费用规则不同。该类不访问数据库，调用方仍须维护事务和读取可信实体。
+ */
 package com.shop.b2b2c.common;
 
 import com.shop.b2b2c.entity.Product;

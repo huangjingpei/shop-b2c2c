@@ -1,4 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+文件：pom.xml
+用途：后端Java17/Spring Boot构建、业务依赖及测试依赖声明。
+维护注意：H2仅限test作用域，不能替代生产MySQL驱动；依赖调整须跑单元和事务回归。新增支付依赖不等于渠道验证已接入。
+-->
 <project xmlns="http://maven.apache.org/POM/4.0.0"
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">

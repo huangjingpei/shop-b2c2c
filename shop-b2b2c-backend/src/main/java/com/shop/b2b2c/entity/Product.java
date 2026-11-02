@@ -1,3 +1,8 @@
+/*
+ * 文件：Product.java
+ * 用途：商品主表持久化模型及展示、交付配置。
+ * 维护注意：goodsType为1实物/2自动卡密/3定制服务，status控制上下架。不要按是否缺卡推断类型；旧服务数据需人工确认后调整，模型字段不是公开API白名单。
+ */
 package com.shop.b2b2c.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;

@@ -1,3 +1,8 @@
+/*
+ * 文件：GlobalExceptionHandler.java
+ * 用途：统一后端异常到API响应的映射，并为未知资源返回HTTP 404。
+ * 维护注意：业务错误码与HTTP状态目前并非完全一致；新增异常处理须同时检查客户端兼容和敏感错误信息，不能把不存在接口包装成成功。
+ */
 package com.shop.b2b2c.common;
 
 import cn.dev33.satoken.exception.NotLoginException;

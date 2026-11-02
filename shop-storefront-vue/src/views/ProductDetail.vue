@@ -1,3 +1,8 @@
+<!--
+文件：ProductDetail.vue
+用途：商品/SKU选择、待付款建单及买家代付分享。
+维护注意：checkout只建UNPAID单，真实支付未开放；不得根据HTTP成功显示已到账或发卡。类型3为人工服务，参数和金额最终由服务端校验。
+-->
 <template>
   <div v-if="loading" class="text-center py-16 text-slate-400 text-sm">
     正在加载商品详情与变体数据...

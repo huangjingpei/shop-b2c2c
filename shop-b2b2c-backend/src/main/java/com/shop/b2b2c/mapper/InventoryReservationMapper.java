@@ -1,3 +1,8 @@
+/*
+ * 文件：InventoryReservationMapper.java
+ * 用途：预占流水插入、到期扫描与HELD状态条件迁移。
+ * 维护注意：调用方必须先锁订单行；状态迁移影响行数决定是否允许加库存或核销。查出的所有者凭证只供内部授权，不直接返回公开接口。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.shop.b2b2c.entity.InventoryReservation;

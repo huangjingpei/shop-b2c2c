@@ -1,3 +1,8 @@
+/*
+ * 文件：TradeOrder.java
+ * 用途：交易订单主表模型，保存金额、交易/代付状态及交付快照。
+ * 维护注意：支付、取消、超时及履约写路径须共用订单行锁与事务；不能仅凭普通save实现幂等。当前peerStatus默认值与业务编码仍有历史差异，构建订单时须显式赋值。
+ */
 package com.shop.b2b2c.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;

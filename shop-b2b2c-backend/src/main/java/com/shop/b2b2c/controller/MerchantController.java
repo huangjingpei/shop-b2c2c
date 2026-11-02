@@ -1,3 +1,8 @@
+/*
+ * 文件：MerchantController.java
+ * 用途：平台商户配置及商家本店资料接口。
+ * 维护注意：管理参数必须在持久化前校验，店铺资料写入按字段白名单；进件账户仍为本地模拟，不能将PASSED视为真实渠道开通。服务费状态保留历史编码兼容。
+ */
 package com.shop.b2b2c.controller;
 
 import cn.dev33.satoken.secure.BCrypt;

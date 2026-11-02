@@ -1,3 +1,8 @@
+/*
+ * 文件：ManagementGuards.java
+ * 用途：商户后台的金额、费率、状态、枚举和文本长度校验。
+ * 维护注意：零月费/零佣金合法；金额最多两位小数。这里只校验输入边界，不验证身份、渠道进件或URL真实性；规则变更须覆盖合法边界和无写入副作用。
+ */
 package com.shop.b2b2c.common;
 
 import java.math.BigDecimal;

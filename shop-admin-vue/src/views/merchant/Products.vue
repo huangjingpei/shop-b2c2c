@@ -1,3 +1,8 @@
+<!--
+文件：Products.vue
+用途：商家商品与SKU发布及交付类型展示。
+维护注意：1实物、2自动卡密、3定制服务；类型2才显示卡密管理。表单便利校验不能替代后端输入/归属校验，新增字段须同步DTO契约。
+-->
 <template>
   <div class="merchant-products">
     <div class="page-header">

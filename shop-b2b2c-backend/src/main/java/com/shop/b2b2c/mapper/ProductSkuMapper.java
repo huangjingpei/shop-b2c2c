@@ -1,3 +1,8 @@
+/*
+ * 文件：ProductSkuMapper.java
+ * 用途：SKU查询及带商品/商户归属条件的原子库存增减。
+ * 维护注意：扣库存必须检查影响行数，不能用读改写save替代deductStock。stockQuantity是扣除预占后的可售数量；增减与对应预占/发卡操作必须在同一事务内。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

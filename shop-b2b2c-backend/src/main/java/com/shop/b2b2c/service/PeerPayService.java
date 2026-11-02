@@ -1,3 +1,8 @@
+/*
+ * 文件：PeerPayService.java
+ * 用途：代付建单、预占、授权释放、到期处理及内部落账服务契约。
+ * 维护注意：notifyPaymentSuccess仅供未来可信渠道适配器调用，不能直接公开HTTP映射；适配器须先验签并核对资金。修改取消签名或ownerToken语义时须同步调用方和回归测试。
+ */
 package com.shop.b2b2c.service;
 
 import com.shop.b2b2c.dto.PeerPayDTOs;

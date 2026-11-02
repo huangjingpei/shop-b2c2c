@@ -1,3 +1,8 @@
+/*
+ * 文件：TradeOrderMapper.java
+ * 用途：订单查询、行锁和有效待付预占的支付CAS迁移。
+ * 维护注意：所有订单写者须保持一致的订单行锁顺序；支付状态变更影响行数必须检查。不能在事务外使用FOR UPDATE来声称拥有并发保护。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

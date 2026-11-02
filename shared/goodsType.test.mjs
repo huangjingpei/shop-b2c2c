@@ -1,3 +1,8 @@
+/*
+ * 文件：goodsType.test.mjs
+ * 用途：用同一组Node单元测试验证两端各自的商品类型工具。
+ * 维护注意：两端保留独立可打包模块，防止部署遗漏跨工程源码。标签、人工履约权限与凭证等待规则变更应同时测试两套实现；在根目录用node --test shared/goodsType.test.mjs运行。
+ */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import * as admin from '../shop-admin-vue/src/utils/goodsType.mjs'

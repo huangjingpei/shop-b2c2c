@@ -1,3 +1,8 @@
+<!--
+文件：PeerPayCashier.vue
+用途：代付账单详情、倒计时、分享海报及结果展示。
+维护注意：真实付款未开放，禁止恢复随机付款人Mock调用。将来取消预占须保存ownerToken并显式授权；本地倒计时不是库存锁或支付状态权威来源。
+-->
 <template>
   <div class="min-h-screen bg-[#F5F5F7] text-slate-800 antialiased pb-12">
     

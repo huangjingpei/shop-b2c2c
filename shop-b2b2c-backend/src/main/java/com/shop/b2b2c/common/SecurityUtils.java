@@ -1,3 +1,8 @@
+/*
+ * 文件：SecurityUtils.java
+ * 用途：从Sa-Token会话读取身份、角色和店铺上下文。
+ * 维护注意：商家资产操作须用requireCurrentMerchantId并验证对象归属；未绑定店铺应拒绝，禁止回退店铺1或全平台。会话角色不能替代对象级租户校验。
+ */
 package com.shop.b2b2c.common;
 
 import cn.dev33.satoken.stp.StpUtil;

@@ -1,3 +1,8 @@
+/*
+ * 文件：TradeGuardsTest.java
+ * 用途：交易规则的参数化纯单元测试。
+ * 维护注意：覆盖金额、数量、交付类型与店铺资格的合法/非法边界；不启动Spring或数据库。调整规则必须同时保留允许值与拒绝值的测试，避免只测试实现细节。
+ */
 package com.shop.b2b2c;
 
 import com.shop.b2b2c.common.*;

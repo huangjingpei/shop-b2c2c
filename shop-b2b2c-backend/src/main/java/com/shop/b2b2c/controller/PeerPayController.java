@@ -1,3 +1,8 @@
+/*
+ * 文件：PeerPayController.java
+ * 用途：买家代付账单、预占、授权取消、海报与成功页广告接口。
+ * 维护注意：不提供Mock支付或未经验证的公开到账入口；取消必须提交X-Reservation-Token。分享token仅定位账单，不能替代预占所有者凭证。
+ */
 package com.shop.b2b2c.controller;
 
 import com.shop.b2b2c.common.R;

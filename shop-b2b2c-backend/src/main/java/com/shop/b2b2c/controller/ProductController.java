@@ -1,3 +1,8 @@
+/*
+ * 文件：ProductController.java
+ * 用途：商品浏览、商家发布以及本店卡密库存导入和查询。
+ * 维护注意：先验证商品/SKU/会话租户归属再读写卡密；导入库存使用原子增量。公开详情必须验证交易资格并使用店铺字段白名单，类型3不走卡密导入。
+ */
 package com.shop.b2b2c.controller;
 
 import com.shop.b2b2c.common.BusinessException;

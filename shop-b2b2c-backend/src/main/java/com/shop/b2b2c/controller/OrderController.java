@@ -1,3 +1,8 @@
+/*
+ * 文件：OrderController.java
+ * 用途：待付款建单、免登录查单、商家发货及平台订单查询入口。
+ * 维护注意：checkout不得伪造到账或直接交付；实物发货必须验证店铺、类型和状态。查单店铺信息走PublicStoreView，查单身份校验和统计口径仍有待处理问题。
+ */
 package com.shop.b2b2c.controller;
 
 import com.shop.b2b2c.common.BusinessException;

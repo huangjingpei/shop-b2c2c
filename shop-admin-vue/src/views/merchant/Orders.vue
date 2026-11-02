@@ -1,3 +1,8 @@
+<!--
+文件：Orders.vue
+用途：商家订单查询、推单、实物发货和定制服务履约页面。
+维护注意：人工履约仅对类型3且PAID展示，类型2缺卡不能用人工交付替代；按钮可见性不替代服务端租户/状态验证。修改规则同步工具单元测试。
+-->
 <template>
   <div class="merchant-orders">
     <div class="page-header">

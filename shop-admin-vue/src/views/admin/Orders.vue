@@ -1,3 +1,8 @@
+<!--
+文件：Orders.vue
+用途：平台订单监察列表和三方交易信息展示。
+维护注意：商品类型使用公共展示规则；前端角色或标签不是授权边界，权限由后台控制。历史GMV口径整改仍待完成。
+-->
 <template>
   <div class="orders-page">
     <div class="page-header">

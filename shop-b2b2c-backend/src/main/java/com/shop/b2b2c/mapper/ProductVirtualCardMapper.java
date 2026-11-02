@@ -1,3 +1,8 @@
+/*
+ * 文件：ProductVirtualCardMapper.java
+ * 用途：卡密查询、事务内锁定候选卡及未售状态条件认领。
+ * 维护注意：先验证租户并锁订单，再按稳定顺序锁卡；认领失败应整体回滚。商家查询须包含merchantId，禁止把通用按SKU查询直接暴露为跨店读取入口。
+ */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

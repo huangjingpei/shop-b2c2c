@@ -1,3 +1,8 @@
+/*
+ * 文件：PeerPayDTOs.java
+ * 用途：代付、推单、预占与履约的请求和响应契约。
+ * 维护注意：ownerToken仅从本次预占响应交给持有人，不能加入公开详情。类型3表示定制服务；MockPayRequest为历史未使用DTO，不代表存在可用Mock支付接口。
+ */
 package com.shop.b2b2c.dto;
 
 import lombok.Data;

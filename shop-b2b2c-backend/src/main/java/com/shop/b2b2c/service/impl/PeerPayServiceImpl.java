@@ -1,3 +1,8 @@
+/*
+ * 文件：PeerPayServiceImpl.java
+ * 用途：代付交易与库存预占的事务实现，协调订单、SKU、卡密及人工服务履约。
+ * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。保留无流水旧锁的升级兼容；卡密缺货必须回滚。当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
+ */
 package com.shop.b2b2c.service.impl;
 
 import com.shop.b2b2c.common.BusinessException;

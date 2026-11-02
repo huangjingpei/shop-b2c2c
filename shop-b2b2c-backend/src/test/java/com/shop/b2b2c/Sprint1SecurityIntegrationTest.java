@@ -1,3 +1,8 @@
+/*
+ * 文件：Sprint1SecurityIntegrationTest.java
+ * 用途：跨Sprint累计的Spring事务、Mapper SQL、公开响应及租户安全集成回归。
+ * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
+ */
 package com.shop.b2b2c;
 
 import com.shop.b2b2c.common.BusinessException;

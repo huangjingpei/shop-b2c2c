@@ -1,3 +1,8 @@
+/*
+ * 文件：ReservationExpiryJob.java
+ * 用途：定时扫描到期的库存预占并调用事务服务释放。
+ * 维护注意：默认30秒一轮、每批最多100条；多实例由订单行锁和条件迁移保证幂等。单条失败留日志后下轮重试，不可在此绕过服务直接加库存。
+ */
 package com.shop.b2b2c.config;
 
 import com.shop.b2b2c.mapper.InventoryReservationMapper;

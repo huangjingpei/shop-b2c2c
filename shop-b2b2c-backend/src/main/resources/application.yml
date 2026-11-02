@@ -1,3 +1,6 @@
+# 文件：application.yml
+# 用途：Spring Boot数据源、会话、SQL初始化及前台地址等运行配置。
+# 维护注意：生产应注入受控环境变量，审查默认凭据及演示种子；关闭SQL初始化时须手动迁移。payment.mock不能恢复已删除的Mock路由；SQL错误容忍不是版本迁移机制。
 server:
   port: ${SERVER_PORT:8080}
   servlet:

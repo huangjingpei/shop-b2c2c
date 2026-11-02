@@ -1,3 +1,8 @@
+<!--
+文件：Dashboard.vue
+用途：平台经营概览与订单类型展示。
+维护注意：商品标签来自可测试的类型工具；现有统计口径和渠道展示仍需与真实到账/结算区分，不应把演示状态解释为财务证明。
+-->
 <template>
   <div class="dashboard-page">
     <div class="page-title">
