@@ -2,60 +2,104 @@
   <div class="merchants-page">
     <div class="page-header">
       <div>
-        <h2>入驻商户治理与进件审批</h2>
-        <p>个人自然人凭身份证免照开店，官方直付通/收付通二级商户合规管理</p>
+        <h2>入驻商户治理与服务费监管</h2>
+        <p>个人自然人免照开店、SaaS月度技术服务费阶梯配置与合规结算通道调配</p>
       </div>
       <el-button type="primary" icon="Plus" @click="openDialog">新增/审批开通商户</el-button>
     </div>
 
     <el-card shadow="never" class="table-card">
       <el-table :data="merchants" stripe style="width: 100%" v-loading="loading">
-        <el-table-column prop="id" label="ID" width="70" />
-        <el-table-column prop="storeCode" label="商户编码" width="120" />
-        <el-table-column prop="storeName" label="店铺名称" min-width="160">
+        <el-table-column prop="id" label="ID" width="60" />
+        <el-table-column prop="storeCode" label="编码" width="100" />
+        <el-table-column prop="storeName" label="店铺名称 / 公告" min-width="170">
           <template #default="{ row }">
             <div style="font-weight: 600; color: #1e293b;">{{ row.storeName }}</div>
             <div style="font-size: 11px; color: #64748b;">{{ row.notice || '暂无公告' }}</div>
           </template>
         </el-table-column>
-        <el-table-column label="商户性质" width="130">
+        <el-table-column label="商户性质" width="120">
           <template #default="{ row }">
             <el-tag :type="row.merchantType === 1 ? 'success' : 'primary'" size="small">
-              {{ row.merchantType === 1 ? '自然人(免营业执照)' : '个体/企业' }}
+              {{ row.merchantType === 1 ? '自然人(免执照)' : '企业/个体' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="ownerName" label="经营者/姓名" width="110" />
-        <el-table-column prop="idCardNumber" label="身份证号码" width="180">
+        <el-table-column prop="ownerName" label="经营人/电话" width="140">
           <template #default="{ row }">
-            <span>{{ maskIdCard(row.idCardNumber) }}</span>
+            <div style="font-weight: 500;">{{ row.ownerName }}</div>
+            <div style="font-size: 11px; color: #64748b;">{{ row.contactPhone }}</div>
           </template>
         </el-table-column>
-        <el-table-column prop="contactPhone" label="联系电话" width="130" />
-        <el-table-column prop="commissionRate" label="抽佣比例" width="110">
+
+        <!-- ★ 月度技术服务费 (SaaS合规商业支柱) -->
+        <el-table-column label="SaaS月技术服务费" width="160">
+          <template #default="{ row }">
+            <div>
+              <span style="font-weight: 700; color: #0f172a;">￥{{ row.monthlyFee || 0 }}</span>
+              <span style="font-size: 11px; color: #64748b;"> / 月</span>
+            </div>
+            <div style="margin-top: 2px;">
+              <el-tag v-if="row.feeStatus === 'EXEMPTED'" type="success" size="small" effect="plain">
+                免收豁免
+              </el-tag>
+              <el-tag v-else-if="row.feeStatus === 'ARREARS'" type="danger" size="small">
+                欠费待缴
+              </el-tag>
+              <el-tag v-else type="info" size="small">
+                正常计费
+              </el-tag>
+            </div>
+            <div v-if="row.feeFreeUntil" style="font-size: 10px; color: #94a3b8; margin-top: 2px;">
+              免费截止: {{ row.feeFreeUntil }}
+            </div>
+          </template>
+        </el-table-column>
+
+        <!-- ★ 结算收款通道模式 -->
+        <el-table-column label="收款结算模式" width="140">
+          <template #default="{ row }">
+            <el-tag v-if="row.paymentChannelType === 'A'" type="primary" size="small">
+              A-电商收付通
+            </el-tag>
+            <el-tag v-else-if="row.paymentChannelType === 'B'" type="warning" size="small">
+              B-商户直收码
+            </el-tag>
+            <el-tag v-else type="info" size="small">
+              C-沙箱测试桩
+            </el-tag>
+          </template>
+        </el-table-column>
+
+        <el-table-column prop="commissionRate" label="抽佣比例" width="90">
           <template #default="{ row }">
             <el-tag type="danger" effect="plain">{{ row.commissionRate }}%</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="status" label="状态" width="100">
+
+        <el-table-column prop="status" label="营业状态" width="95">
           <template #default="{ row }">
-            <el-tag :type="row.status === 1 ? 'success' : 'danger'">
-              {{ row.status === 1 ? '正常营业' : '打烊/禁用' }}
+            <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
+              {{ row.status === 1 ? '正常' : '已封禁' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="180" fixed="right">
+
+        <!-- 管理操作 -->
+        <el-table-column label="管理操作" width="220" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" type="primary" link @click="editCommission(row)">调整费率</el-button>
+            <el-button size="small" type="primary" link @click="openFeeDialog(row)">配置服务费</el-button>
+            <el-button size="small" type="warning" link @click="openChannelDialog(row)">切换通道</el-button>
+            <el-button size="small" type="info" link @click="editCommission(row)">费率</el-button>
             <el-button size="small" :type="row.status === 1 ? 'danger' : 'success'" link @click="toggleStatus(row)">
-              {{ row.status === 1 ? '打烊封禁' : '恢复营业' }}
+              {{ row.status === 1 ? '打烊' : '开业' }}
             </el-button>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
 
-    <!-- 新增商户弹窗 -->
+    <!-- 1. 新增商户弹窗 -->
     <el-dialog v-model="dialogVisible" title="新增/开通入驻商户 (个人免执照模式)" width="540px">
       <el-form :model="form" label-width="120px">
         <el-form-item label="店铺唯一编码" required>
@@ -79,24 +123,83 @@
         <el-form-item label="联系手机号" required>
           <el-input v-model="form.contactPhone" placeholder="商户通知手机" />
         </el-form-item>
-        <el-form-item label="个人结算储蓄卡">
-          <el-input v-model="form.bankAccountNumber" placeholder="二级分账结算银联卡号" />
+        <el-divider content-position="left">二级分账银行结算卡</el-divider>
+        <el-form-item label="开户银行">
+          <el-input v-model="form.bankName" placeholder="如 中国工商银行北京分行" />
         </el-form-item>
-        <el-form-item label="开户银行名称">
-          <el-input v-model="form.bankName" placeholder="例如 中国工商银行" />
+        <el-form-item label="银行借记卡号">
+          <el-input v-model="form.bankAccountNumber" placeholder="6222 开头个人一类银行卡号" />
         </el-form-item>
-        <el-form-item label="初始登录账号" required>
-          <el-input v-model="form.adminUsername" placeholder="登录后台所用的手机号或账号" />
+        <el-divider content-position="left">工作台管理账号与费率</el-divider>
+        <el-form-item label="店长登录账号" required>
+          <el-input v-model="form.adminUsername" placeholder="如 seller02" />
         </el-form-item>
-        <el-form-item label="平台抽佣比例(%)">
-          <el-input-number v-model="form.commissionRate" :min="0" :max="50" :precision="2" :step="0.5" />
+        <el-form-item label="初始密码" required>
+          <el-input v-model="form.adminPassword" placeholder="默认 admin123" />
+        </el-form-item>
+        <el-form-item label="技术抽成比例(%)">
+          <el-input-number v-model="form.commissionRate" :precision="2" :step="0.5" :min="0" :max="100" />
         </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitLoading" @click="handleCreate">确认开通进件</el-button>
+        <el-button type="primary" :loading="submitLoading" @click="handleCreate">确认开通并进件</el-button>
       </template>
     </el-dialog>
+
+    <!-- 2. ★ 配置商户技术服务费弹窗 -->
+    <el-dialog v-model="feeDialogVisible" title="配置商户月度技术服务费 (SaaS合规模式)" width="480px">
+      <el-form label-width="120px">
+        <el-form-item label="月技术服务费">
+          <el-input-number v-model="feeForm.monthlyFee" :precision="2" :step="10" :min="0" />
+          <span style="margin-left: 10px; font-size: 12px; color: #64748b;">元 / 月</span>
+        </el-form-item>
+        <el-form-item label="免费免收截止日">
+          <el-date-picker 
+            v-model="feeForm.feeFreeUntil" 
+            type="date" 
+            placeholder="选择免收截止日期" 
+            value-format="YYYY-MM-DD"
+            style="width: 100%;" 
+          />
+        </el-form-item>
+        <el-form-item label="服务费状态">
+          <el-select v-model="feeForm.feeStatus" style="width: 100%;">
+            <el-option label="NORMAL (正常按月计费)" value="NORMAL" />
+            <el-option label="EXEMPTED (免收/特权豁免)" value="EXEMPTED" />
+            <el-option label="ARREARS (欠费停服催收)" value="ARREARS" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="feeDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="feeSaving" @click="handleSaveFee">保存服务费配置</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 3. ★ 切换商户支付结算模式弹窗 -->
+    <el-dialog v-model="channelDialogVisible" title="切换收款通道模式 (收付通 / 独立直收 / 测试沙箱)" width="500px">
+      <el-form label-width="110px">
+        <el-form-item label="结算通道类型">
+          <el-radio-group v-model="channelForm.paymentChannelType">
+            <el-radio-button label="C">方案C (沙箱测试桩)</el-radio-button>
+            <el-radio-button label="B">方案B (商户直收码)</el-radio-button>
+            <el-radio-button label="A">方案A (收付通合规分账)</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="channelForm.paymentChannelType === 'B'" label="商户收款二维码">
+          <el-input v-model="channelForm.customPayQrcode" placeholder="请输入商户微信/支付宝个人收款码图片URL" />
+          <div style="font-size: 11px; color: #e11d48; margin-top: 4px;">
+            * 方案B模式下，付款人调起收银台将直接展示此收款码，资金直达商户，平台零二清接触。
+          </div>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="channelDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="channelSaving" @click="handleSaveChannel">保存收款通道</el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
@@ -107,8 +210,8 @@ import request from '../../api/request'
 
 const loading = ref(false)
 const submitLoading = ref(false)
-const dialogVisible = ref(false)
 const merchants = ref([])
+const dialogVisible = ref(false)
 
 const form = ref({
   storeCode: '',
@@ -124,10 +227,23 @@ const form = ref({
   commissionRate: 3.00
 })
 
-const maskIdCard = (id) => {
-  if (!id || id.length < 10) return id
-  return id.substring(0, 4) + '**********' + id.substring(id.length - 4)
-}
+// 服务费配置
+const feeDialogVisible = ref(false)
+const feeSaving = ref(false)
+const currentStoreId = ref(null)
+const feeForm = ref({
+  monthlyFee: 0,
+  feeFreeUntil: '',
+  feeStatus: 'NORMAL'
+})
+
+// 通道模式配置
+const channelDialogVisible = ref(false)
+const channelSaving = ref(false)
+const channelForm = ref({
+  paymentChannelType: 'C',
+  customPayQrcode: ''
+})
 
 const loadMerchants = async () => {
   loading.value = true
@@ -177,6 +293,55 @@ const editCommission = (row) => {
     ElMessage.success('费率调整成功')
     loadMerchants()
   })
+}
+
+// 打开服务费弹窗
+const openFeeDialog = (row) => {
+  currentStoreId.value = row.id
+  feeForm.value = {
+    monthlyFee: row.monthlyFee || 0,
+    feeFreeUntil: row.feeFreeUntil || '',
+    feeStatus: row.feeStatus || 'NORMAL'
+  }
+  feeDialogVisible.value = true
+}
+
+const handleSaveFee = async () => {
+  feeSaving.value = true
+  try {
+    await request.put(`/admin/merchants/${currentStoreId.value}/service-fee`, feeForm.value)
+    ElMessage.success('商户技术服务费配置已保存！')
+    feeDialogVisible.value = false
+    loadMerchants()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.message || '配置保存失败')
+  } finally {
+    feeSaving.value = false
+  }
+}
+
+// 打开通道弹窗
+const openChannelDialog = (row) => {
+  currentStoreId.value = row.id
+  channelForm.value = {
+    paymentChannelType: row.paymentChannelType || 'C',
+    customPayQrcode: row.customPayQrcode || ''
+  }
+  channelDialogVisible.value = true
+}
+
+const handleSaveChannel = async () => {
+  channelSaving.value = true
+  try {
+    await request.put(`/admin/merchants/${currentStoreId.value}/payment-channel`, channelForm.value)
+    ElMessage.success('结算收款通道模式已更新！')
+    channelDialogVisible.value = false
+    loadMerchants()
+  } catch (e) {
+    ElMessage.error(e.response?.data?.message || '通道更新失败')
+  } finally {
+    channelSaving.value = false
+  }
 }
 
 onMounted(() => {

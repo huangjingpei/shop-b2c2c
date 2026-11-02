@@ -127,6 +127,42 @@ public class MerchantController {
         return R.ok("费率调整成功", null);
     }
 
+    @Data
+    public static class ServiceFeeConfigDTO {
+        private BigDecimal monthlyFee;
+        private java.time.LocalDate feeFreeUntil;
+        private String feeStatus; // NORMAL, EXEMPTED, ARREARS
+    }
+
+    @Operation(summary = "【超管】配置商户月度技术服务费与免收期")
+    @PutMapping("/api/v1/admin/merchants/{id}/service-fee")
+    public R<Void> updateServiceFee(@PathVariable Long id, @RequestBody ServiceFeeConfigDTO dto) {
+        MerchantStore store = storeRepository.findById(id)
+                .orElseThrow(() -> new BusinessException("店铺不存在"));
+        if (dto.getMonthlyFee() != null) store.setMonthlyFee(dto.getMonthlyFee());
+        if (dto.getFeeFreeUntil() != null) store.setFeeFreeUntil(dto.getFeeFreeUntil().atStartOfDay());
+        if (dto.getFeeStatus() != null) store.setFeeStatus(dto.getFeeStatus());
+        storeRepository.save(store);
+        return R.ok("商户技术服务费配置更新成功", null);
+    }
+
+    @Data
+    public static class PaymentChannelConfigDTO {
+        private String paymentChannelType; // A-平台收付通, B-商家独立直收, C-测试桩
+        private String customPayQrcode;
+    }
+
+    @Operation(summary = "【超管】配置商户结算通道类型与独立收款码")
+    @PutMapping("/api/v1/admin/merchants/{id}/payment-channel")
+    public R<Void> updatePaymentChannel(@PathVariable Long id, @RequestBody PaymentChannelConfigDTO dto) {
+        MerchantStore store = storeRepository.findById(id)
+                .orElseThrow(() -> new BusinessException("店铺不存在"));
+        if (dto.getPaymentChannelType() != null) store.setPaymentChannelType(dto.getPaymentChannelType());
+        if (dto.getCustomPayQrcode() != null) store.setCustomPayQrcode(dto.getCustomPayQrcode());
+        storeRepository.save(store);
+        return R.ok("商户结算收款通道配置成功", null);
+    }
+
     // ==========================================
     // 商家工作台视角 API (/api/v1/merchant/profile)
     // ==========================================
@@ -159,6 +195,7 @@ public class MerchantController {
         if (updateDTO.getNotice() != null) store.setNotice(updateDTO.getNotice());
         if (updateDTO.getLogoUrl() != null) store.setLogoUrl(updateDTO.getLogoUrl());
         if (updateDTO.getContactPhone() != null) store.setContactPhone(updateDTO.getContactPhone());
+        if (updateDTO.getCustomPayQrcode() != null) store.setCustomPayQrcode(updateDTO.getCustomPayQrcode());
 
         storeRepository.save(store);
         return R.ok("店铺资料保存成功", null);
