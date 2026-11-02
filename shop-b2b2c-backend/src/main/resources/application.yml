@@ -20,23 +20,13 @@ spring:
       max-lifetime: 1800000
       connection-timeout: 30000
 
-  # 开发期数据库一键启动自动自愈与初始化配置
+  # 开发期数据库一键启动自动自愈与初始化配置 (单一权威源: classpath:db/schema.sql)
   sql:
     init:
       mode: always # 每次应用启动自动执行 schema.sql 初始化建表与种子数据
-      schema-locations: classpath:schema.sql
+      schema-locations: classpath:db/schema.sql
       encoding: UTF-8
       continue-on-error: true # 容错模式：遇表或记录已存在不抛异常阻断启动
-
-  jpa:
-    database-platform: org.hibernate.dialect.MySQLDialect
-    hibernate:
-      ddl-auto: update
-    show-sql: false
-    defer-datasource-initialization: false
-    properties:
-      hibernate:
-        format_sql: false
 
   data:
     redis:
@@ -45,12 +35,26 @@ spring:
       database: 0
       timeout: 5000ms
 
-# JWT 配置
-jwt:
-  secret: a9B8c7D6e5F4g3H2i1J0k9L8m7N6o5P4q3R2s1T0u9V8w7X6y5Z4
-  expiration: 86400000 # 24小时 (毫秒)
-  header: Authorization
-  prefix: "Bearer "
+# MyBatis-Plus 配置
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  type-aliases-package: com.shop.b2b2c.entity
+  configuration:
+    map-underscore-to-camel-case: true
+    cache-enabled: false
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+# Sa-Token 权限与多端会话配置
+sa-token:
+  token-name: Authorization # 拦截 Authorization Header
+  timeout: 2592000 # 30天 (秒)
+  active-timeout: -1 # 临时有效期，-1代表不限制
+  is-concurrent: true # 是否允许同一账号多端并存
+  is-share: true # 登录后共用同一 Token
+  token-style: uuid # 采用 uuid 风格
+  is-read-header: true # 从 Header 读取
+  is-read-cookie: false # 不从 Cookie 强绑定
+  token-prefix: Bearer # Bearer 前缀兼容标准前端 Axios
 
 # 平台分账与支付沙箱模拟配置
 payment:

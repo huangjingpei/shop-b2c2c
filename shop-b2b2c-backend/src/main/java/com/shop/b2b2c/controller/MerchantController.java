@@ -1,19 +1,19 @@
 package com.shop.b2b2c.controller;
 
+import cn.dev33.satoken.secure.BCrypt;
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.SecurityUtils;
 import com.shop.b2b2c.entity.MerchantPaymentAccount;
 import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.entity.SysUser;
-import com.shop.b2b2c.repository.MerchantPaymentAccountRepository;
-import com.shop.b2b2c.repository.MerchantStoreRepository;
-import com.shop.b2b2c.repository.SysUserRepository;
+import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
+import com.shop.b2b2c.mapper.MerchantStoreMapper;
+import com.shop.b2b2c.mapper.SysUserMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
-import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
@@ -27,10 +27,9 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class MerchantController {
 
-    private final MerchantStoreRepository storeRepository;
-    private final MerchantPaymentAccountRepository paymentAccountRepository;
-    private final SysUserRepository userRepository;
-    private final PasswordEncoder passwordEncoder;
+    private final MerchantStoreMapper storeMapper;
+    private final MerchantPaymentAccountMapper paymentAccountMapper;
+    private final SysUserMapper userMapper;
 
     // ==========================================
     // 平台超级管理员视角 API (/api/v1/admin/merchants)
@@ -39,7 +38,7 @@ public class MerchantController {
     @Operation(summary = "【超管】全平台入驻店铺列表")
     @GetMapping("/api/v1/admin/merchants")
     public R<List<MerchantStore>> listAllMerchants() {
-        return R.ok(storeRepository.findAll());
+        return R.ok(storeMapper.selectList(null));
     }
 
     @Data
@@ -62,10 +61,10 @@ public class MerchantController {
     @PostMapping("/api/v1/admin/merchants")
     @Transactional(rollbackFor = Exception.class)
     public R<MerchantStore> createMerchant(@RequestBody CreateMerchantDTO dto) {
-        if (storeRepository.findByStoreCode(dto.getStoreCode()).isPresent()) {
+        if (storeMapper.findByStoreCode(dto.getStoreCode()).isPresent()) {
             throw new BusinessException("店铺编码已存在");
         }
-        if (userRepository.findByUsername(dto.getAdminUsername()).isPresent()) {
+        if (userMapper.findByUsername(dto.getAdminUsername()).isPresent()) {
             throw new BusinessException("登录账号已存在");
         }
 
@@ -79,17 +78,18 @@ public class MerchantController {
         store.setContactPhone(dto.getContactPhone());
         store.setStatus(1); // 正常营业
         store.setCommissionRate(dto.getCommissionRate() != null ? dto.getCommissionRate() : new BigDecimal("3.00"));
-        store = storeRepository.save(store);
+        store = storeMapper.save(store);
 
-        // 2. 创建商户主管理员账号
+        // 2. 创建商户主管理员账号 (使用 Sa-Token BCrypt 加密)
         SysUser user = new SysUser();
         user.setMerchantId(store.getId());
         user.setUsername(dto.getAdminUsername());
-        user.setPassword(passwordEncoder.encode(dto.getAdminPassword() != null ? dto.getAdminPassword() : "admin123"));
+        String rawPwd = dto.getAdminPassword() != null ? dto.getAdminPassword() : "admin123";
+        user.setPassword(BCrypt.hashpw(rawPwd));
         user.setRealName(dto.getOwnerName() + " (店长)");
         user.setRoleCode("MERCHANT_ADMIN");
         user.setIsActive(true);
-        userRepository.save(user);
+        userMapper.save(user);
 
         // 3. 创建二级商户收付通进件记录
         if (dto.getBankAccountNumber() != null) {
@@ -101,7 +101,7 @@ public class MerchantController {
             account.setBankAccountNumber(dto.getBankAccountNumber());
             account.setBankName(dto.getBankName() != null ? dto.getBankName() : "中国工商银行");
             account.setApplyStatus("PASSED");
-            paymentAccountRepository.save(account);
+            paymentAccountMapper.save(account);
         }
 
         return R.ok("商户开通成功", store);
@@ -110,20 +110,20 @@ public class MerchantController {
     @Operation(summary = "【超管】变更店铺营业状态 (打烊/封禁/营业)")
     @PutMapping("/api/v1/admin/merchants/{id}/status")
     public R<Void> updateStatus(@PathVariable Long id, @RequestParam Integer status) {
-        MerchantStore store = storeRepository.findById(id)
+        MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         store.setStatus(status);
-        storeRepository.save(store);
+        storeMapper.save(store);
         return R.ok("状态更新成功", null);
     }
 
     @Operation(summary = "【超管】调整店铺平台抽成比率")
     @PutMapping("/api/v1/admin/merchants/{id}/commission")
     public R<Void> updateCommission(@PathVariable Long id, @RequestParam BigDecimal rate) {
-        MerchantStore store = storeRepository.findById(id)
+        MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         store.setCommissionRate(rate);
-        storeRepository.save(store);
+        storeMapper.save(store);
         return R.ok("费率调整成功", null);
     }
 
@@ -137,12 +137,12 @@ public class MerchantController {
     @Operation(summary = "【超管】配置商户月度技术服务费与免收期")
     @PutMapping("/api/v1/admin/merchants/{id}/service-fee")
     public R<Void> updateServiceFee(@PathVariable Long id, @RequestBody ServiceFeeConfigDTO dto) {
-        MerchantStore store = storeRepository.findById(id)
+        MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         if (dto.getMonthlyFee() != null) store.setMonthlyFee(dto.getMonthlyFee());
         if (dto.getFeeFreeUntil() != null) store.setFeeFreeUntil(dto.getFeeFreeUntil().atStartOfDay());
         if (dto.getFeeStatus() != null) store.setFeeStatus(dto.getFeeStatus());
-        storeRepository.save(store);
+        storeMapper.save(store);
         return R.ok("商户技术服务费配置更新成功", null);
     }
 
@@ -155,11 +155,11 @@ public class MerchantController {
     @Operation(summary = "【超管】配置商户结算通道类型与独立收款码")
     @PutMapping("/api/v1/admin/merchants/{id}/payment-channel")
     public R<Void> updatePaymentChannel(@PathVariable Long id, @RequestBody PaymentChannelConfigDTO dto) {
-        MerchantStore store = storeRepository.findById(id)
+        MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         if (dto.getPaymentChannelType() != null) store.setPaymentChannelType(dto.getPaymentChannelType());
         if (dto.getCustomPayQrcode() != null) store.setCustomPayQrcode(dto.getCustomPayQrcode());
-        storeRepository.save(store);
+        storeMapper.save(store);
         return R.ok("商户结算收款通道配置成功", null);
     }
 
@@ -174,10 +174,10 @@ public class MerchantController {
         if (merchantId == null) {
             throw new BusinessException("当前非商家账号或未绑定店铺");
         }
-        MerchantStore store = storeRepository.findById(merchantId)
+        MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
 
-        MerchantPaymentAccount paymentAccount = paymentAccountRepository.findByMerchantId(merchantId).orElse(null);
+        MerchantPaymentAccount paymentAccount = paymentAccountMapper.findByMerchantId(merchantId).orElse(null);
 
         Map<String, Object> map = new HashMap<>();
         map.put("store", store);
@@ -189,7 +189,7 @@ public class MerchantController {
     @PutMapping("/api/v1/merchant/profile")
     public R<Void> updateMerchantProfile(@RequestBody MerchantStore updateDTO) {
         Long merchantId = SecurityUtils.getCurrentMerchantId();
-        MerchantStore store = storeRepository.findById(merchantId)
+        MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
 
         if (updateDTO.getNotice() != null) store.setNotice(updateDTO.getNotice());
@@ -197,7 +197,7 @@ public class MerchantController {
         if (updateDTO.getContactPhone() != null) store.setContactPhone(updateDTO.getContactPhone());
         if (updateDTO.getCustomPayQrcode() != null) store.setCustomPayQrcode(updateDTO.getCustomPayQrcode());
 
-        storeRepository.save(store);
+        storeMapper.save(store);
         return R.ok("店铺资料保存成功", null);
     }
 }

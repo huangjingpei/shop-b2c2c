@@ -1,29 +1,20 @@
 package com.shop.b2b2c.entity;
 
-import jakarta.persistence.*;
+import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableId;
+import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
 import java.time.LocalDateTime;
 
 @Data
-@Entity
-@Table(name = "category")
+@TableName("category")
 public class Category {
-    @Id
-    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @TableId(type = IdType.AUTO)
     private Long id;
 
-    @Column(name = "parent_id")
     private Long parentId = 0L;
-
-    @Column(nullable = false)
     private String name;
-
-    @Column
     private String icon;
-
-    @Column(name = "sort_order")
     private Integer sortOrder = 0;
-
-    @Column(name = "created_at", insertable = false, updatable = false)
     private LocalDateTime createdAt;
 }

@@ -7,10 +7,10 @@ import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.entity.Product;
 import com.shop.b2b2c.entity.ProductSku;
 import com.shop.b2b2c.entity.ProductVirtualCard;
-import com.shop.b2b2c.repository.MerchantStoreRepository;
-import com.shop.b2b2c.repository.ProductRepository;
-import com.shop.b2b2c.repository.ProductSkuRepository;
-import com.shop.b2b2c.repository.ProductVirtualCardRepository;
+import com.shop.b2b2c.mapper.MerchantStoreMapper;
+import com.shop.b2b2c.mapper.ProductMapper;
+import com.shop.b2b2c.mapper.ProductSkuMapper;
+import com.shop.b2b2c.mapper.ProductVirtualCardMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
@@ -26,10 +26,10 @@ import java.util.*;
 @RequiredArgsConstructor
 public class ProductController {
 
-    private final ProductRepository productRepository;
-    private final ProductSkuRepository skuRepository;
-    private final ProductVirtualCardRepository cardRepository;
-    private final MerchantStoreRepository storeRepository;
+    private final ProductMapper productMapper;
+    private final ProductSkuMapper skuMapper;
+    private final ProductVirtualCardMapper cardMapper;
+    private final MerchantStoreMapper storeMapper;
 
     // ==========================================
     // 16688 买家端公开货源流 API
@@ -43,11 +43,11 @@ public class ProductController {
 
         List<Product> products;
         if (categoryId != null) {
-            products = productRepository.findByCategoryIdAndStatusOrderBySortOrderAsc(categoryId, 1);
+            products = productMapper.findByCategoryIdAndStatusOrderBySortOrderAsc(categoryId, 1);
         } else if (merchantId != null) {
-            products = productRepository.findByMerchantIdAndStatus(merchantId, 1);
+            products = productMapper.findByMerchantIdAndStatus(merchantId, 1);
         } else {
-            products = productRepository.findByStatusOrderBySortOrderAsc(1);
+            products = productMapper.findByStatusOrderBySortOrderAsc(1);
         }
 
         List<Map<String, Object>> result = new ArrayList<>();
@@ -64,7 +64,7 @@ public class ProductController {
             vo.put("merchantId", p.getMerchantId());
 
             MerchantStore store = storeCache.computeIfAbsent(p.getMerchantId(),
-                    id -> storeRepository.findById(id).orElse(null));
+                    id -> storeMapper.findById(id).orElse(null));
             if (store != null) {
                 vo.put("storeName", store.getStoreName());
                 vo.put("storeCode", store.getStoreCode());
@@ -72,7 +72,7 @@ public class ProductController {
             }
 
             // 查询可用库存总数
-            List<ProductSku> skus = skuRepository.findByProductId(p.getId());
+            List<ProductSku> skus = skuMapper.findByProductId(p.getId());
             int totalStock = skus.stream().mapToInt(ProductSku::getStockQuantity).sum();
             vo.put("totalStock", totalStock);
 
@@ -85,11 +85,11 @@ public class ProductController {
     @Operation(summary = "【公开】商品详情与 SKU 变体信息")
     @GetMapping("/api/v1/public/products/{id}")
     public R<Map<String, Object>> getProductDetail(@PathVariable Long id) {
-        Product product = productRepository.findById(id)
+        Product product = productMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("商品不存在或已下架"));
 
-        List<ProductSku> skus = skuRepository.findByProductId(id);
-        MerchantStore store = storeRepository.findById(product.getMerchantId()).orElse(null);
+        List<ProductSku> skus = skuMapper.findByProductId(id);
+        MerchantStore store = storeMapper.findById(product.getMerchantId()).orElse(null);
 
         Map<String, Object> res = new HashMap<>();
         res.put("product", product);
@@ -107,9 +107,9 @@ public class ProductController {
     public R<List<Product>> listMerchantProducts() {
         Long merchantId = SecurityUtils.getCurrentMerchantId();
         if (merchantId == null) {
-            return R.ok(productRepository.findAll()); // 超管视角看全部
+            return R.ok(productMapper.selectList(null)); // 超管视角看全部
         }
-        return R.ok(productRepository.findByMerchantId(merchantId));
+        return R.ok(productMapper.findByMerchantId(merchantId));
     }
 
     @Data
@@ -149,7 +149,7 @@ public class ProductController {
         product.setMainImage(dto.getMainImage());
         product.setMinPrice(dto.getMinPrice());
         product.setStatus(1);
-        product = productRepository.save(product);
+        product = productMapper.save(product);
 
         if (dto.getSkus() != null && !dto.getSkus().isEmpty()) {
             for (SkuDTO s : dto.getSkus()) {
@@ -160,7 +160,7 @@ public class ProductController {
                 sku.setSpecData(s.getSpecData());
                 sku.setPrice(s.getPrice());
                 sku.setStockQuantity(s.getStockQuantity() != null ? s.getStockQuantity() : 0);
-                skuRepository.save(sku);
+                skuMapper.save(sku);
             }
         }
 
@@ -181,7 +181,7 @@ public class ProductController {
         Long merchantId = SecurityUtils.getCurrentMerchantId();
         if (merchantId == null) merchantId = 1L;
 
-        ProductSku sku = skuRepository.findById(dto.getSkuId())
+        ProductSku sku = skuMapper.findById(dto.getSkuId())
                 .orElseThrow(() -> new BusinessException("指定SKU不存在"));
 
         List<ProductVirtualCard> cards = new ArrayList<>();
@@ -196,11 +196,13 @@ public class ProductController {
                 cards.add(card);
             }
         }
-        cardRepository.saveAll(cards);
+        for (ProductVirtualCard card : cards) {
+            cardMapper.insert(card);
+        }
 
         // 更新 SKU 库存
         sku.setStockQuantity(sku.getStockQuantity() + cards.size());
-        skuRepository.save(sku);
+        skuMapper.save(sku);
 
         Map<String, Object> res = new HashMap<>();
         res.put("importedCount", cards.size());
@@ -213,11 +215,11 @@ public class ProductController {
     public R<List<ProductVirtualCard>> listCards(@RequestParam(required = false) Long skuId) {
         Long merchantId = SecurityUtils.getCurrentMerchantId();
         if (skuId != null) {
-            return R.ok(cardRepository.findBySkuIdAndStatus(skuId, 0));
+            return R.ok(cardMapper.findBySkuIdAndStatus(skuId, 0));
         }
         if (merchantId != null) {
-            return R.ok(cardRepository.findByMerchantId(merchantId));
+            return R.ok(cardMapper.findByMerchantId(merchantId));
         }
-        return R.ok(cardRepository.findAll());
+        return R.ok(cardMapper.selectList(null));
     }
 }

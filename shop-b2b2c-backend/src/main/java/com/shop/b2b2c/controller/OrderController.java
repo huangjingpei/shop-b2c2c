@@ -5,7 +5,7 @@ import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.SecurityUtils;
 import com.shop.b2b2c.dto.PeerPayDTOs;
 import com.shop.b2b2c.entity.*;
-import com.shop.b2b2c.repository.*;
+import com.shop.b2b2c.mapper.*;
 import com.shop.b2b2c.service.PeerPayService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -29,12 +29,12 @@ import java.util.*;
 @RequiredArgsConstructor
 public class OrderController {
 
-    private final TradeOrderRepository orderRepository;
-    private final TradeOrderItemRepository itemRepository;
-    private final MerchantStoreRepository storeRepository;
-    private final ProductRepository productRepository;
-    private final ProductSkuRepository skuRepository;
-    private final ProductVirtualCardRepository cardRepository;
+    private final TradeOrderMapper orderMapper;
+    private final TradeOrderItemMapper itemMapper;
+    private final MerchantStoreMapper storeMapper;
+    private final ProductMapper productMapper;
+    private final ProductSkuMapper skuMapper;
+    private final ProductVirtualCardMapper cardMapper;
     private final StringRedisTemplate redisTemplate;
     private final PeerPayService peerPayService;
 
@@ -59,11 +59,11 @@ public class OrderController {
             throw new BusinessException("请输入联系手机号或邮箱，用于提取商品与查单");
         }
 
-        Product product = productRepository.findById(dto.getProductId())
+        Product product = productMapper.findById(dto.getProductId())
                 .orElseThrow(() -> new BusinessException("商品不存在"));
-        ProductSku sku = skuRepository.findById(dto.getSkuId())
+        ProductSku sku = skuMapper.findById(dto.getSkuId())
                 .orElseThrow(() -> new BusinessException("规格SKU不存在"));
-        MerchantStore store = storeRepository.findById(product.getMerchantId())
+        MerchantStore store = storeMapper.findById(product.getMerchantId())
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
 
         // 校验库存
@@ -86,7 +86,7 @@ public class OrderController {
 
         // 扣减 SKU 库存
         sku.setStockQuantity(sku.getStockQuantity() - dto.getQuantity());
-        skuRepository.save(sku);
+        skuMapper.save(sku);
 
         // 创建订单主表
         TradeOrder order = new TradeOrder();
@@ -106,7 +106,7 @@ public class OrderController {
         // 交付逻辑：如果是虚拟卡密商品，秒级分配库存
         List<String> deliveredCards = new ArrayList<>();
         if (product.getGoodsType() == 2) {
-            List<ProductVirtualCard> availableCards = cardRepository.findBySkuIdAndStatus(sku.getId(), 0);
+            List<ProductVirtualCard> availableCards = cardMapper.findBySkuIdAndStatus(sku.getId(), 0);
             if (availableCards.size() < dto.getQuantity()) {
                 throw new BusinessException("卡密可用库存不足，请联系客服补货");
             }
@@ -114,7 +114,7 @@ public class OrderController {
                 ProductVirtualCard card = availableCards.get(i);
                 card.setStatus(1); // 已售出
                 card.setOrderSn(orderSn);
-                cardRepository.save(card);
+                cardMapper.save(card);
                 deliveredCards.add(card.getCardContent());
             }
             order.setOrderStatus("COMPLETED"); // 虚拟卡密自动完结
@@ -126,7 +126,7 @@ public class OrderController {
             order.setSharingStatus("PENDING");
         }
 
-        order = orderRepository.save(order);
+        order = orderMapper.save(order);
 
         // 创建订单明细
         TradeOrderItem item = new TradeOrderItem();
@@ -143,7 +143,7 @@ public class OrderController {
         if (!deliveredCards.isEmpty()) {
             item.setCardDetails(String.join("\n", deliveredCards));
         }
-        itemRepository.save(item);
+        itemMapper.save(item);
 
         Map<String, Object> result = new HashMap<>();
         result.put("orderSn", orderSn);
@@ -173,11 +173,11 @@ public class OrderController {
             }
         } catch (Exception ignored) {}
 
-        TradeOrder order = orderRepository.findByOrderSnAndBuyerContact(orderSn.trim(), contact.trim())
+        TradeOrder order = orderMapper.findByOrderSnAndBuyerContact(orderSn.trim(), contact.trim())
                 .orElseThrow(() -> new BusinessException("未找到匹配的订单，请仔细核对订单号与下单时预留的手机/邮箱"));
 
-        List<TradeOrderItem> items = itemRepository.findByOrderSn(order.getOrderSn());
-        MerchantStore store = storeRepository.findById(order.getMerchantId()).orElse(null);
+        List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
+        MerchantStore store = storeMapper.findById(order.getMerchantId()).orElse(null);
 
         Map<String, Object> res = new HashMap<>();
         res.put("order", order);
@@ -196,16 +196,16 @@ public class OrderController {
         Long merchantId = SecurityUtils.getCurrentMerchantId();
         List<TradeOrder> orders;
         if (merchantId != null) {
-            orders = orderRepository.findByMerchantIdOrderByCreatedAtDesc(merchantId);
+            orders = orderMapper.findByMerchantIdOrderByCreatedAtDesc(merchantId);
         } else {
-            orders = orderRepository.findAllByOrderByCreatedAtDesc();
+            orders = orderMapper.findAllByOrderByCreatedAtDesc();
         }
 
         List<Map<String, Object>> resList = new ArrayList<>();
         for (TradeOrder o : orders) {
             Map<String, Object> map = new HashMap<>();
             map.put("order", o);
-            map.put("items", itemRepository.findByOrderSn(o.getOrderSn()));
+            map.put("items", itemMapper.findByOrderSn(o.getOrderSn()));
             resList.add(map);
         }
         return R.ok(resList);
@@ -220,7 +220,7 @@ public class OrderController {
     @Operation(summary = "【商家】实物订单录入运单发货")
     @PostMapping("/api/v1/merchant/orders/{id}/deliver")
     public R<Void> deliverOrder(@PathVariable Long id, @RequestBody DeliverDTO dto) {
-        TradeOrder order = orderRepository.findById(id)
+        TradeOrder order = orderMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("订单不存在"));
 
         if (!"PAID".equals(order.getOrderStatus())) {
@@ -231,7 +231,7 @@ public class OrderController {
         order.setLogisticsCompany(dto.getLogisticsCompany());
         order.setTrackingNumber(dto.getTrackingNumber());
         order.setDeliveryTime(LocalDateTime.now());
-        orderRepository.save(order);
+        orderMapper.save(order);
 
         return R.ok("发货成功", null);
     }
@@ -265,7 +265,7 @@ public class OrderController {
     @Operation(summary = "【超管】全平台交易大盘与分账监管流水")
     @GetMapping("/api/v1/admin/orders")
     public R<Map<String, Object>> listAdminOrders() {
-        List<TradeOrder> orders = orderRepository.findAllByOrderByCreatedAtDesc();
+        List<TradeOrder> orders = orderMapper.findAllByOrderByCreatedAtDesc();
 
         BigDecimal totalTurnover = BigDecimal.ZERO;
         BigDecimal totalCommission = BigDecimal.ZERO;

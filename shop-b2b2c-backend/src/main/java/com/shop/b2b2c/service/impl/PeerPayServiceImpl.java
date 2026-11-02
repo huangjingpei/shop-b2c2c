@@ -4,7 +4,7 @@ import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.PosterUtils;
 import com.shop.b2b2c.dto.PeerPayDTOs;
 import com.shop.b2b2c.entity.*;
-import com.shop.b2b2c.repository.*;
+import com.shop.b2b2c.mapper.*;
 import com.shop.b2b2c.service.PeerPayService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -26,13 +26,13 @@ import java.util.concurrent.TimeUnit;
 @RequiredArgsConstructor
 public class PeerPayServiceImpl implements PeerPayService {
 
-    private final TradeOrderRepository orderRepository;
-    private final TradeOrderItemRepository itemRepository;
-    private final MerchantStoreRepository storeRepository;
-    private final ProductRepository productRepository;
-    private final ProductSkuRepository skuRepository;
-    private final ProductVirtualCardRepository cardRepository;
-    private final PlatformAdConfigRepository adConfigRepository;
+    private final TradeOrderMapper orderMapper;
+    private final TradeOrderItemMapper itemMapper;
+    private final MerchantStoreMapper storeMapper;
+    private final ProductMapper productMapper;
+    private final ProductSkuMapper skuMapper;
+    private final ProductVirtualCardMapper cardMapper;
+    private final PlatformAdConfigMapper adConfigMapper;
     private final StringRedisTemplate redisTemplate;
 
     @Value("${app.frontend.storefront-url:http://localhost:3002}")
@@ -51,11 +51,11 @@ public class PeerPayServiceImpl implements PeerPayService {
             throw new BusinessException("请输入联系手机号或邮箱，用于提取商品与查单");
         }
 
-        Product product = productRepository.findById(req.getProductId())
+        Product product = productMapper.findById(req.getProductId())
                 .orElseThrow(() -> new BusinessException("商品不存在"));
-        ProductSku sku = skuRepository.findById(req.getSkuId())
+        ProductSku sku = skuMapper.findById(req.getSkuId())
                 .orElseThrow(() -> new BusinessException("商品规格SKU不存在"));
-        MerchantStore store = storeRepository.findById(product.getMerchantId())
+        MerchantStore store = storeMapper.findById(product.getMerchantId())
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
 
         // 阶段一意向校验：只查物理库存是否存在，不执行真实扣减 (防刷与防恶搞占库存)
@@ -106,7 +106,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         );
         order.setPosterUrl(posterBase64);
 
-        order = orderRepository.save(order);
+        order = orderMapper.save(order);
 
         // 创建订单明细
         TradeOrderItem item = new TradeOrderItem();
@@ -120,7 +120,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         item.setPrice(sku.getPrice());
         item.setQuantity(req.getQuantity());
         item.setSubtotal(totalAmount);
-        itemRepository.save(item);
+        itemMapper.save(item);
 
         Map<String, Object> result = new HashMap<>();
         result.put("orderSn", orderSn);
@@ -140,15 +140,15 @@ public class PeerPayServiceImpl implements PeerPayService {
             throw new BusinessException("商品数量必须大于0");
         }
 
-        Product product = productRepository.findById(req.getProductId())
+        Product product = productMapper.findById(req.getProductId())
                 .orElseThrow(() -> new BusinessException("商品不存在"));
         if (!product.getMerchantId().equals(merchantId)) {
             throw new BusinessException("无权操作非本店商品");
         }
 
-        ProductSku sku = skuRepository.findById(req.getSkuId())
+        ProductSku sku = skuMapper.findById(req.getSkuId())
                 .orElseThrow(() -> new BusinessException("商品规格SKU不存在"));
-        MerchantStore store = storeRepository.findById(merchantId)
+        MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException("商户店铺不存在"));
 
         if (sku.getStockQuantity() < req.getQuantity()) {
@@ -199,7 +199,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         );
         order.setPosterUrl(posterBase64);
 
-        order = orderRepository.save(order);
+        order = orderMapper.save(order);
 
         TradeOrderItem item = new TradeOrderItem();
         item.setOrderId(order.getId());
@@ -212,7 +212,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         item.setPrice(unitPrice);
         item.setQuantity(req.getQuantity());
         item.setSubtotal(totalAmount);
-        itemRepository.save(item);
+        itemMapper.save(item);
 
         Map<String, Object> result = new HashMap<>();
         result.put("orderSn", orderSn);
@@ -227,7 +227,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PeerPayDTOs.DetailResponse getPeerPayDetail(String token) {
-        TradeOrder order = orderRepository.findByPeerPayToken(token)
+        TradeOrder order = orderMapper.findByPeerPayToken(token)
                 .orElseThrow(() -> new BusinessException("代付账单不存在或已失效"));
 
         // 自愈机制：如果状态为 RESERVED_LOCK 但已经超时超过 15 分钟，自动回退释放为 INIT
@@ -236,15 +236,15 @@ public class PeerPayServiceImpl implements PeerPayService {
                 log.info("代付单 [{}] 预占锁超时到达，自愈释放锁回到 INIT", order.getOrderSn());
                 order.setPeerStatus("INIT");
                 order.setLockExpireTime(null);
-                orderRepository.save(order);
+                orderMapper.save(order);
                 redisTemplate.delete(PRELOCK_REDIS_PREFIX + order.getOrderSn());
             }
         }
 
-        List<TradeOrderItem> items = itemRepository.findByOrderSn(order.getOrderSn());
+        List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
         TradeOrderItem firstItem = items.isEmpty() ? null : items.get(0);
-        MerchantStore store = storeRepository.findById(order.getMerchantId()).orElse(null);
-        Product product = firstItem != null ? productRepository.findById(firstItem.getProductId()).orElse(null) : null;
+        MerchantStore store = storeMapper.findById(order.getMerchantId()).orElse(null);
+        Product product = firstItem != null ? productMapper.findById(firstItem.getProductId()).orElse(null) : null;
 
         PeerPayDTOs.DetailResponse resp = new PeerPayDTOs.DetailResponse();
         resp.setToken(order.getPeerPayToken());
@@ -308,7 +308,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PeerPayDTOs.PreLockResult preLockInventory(String token) {
-        TradeOrder order = orderRepository.findByPeerPayToken(token)
+        TradeOrder order = orderMapper.findByPeerPayToken(token)
                 .orElseThrow(() -> new BusinessException("代付账单不存在"));
 
         if ("PAID".equals(order.getOrderStatus()) || "COMPLETED".equals(order.getOrderStatus())) {
@@ -324,9 +324,9 @@ public class PeerPayServiceImpl implements PeerPayService {
         }
 
         // 检查实际物理库存
-        List<TradeOrderItem> items = itemRepository.findByOrderSn(order.getOrderSn());
+        List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
         for (TradeOrderItem item : items) {
-            ProductSku sku = skuRepository.findById(item.getSkuId())
+            ProductSku sku = skuMapper.findById(item.getSkuId())
                     .orElseThrow(() -> new BusinessException("商品SKU不存在"));
             if (sku.getStockQuantity() < item.getQuantity()) {
                 throw new BusinessException("抱歉，当前商品库存已被购罄，无法支付");
@@ -343,7 +343,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         LocalDateTime expireTime = LocalDateTime.now().plusMinutes(DEFAULT_LOCK_MINUTES);
         order.setPeerStatus("RESERVED_LOCK");
         order.setLockExpireTime(expireTime);
-        orderRepository.save(order);
+        orderMapper.save(order);
 
         PeerPayDTOs.PreLockResult result = new PeerPayDTOs.PreLockResult();
         result.setSuccess(true);
@@ -357,11 +357,11 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void cancelPreLock(String token) {
-        TradeOrder order = orderRepository.findByPeerPayToken(token).orElse(null);
+        TradeOrder order = orderMapper.findByPeerPayToken(token).orElse(null);
         if (order != null && "RESERVED_LOCK".equals(order.getPeerStatus())) {
             order.setPeerStatus("INIT");
             order.setLockExpireTime(null);
-            orderRepository.save(order);
+            orderMapper.save(order);
             redisTemplate.delete(PRELOCK_REDIS_PREFIX + order.getOrderSn());
             log.info("代付单 [{}] 付款人主动离开收银台，锁已即时释放", order.getOrderSn());
         }
@@ -370,7 +370,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public TradeOrder notifyPaymentSuccess(String token, String payerId, String payTradeNo, String channel) {
-        TradeOrder order = orderRepository.findByPeerPayToken(token)
+        TradeOrder order = orderMapper.findByPeerPayToken(token)
                 .orElseThrow(() -> new BusinessException("代付单不存在"));
 
         if ("PAID".equals(order.getOrderStatus()) || "COMPLETED".equals(order.getOrderStatus())) {
@@ -378,20 +378,20 @@ public class PeerPayServiceImpl implements PeerPayService {
             return order;
         }
 
-        List<TradeOrderItem> items = itemRepository.findByOrderSn(order.getOrderSn());
+        List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
         if (items.isEmpty()) {
             throw new BusinessException("订单明细异常");
         }
 
         // 阶段二两段式落地：真实扣减物理库存
         for (TradeOrderItem item : items) {
-            ProductSku sku = skuRepository.findById(item.getSkuId())
+            ProductSku sku = skuMapper.findById(item.getSkuId())
                     .orElseThrow(() -> new BusinessException("商品SKU不存在"));
             if (sku.getStockQuantity() < item.getQuantity()) {
                 throw new BusinessException("商品库存不足，扣减失败");
             }
             sku.setStockQuantity(sku.getStockQuantity() - item.getQuantity());
-            skuRepository.save(sku);
+            skuMapper.save(sku);
         }
 
         // 绑定三方完整对账角色 <卖家, 买家, 付款人>
@@ -404,18 +404,18 @@ public class PeerPayServiceImpl implements PeerPayService {
         // 如果是虚拟卡密，自动发放分配卡密库
         if (order.getGoodsType() == 2) {
             TradeOrderItem firstItem = items.get(0);
-            List<ProductVirtualCard> availableCards = cardRepository.findBySkuIdAndStatus(firstItem.getSkuId(), 0);
+            List<ProductVirtualCard> availableCards = cardMapper.findBySkuIdAndStatus(firstItem.getSkuId(), 0);
             if (availableCards.size() >= firstItem.getQuantity()) {
                 List<String> deliveredCards = new ArrayList<>();
                 for (int i = 0; i < firstItem.getQuantity(); i++) {
                     ProductVirtualCard card = availableCards.get(i);
                     card.setStatus(1); // 已售出
                     card.setOrderSn(order.getOrderSn());
-                    cardRepository.save(card);
+                    cardMapper.save(card);
                     deliveredCards.add(card.getCardContent());
                 }
                 firstItem.setCardDetails(String.join("\n", deliveredCards));
-                itemRepository.save(firstItem);
+                itemMapper.save(firstItem);
 
                 order.setOrderStatus("COMPLETED");
                 order.setSharingStatus("FINISHED");
@@ -433,7 +433,7 @@ public class PeerPayServiceImpl implements PeerPayService {
             order.setSharingStatus("PENDING");
         }
 
-        order = orderRepository.save(order);
+        order = orderMapper.save(order);
         redisTemplate.delete(PRELOCK_REDIS_PREFIX + order.getOrderSn());
         log.info("代付单 [{}] 支付成功落地！三方角色绑定完成: 卖家ID={}, 买家={}, 付款人={}",
                 order.getOrderSn(), order.getMerchantId(), order.getBuyerContact(), order.getPeerPayerId());
@@ -444,7 +444,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void fulfillVirtualOrder(Long orderId, String serviceVoucher, Long currentMerchantId) {
-        TradeOrder order = orderRepository.findById(orderId)
+        TradeOrder order = orderMapper.findById(orderId)
                 .orElseThrow(() -> new BusinessException("订单不存在"));
 
         if (!order.getMerchantId().equals(currentMerchantId)) {
@@ -467,26 +467,26 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setOrderStatus("COMPLETED");
         order.setSharingStatus("FINISHED");
         order.setFinishTime(LocalDateTime.now());
-        orderRepository.save(order);
+        orderMapper.save(order);
 
         log.info("商户 [{}] 完成线上服务订单 [{}] 凭证交付: {}", currentMerchantId, order.getOrderSn(), serviceVoucher);
     }
 
     @Override
     public PlatformAdConfig getSuccessAdBanner() {
-        return adConfigRepository.findFirstByAdLocationAndIsEnabledOrderBySortOrderDesc("PAYER_SUCCESS", 1)
-                .or(() -> adConfigRepository.findFirstByAdLocationAndIsEnabledOrderBySortOrderDesc("PAYER_SUCCESS_CONVERSION", 1))
+        return adConfigMapper.findFirstByAdLocationAndIsEnabledOrderBySortOrderDesc("PAYER_SUCCESS", 1)
+                .or(() -> adConfigMapper.findFirstByAdLocationAndIsEnabledOrderBySortOrderDesc("PAYER_SUCCESS_CONVERSION", 1))
                 .orElse(null);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public String regeneratePoster(String token) {
-        TradeOrder order = orderRepository.findByPeerPayToken(token)
+        TradeOrder order = orderMapper.findByPeerPayToken(token)
                 .orElseThrow(() -> new BusinessException("代付单不存在"));
 
-        MerchantStore store = storeRepository.findById(order.getMerchantId()).orElse(null);
-        List<TradeOrderItem> items = itemRepository.findByOrderSn(order.getOrderSn());
+        MerchantStore store = storeMapper.findById(order.getMerchantId()).orElse(null);
+        List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
         TradeOrderItem item = items.isEmpty() ? null : items.get(0);
 
         String storeName = store != null ? store.getStoreName() : "官方授权店";
@@ -498,7 +498,8 @@ public class PeerPayServiceImpl implements PeerPayService {
                 cashierUrl, storeName, productTitle, order.getPayAmount(), order.getPeerMessage(), goodsTypeName
         );
         order.setPosterUrl(posterBase64);
-        orderRepository.save(order);
+        orderMapper.save(order);
         return posterBase64;
     }
 }
+

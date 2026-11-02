@@ -1,35 +1,50 @@
 package com.shop.b2b2c.common;
 
-import org.springframework.security.core.Authentication;
-import org.springframework.security.core.context.SecurityContextHolder;
-
+import cn.dev33.satoken.stp.StpUtil;
+import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * 统一会话与用户上下文提取工具 (基于 Sa-Token)
+ */
 public class SecurityUtils {
 
-    @SuppressWarnings("unchecked")
     public static Map<String, Object> getCurrentDetails() {
-        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && auth.getDetails() instanceof Map) {
-            return (Map<String, Object>) auth.getDetails();
+        if (!StpUtil.isLogin()) {
+            return null;
         }
-        return null;
+        Map<String, Object> map = new HashMap<>();
+        map.put("userId", StpUtil.getLoginIdAsLong());
+        map.put("username", StpUtil.getSession().get("username"));
+        map.put("roleCode", StpUtil.getSession().get("role"));
+        map.put("merchantId", StpUtil.getSession().get("merchantId"));
+        return map;
+    }
+
+    public static Long getCurrentUserId() {
+        if (!StpUtil.isLogin()) {
+            return null;
+        }
+        return StpUtil.getLoginIdAsLong();
     }
 
     public static Long getCurrentMerchantId() {
-        Map<String, Object> details = getCurrentDetails();
-        if (details != null && details.get("merchantId") != null) {
-            return Long.valueOf(details.get("merchantId").toString());
+        if (!StpUtil.isLogin()) {
+            return null;
+        }
+        Object merchantId = StpUtil.getSession().get("merchantId");
+        if (merchantId != null) {
+            return Long.valueOf(merchantId.toString());
         }
         return null;
     }
 
     public static String getCurrentRoleCode() {
-        Map<String, Object> details = getCurrentDetails();
-        if (details != null && details.get("roleCode") != null) {
-            return details.get("roleCode").toString();
+        if (!StpUtil.isLogin()) {
+            return null;
         }
-        return null;
+        Object role = StpUtil.getSession().get("role");
+        return role != null ? role.toString() : null;
     }
 
     public static boolean isSuperAdmin() {
