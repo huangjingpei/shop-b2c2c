@@ -33,7 +33,7 @@ else
 # Shop-B2B2C 生产环境变量
 # ============================================================================
 TZ=Asia/Shanghai
-SERVER_PORT=${SERVER_PORT:-8082}
+SERVER_PORT=${SERVER_PORT:-8080}
 SERVER_ADDRESS=127.0.0.1
 SPRING_PROFILES_ACTIVE=prod
 

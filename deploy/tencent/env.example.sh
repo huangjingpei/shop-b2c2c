@@ -19,7 +19,7 @@ ADMIN_PORTAL_PATH="${ADMIN_PORTAL_PATH:-/console}"
 CERTBOT_EMAIL="your_email@example.com"
 
 # 后端 Spring Boot 监听端口
-SERVER_PORT="8082"
+SERVER_PORT="8080"
 
 # ---------------- 数据库配置 ----------------
 MYSQL_ROOT_PASSWORD=""

@@ -125,7 +125,7 @@ render_site() {
   sed -e "s#__SHOP_ROOT__#${SHOP_ROOT}#g" \
       -e "s#__SERVER_NAME__#${SERVER_NAME}#g" \
       -e "s#__ADMIN_PORTAL_PATH__#${ADMIN_PORTAL_PATH:-/console}#g" \
-      -e "s#__BACKEND_PORT__#${SERVER_PORT:-8082}#g" \
+      -e "s#__BACKEND_PORT__#${SERVER_PORT:-8080}#g" \
       -e "s#__SSL_CERT__#${CERT_DIR}/fullchain.pem#g" \
       -e "s#__SSL_KEY__#${CERT_DIR}/privkey.pem#g" \
       "$1" > "$2"
@@ -191,7 +191,7 @@ if [[ "${DO_HEALTHCHECK}" == "yes" ]]; then
   log "执行后端健康检查（最多等待 ${HEALTH_TIMEOUT} 秒）..."
   BACKEND_OK="no"
   for i in $(seq 1 "$((HEALTH_TIMEOUT / 3))"); do
-    if curl -fsS --max-time 3 "http://127.0.0.1:${SERVER_PORT:-8082}/api/v1/auth/health" 2>/dev/null | grep -q '"code":200'; then
+    if curl -fsS --max-time 3 "http://127.0.0.1:${SERVER_PORT:-8080}/api/v1/auth/health" 2>/dev/null | grep -q '"code":200'; then
       BACKEND_OK="yes"
       log "后端响应正常 (耗时约 $((i*3)) 秒)"
       break

@@ -18,7 +18,7 @@ E:\shop-b2b2c\
 │
 ├── start_all.bat                # 一键启动全套三个前后端服务
 │
-├── shop-b2b2c-backend/          # 【后端服务】Spring Boot 3.2 + JDK 17 (端口: 8082)
+├── shop-b2b2c-backend/          # 【后端服务】Spring Boot 3.2 + JDK 17 (端口: 8080)
 │   ├── src/main/java/com/shop/b2b2c/
 │   │   ├── config/              # Security, JWT, Redis, CORS
 │   │   ├── controller/          # Auth, Merchant, Category, Product, Order, PeerPay

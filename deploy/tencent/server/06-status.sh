@@ -15,7 +15,7 @@ bad() { printf "${C_R}  [FAIL]${C_0} %s\n" "$*"; }
 warn_(){ printf "${C_Y}  [WARN]${C_0} %s\n" "$*"; }
 
 [[ -f "${SHOP_ROOT}/.env" ]] && { set -a; . "${SHOP_ROOT}/.env"; set +a; }
-PORT="${SERVER_PORT:-8082}"
+PORT="${SERVER_PORT:-8080}"
 
 sec "Shop-B2B2C 后端服务状态"
 if systemctl is-active --quiet "${SERVICE_NAME}"; then

@@ -19,8 +19,8 @@ ADMIN_PORTAL_PATH="${ADMIN_PORTAL_PATH:-/console}"
 # 证书申请邮箱（Let's Encrypt 到期提醒用）
 CERTBOT_EMAIL="hjp9221@163.com"
 
-# 后端 Spring Boot 监听独立端口 8082（8080 与 8081 已被其他服务占用），由 Nginx 反代
-SERVER_PORT="8082"
+# 后端 Spring Boot 监听端口 8080，由 Nginx 反代
+SERVER_PORT="8080"
 
 # ---------------- 数据库（复用服务器已有 MySQL 8.0）----------------
 MYSQL_ROOT_PASSWORD=""

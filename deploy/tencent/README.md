@@ -11,7 +11,7 @@
 | **Nginx 网关** | `/etc/nginx/sites-available/shop-b2b2c` | `80`, `443` | `https://1688.graddu.com` | 支持 HTTP->HTTPS 自动跳转，Certbot ACME 验证，静态文件托管 |
 | **C 端商城与代付收银台** | `/opt/shop-b2b2c/www/storefront` | - | `https://1688.graddu.com/` | Vue3 + Tailwind 前端，包含商品详情、16688代付收银台 |
 | **B 端管理后台** | `/opt/shop-b2b2c/www/admin` | - | `https://1688.graddu.com/console/` | Vue3 + Element Plus，超管治理与商户工作台 |
-| **后端 API 服务** | `/opt/shop-b2b2c/app/app.jar` | `8082` | `https://1688.graddu.com/api/` | Spring Boot 3.2.5 + JDK 17 + MyBatis-Plus + Sa-Token |
+| **后端 API 服务** | `/opt/shop-b2b2c/app/app.jar` | `8080` | `https://1688.graddu.com/api/` | Spring Boot 3.2.5 + JDK 17 + MyBatis-Plus + Sa-Token |
 | **MySQL 8.0** | 本机 MySQL 实例 | `3306` | 本地回环 `127.0.0.1:3306` | 数据库 `shop_b2b2c`，单一权威源 `schema.sql` 自动自愈 |
 | **Redis 7** | 本机 Redis 实例 | `6379` | 本地回环 `127.0.0.1:6379` | Sa-Token 分布式多端 Token 鉴权，数据库分片 DB 2 |
 
