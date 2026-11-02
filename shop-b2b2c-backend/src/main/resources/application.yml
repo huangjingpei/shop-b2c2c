@@ -8,7 +8,7 @@ spring:
     name: shop-b2b2c-backend
 
   datasource:
-    url: jdbc:mysql://localhost:3306/shop_b2b2c?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://localhost:3306/shop_b2b2c?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&allowMultiQueries=true
     username: root
     password: 89dfu*#$ewr87l
     driver-class-name: com.mysql.cj.jdbc.Driver
@@ -20,11 +20,20 @@ spring:
       max-lifetime: 1800000
       connection-timeout: 30000
 
+  # 开发期数据库一键启动自动自愈与初始化配置
+  sql:
+    init:
+      mode: always # 每次应用启动自动执行 schema.sql 初始化建表与种子数据
+      schema-locations: classpath:schema.sql
+      encoding: UTF-8
+      continue-on-error: true # 容错模式：遇表或记录已存在不抛异常阻断启动
+
   jpa:
     database-platform: org.hibernate.dialect.MySQLDialect
     hibernate:
       ddl-auto: update
     show-sql: false
+    defer-datasource-initialization: false
     properties:
       hibernate:
         format_sql: false
