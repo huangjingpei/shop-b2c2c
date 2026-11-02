@@ -30,6 +30,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /** Real mapper SQL and Spring transactions; no external MySQL/Redis needed. */
@@ -459,6 +460,22 @@ class Sprint1SecurityIntegrationTest {
         push.setProductId(1L); push.setSkuId(1L); push.setQuantity(1); push.setNegotiatedPrice(new java.math.BigDecimal("-1"));
         assertThrows(BusinessException.class, () -> payments.createPushPayOrder(push, 1L));
         assertEquals(2, orders.selectCount(null));
+    }
+
+    @Test
+    void publicProductAndQuickSearchNeverExposePrivateStoreFields() throws Exception {
+        unpaid("privacy", 1);
+        for (var request : List.of(get("/api/v1/public/products/1"),
+                get("/api/v1/public/orders/quick-search").param("orderSn", "ORD-privacy").param("contact", "buyer@example.com"))) {
+            mvc.perform(request).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(200))
+                    .andExpect(jsonPath("$.data.store.id").value(1))
+                    .andExpect(jsonPath("$.data.store.storeName").value("store1"))
+                    .andExpect(jsonPath("$.data.store.ownerName").doesNotExist())
+                    .andExpect(jsonPath("$.data.store.idCardNumber").doesNotExist())
+                    .andExpect(jsonPath("$.data.store.commissionRate").doesNotExist())
+                    .andExpect(jsonPath("$.data.store.feeStatus").doesNotExist());
+        }
     }
 
     private void race(int count, java.util.function.IntConsumer action) throws Exception {

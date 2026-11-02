@@ -97,7 +97,7 @@ public class ProductController {
         TradeGuards.requirePurchasable(product, store);
         res.put("product", product);
         res.put("skus", skus);
-        res.put("store", store);
+        res.put("store", com.shop.b2b2c.common.PublicStoreView.from(store));
         return R.ok(res);
     }
 

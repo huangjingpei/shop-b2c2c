@@ -161,7 +161,7 @@ public class OrderController {
         Map<String, Object> res = new HashMap<>();
         res.put("order", order);
         res.put("items", items);
-        res.put("store", store);
+        res.put("store", com.shop.b2b2c.common.PublicStoreView.from(store));
         return R.ok("订单查询成功", res);
     }
 

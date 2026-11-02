@@ -3,6 +3,8 @@ package com.shop.b2b2c.controller;
 import cn.dev33.satoken.secure.BCrypt;
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.R;
+import com.shop.b2b2c.common.ManagementGuards;
+import java.util.Set;
 import com.shop.b2b2c.common.SecurityUtils;
 import com.shop.b2b2c.entity.MerchantPaymentAccount;
 import com.shop.b2b2c.entity.MerchantStore;
@@ -61,6 +63,23 @@ public class MerchantController {
     @PostMapping("/api/v1/admin/merchants")
     @Transactional(rollbackFor = Exception.class)
     public R<MerchantStore> createMerchant(@RequestBody CreateMerchantDTO dto) {
+        ManagementGuards.text(dto.getStoreCode(), 64, true);
+        ManagementGuards.text(dto.getStoreName(), 128, true);
+        ManagementGuards.text(dto.getOwnerName(), 64, true);
+        ManagementGuards.text(dto.getIdCardNumber(), 32, true);
+        ManagementGuards.text(dto.getContactPhone(), 32, true);
+        ManagementGuards.text(dto.getAdminUsername(), 64, true);
+        ManagementGuards.text(dto.getAdminPassword(), 72, true);
+        if (dto.getAdminPassword().length() < 8 || dto.getAdminPassword().getBytes(java.nio.charset.StandardCharsets.UTF_8).length > 72) {
+            throw new BusinessException(400, "密码须至少8字符且UTF-8编码不超过72字节");
+        }
+        if (dto.getMerchantType() != null && (dto.getMerchantType() < 1 || dto.getMerchantType() > 3)) {
+            throw new BusinessException(400, "商户类型不合法");
+        }
+        if (dto.getCommissionRate() != null) ManagementGuards.percent(dto.getCommissionRate());
+        ManagementGuards.text(dto.getBankAccountName(), 64, false);
+        ManagementGuards.text(dto.getBankName(), 128, false);
+        ManagementGuards.text(dto.getBankAccountNumber(), 64, dto.getBankAccountNumber() != null);
         if (storeMapper.findByStoreCode(dto.getStoreCode()).isPresent()) {
             throw new BusinessException("店铺编码已存在");
         }
@@ -84,7 +103,7 @@ public class MerchantController {
         SysUser user = new SysUser();
         user.setMerchantId(store.getId());
         user.setUsername(dto.getAdminUsername());
-        String rawPwd = dto.getAdminPassword() != null ? dto.getAdminPassword() : "admin123";
+        String rawPwd = dto.getAdminPassword();
         user.setPassword(BCrypt.hashpw(rawPwd));
         user.setRealName(dto.getOwnerName() + " (店长)");
         user.setRoleCode("MERCHANT_ADMIN");
@@ -110,6 +129,7 @@ public class MerchantController {
     @Operation(summary = "【超管】变更店铺营业状态 (打烊/封禁/营业)")
     @PutMapping("/api/v1/admin/merchants/{id}/status")
     public R<Void> updateStatus(@PathVariable Long id, @RequestParam Integer status) {
+        ManagementGuards.status(status);
         MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         store.setStatus(status);
@@ -120,6 +140,7 @@ public class MerchantController {
     @Operation(summary = "【超管】调整店铺平台抽成比率")
     @PutMapping("/api/v1/admin/merchants/{id}/commission")
     public R<Void> updateCommission(@PathVariable Long id, @RequestParam BigDecimal rate) {
+        ManagementGuards.percent(rate);
         MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         store.setCommissionRate(rate);
@@ -137,6 +158,8 @@ public class MerchantController {
     @Operation(summary = "【超管】配置商户月度技术服务费与免收期")
     @PutMapping("/api/v1/admin/merchants/{id}/service-fee")
     public R<Void> updateServiceFee(@PathVariable Long id, @RequestBody ServiceFeeConfigDTO dto) {
+        if (dto.getMonthlyFee() != null) ManagementGuards.monthlyFee(dto.getMonthlyFee());
+        if (dto.getFeeStatus() != null) ManagementGuards.choice(dto.getFeeStatus(), Set.of("NORMAL", "TRIAL", "OVERDUE", "EXEMPTED", "ARREARS"));
         MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         if (dto.getMonthlyFee() != null) store.setMonthlyFee(dto.getMonthlyFee());
@@ -155,6 +178,8 @@ public class MerchantController {
     @Operation(summary = "【超管】配置商户结算通道类型与独立收款码")
     @PutMapping("/api/v1/admin/merchants/{id}/payment-channel")
     public R<Void> updatePaymentChannel(@PathVariable Long id, @RequestBody PaymentChannelConfigDTO dto) {
+        if (dto.getPaymentChannelType() != null) ManagementGuards.choice(dto.getPaymentChannelType(), Set.of("A", "B", "C"));
+        ManagementGuards.text(dto.getCustomPayQrcode(), 512, false);
         MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         if (dto.getPaymentChannelType() != null) store.setPaymentChannelType(dto.getPaymentChannelType());
@@ -170,7 +195,7 @@ public class MerchantController {
     @Operation(summary = "【商家】查看本店资料与进件分账状态")
     @GetMapping("/api/v1/merchant/profile")
     public R<Map<String, Object>> getMerchantProfile() {
-        Long merchantId = SecurityUtils.getCurrentMerchantId();
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
         if (merchantId == null) {
             throw new BusinessException("当前非商家账号或未绑定店铺");
         }
@@ -188,7 +213,11 @@ public class MerchantController {
     @Operation(summary = "【商家】更新店铺公告与展示资料")
     @PutMapping("/api/v1/merchant/profile")
     public R<Void> updateMerchantProfile(@RequestBody MerchantStore updateDTO) {
-        Long merchantId = SecurityUtils.getCurrentMerchantId();
+        ManagementGuards.text(updateDTO.getNotice(), 512, false);
+        ManagementGuards.text(updateDTO.getLogoUrl(), 255, false);
+        ManagementGuards.text(updateDTO.getContactPhone(), 32, false);
+        ManagementGuards.text(updateDTO.getCustomPayQrcode(), 512, false);
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
         MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
 
