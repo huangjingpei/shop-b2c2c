@@ -57,6 +57,9 @@ SPRING_DATA_REDIS_PORT=${REDIS_PORT:-6379}
 SPRING_DATA_REDIS_PASSWORD=${REDIS_PASS:-YourStrongRedisPassword}
 SPRING_DATA_REDIS_DATABASE=${REDIS_DB:-2}
 
+# ---- 前台地址 (供代付生成短链与二维码海报) ----
+APP_FRONTEND_STOREFRONT_URL=https://${SHOP_SERVER_NAME:-1688.graddu.com}
+
 # ---- JVM ----
 JAVA_OPTS="-Xms256m -Xmx${JAVA_XMX:-512m} -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${SHOP_ROOT}/logs -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
 EOF

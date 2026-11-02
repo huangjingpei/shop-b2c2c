@@ -62,6 +62,11 @@ payment:
   mock: true # 第一阶段开启模拟分账桩 (零门槛全链路跑通)
   default-commission-rate: 3.00
 
+# 平台前台访问地址 (代付短链与二维码海报基准地址)
+app:
+  frontend:
+    storefront-url: ${APP_FRONTEND_STOREFRONT_URL:http://localhost:3002}
+
 # SpringDoc OpenAPI
 springdoc:
   api-docs:
