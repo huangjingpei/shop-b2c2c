@@ -60,6 +60,7 @@ public class PeerPayDTOs {
 
     @Data
     public static class PreLockResult {
+        private String ownerToken;
         private Boolean success;
         private String peerStatus;
         private Long lockSeconds;

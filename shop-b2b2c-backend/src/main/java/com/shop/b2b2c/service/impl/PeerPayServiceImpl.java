@@ -10,7 +10,6 @@ import com.shop.b2b2c.service.PeerPayService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,13 +19,13 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class PeerPayServiceImpl implements PeerPayService {
 
+    private final InventoryReservationMapper reservationMapper;
     private final TradeOrderMapper orderMapper;
     private final TradeOrderItemMapper itemMapper;
     private final MerchantStoreMapper storeMapper;
@@ -34,12 +33,10 @@ public class PeerPayServiceImpl implements PeerPayService {
     private final ProductSkuMapper skuMapper;
     private final ProductVirtualCardMapper cardMapper;
     private final PlatformAdConfigMapper adConfigMapper;
-    private final StringRedisTemplate redisTemplate;
 
     @Value("${app.frontend.storefront-url:http://localhost:3002}")
     private String storefrontUrl;
 
-    private static final String PRELOCK_REDIS_PREFIX = "peer:lock:";
     private static final long DEFAULT_LOCK_MINUTES = 15;
 
     @Override
@@ -242,16 +239,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
                 .orElseThrow(() -> new BusinessException("代付账单不存在或已失效"));
 
-        // 自愈机制：如果状态为 RESERVED_LOCK 但已经超时超过 15 分钟，自动回退释放为 INIT
-        if ("RESERVED_LOCK".equals(order.getPeerStatus())) {
-            if (order.getLockExpireTime() != null && LocalDateTime.now().isAfter(order.getLockExpireTime())) {
-                log.info("代付单 [{}] 预占锁超时到达，自愈释放锁回到 INIT", order.getOrderSn());
-                order.setPeerStatus("INIT");
-                order.setLockExpireTime(null);
-                orderMapper.save(order);
-                redisTemplate.delete(PRELOCK_REDIS_PREFIX + order.getOrderSn());
-            }
-        }
+        expireIfNecessary(order);
 
         List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
         TradeOrderItem firstItem = items.isEmpty() ? null : items.get(0);
@@ -338,41 +326,34 @@ public class PeerPayServiceImpl implements PeerPayService {
         TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
                 .orElseThrow(() -> new BusinessException("代付账单不存在"));
 
-        if ("PAID".equals(order.getOrderStatus()) || "COMPLETED".equals(order.getOrderStatus())) {
-            throw new BusinessException("该订单已完成支付，请勿重复付款");
+        if (!"UNPAID".equals(order.getOrderStatus()) || !"INIT".equals(order.getPeerStatus())
+                || order.getCreatedAt() == null || order.getCreatedAt().plusMinutes(15).isBefore(LocalDateTime.now())) {
+            throw new BusinessException("订单已过期或不可预占，请刷新账单");
         }
-
-        // 互斥检查：如果已被其他付款人预占且锁未到期，则拦截
-        if ("RESERVED_LOCK".equals(order.getPeerStatus())) {
-            if (order.getLockExpireTime() != null && LocalDateTime.now().isBefore(order.getLockExpireTime())) {
-                long waitSeconds = Duration.between(LocalDateTime.now(), order.getLockExpireTime()).getSeconds();
-                throw new BusinessException("已有付款人正在支付中，请稍候约 " + (waitSeconds / 60 + 1) + " 分钟（若超时未付将自动释放）");
-            }
-        }
-
-        // 检查实际物理库存
         List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
-        for (TradeOrderItem item : items) {
-            ProductSku sku = skuMapper.findById(item.getSkuId())
-                    .orElseThrow(() -> new BusinessException("商品SKU不存在"));
-            if (sku.getStockQuantity() < item.getQuantity()) {
-                throw new BusinessException("抱歉，当前商品库存已被购罄，无法支付");
-            }
+        if (items.size() != 1) throw new BusinessException("当前仅支持单商品订单");
+        TradeOrderItem item = items.get(0);
+        if (item.getQuantity() == null || item.getQuantity() <= 0
+                || skuMapper.deductStock(item.getSkuId(), item.getProductId(), order.getMerchantId(), item.getQuantity()) != 1) {
+            throw new BusinessException("商品库存不足或SKU归属异常");
         }
-
-        // 原子预占：设置 Redis 键 (15 分钟失效)
-        String lockKey = PRELOCK_REDIS_PREFIX + order.getOrderSn();
-        Boolean success = redisTemplate.opsForValue().setIfAbsent(lockKey, "LOCKED", DEFAULT_LOCK_MINUTES, TimeUnit.MINUTES);
-        if (Boolean.FALSE.equals(success)) {
-            throw new BusinessException("并发支付冲突，请刷新后重试");
-        }
-
         LocalDateTime expireTime = LocalDateTime.now().plusMinutes(DEFAULT_LOCK_MINUTES);
+        InventoryReservation reservation = new InventoryReservation();
+        reservation.setOrderId(order.getId());
+        reservation.setSkuId(item.getSkuId());
+        reservation.setProductId(item.getProductId());
+        reservation.setMerchantId(order.getMerchantId());
+        reservation.setQuantity(item.getQuantity());
+        reservation.setOwnerToken(UUID.randomUUID().toString().replace("-", ""));
+        reservation.setExpiresAt(expireTime);
+        reservationMapper.deleteReleased(order.getId());
+        reservationMapper.insert(reservation);
         order.setPeerStatus("RESERVED_LOCK");
         order.setLockExpireTime(expireTime);
         orderMapper.save(order);
 
         PeerPayDTOs.PreLockResult result = new PeerPayDTOs.PreLockResult();
+        result.setOwnerToken(reservation.getOwnerToken());
         result.setSuccess(true);
         result.setPeerStatus("RESERVED_LOCK");
         result.setLockSeconds(DEFAULT_LOCK_MINUTES * 60);
@@ -383,15 +364,45 @@ public class PeerPayServiceImpl implements PeerPayService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void cancelPreLock(String token) {
-        TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token).orElse(null);
-        if (order != null && "RESERVED_LOCK".equals(order.getPeerStatus())) {
-            order.setPeerStatus("INIT");
-            order.setLockExpireTime(null);
-            orderMapper.save(order);
-            redisTemplate.delete(PRELOCK_REDIS_PREFIX + order.getOrderSn());
-            log.info("代付单 [{}] 付款人主动离开收银台，锁已即时释放", order.getOrderSn());
+    public void cancelPreLock(String token, String ownerToken) {
+        TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
+                .orElseThrow(() -> new BusinessException("订单不存在"));
+        InventoryReservation reservation = reservationMapper.find(order.getId());
+        if (reservation == null || ownerToken == null || !ownerToken.equals(reservation.getOwnerToken())) {
+            throw new BusinessException(403, "无权释放其他付款人的预占");
         }
+        if (!"UNPAID".equals(order.getOrderStatus())) return;
+        if (release(reservation)) {
+            order.setPeerStatus("INIT");
+            orderMapper.save(order);
+        }
+    }
+
+    private boolean release(InventoryReservation reservation) {
+        if (reservation == null || reservationMapper.transition(reservation.getOrderId(), "RELEASED") != 1) return false;
+        if (skuMapper.addStock(reservation.getSkuId(), reservation.getMerchantId(), reservation.getQuantity()) != 1) {
+            throw new BusinessException("预占库存释放失败");
+        }
+        return true;
+    }
+
+    private void expireIfNecessary(TradeOrder order) {
+        if (!"UNPAID".equals(order.getOrderStatus())) return;
+        LocalDateTime deadline = "RESERVED_LOCK".equals(order.getPeerStatus()) ? order.getLockExpireTime()
+                : order.getCreatedAt() == null ? null : order.getCreatedAt().plusMinutes(15);
+        if (deadline != null && !deadline.isAfter(LocalDateTime.now())) {
+            release(reservationMapper.find(order.getId()));
+            order.setOrderStatus("CLOSED");
+            order.setPeerStatus("EXPIRED");
+            orderMapper.save(order);
+        }
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void expireReservation(Long orderId) {
+        TradeOrder order = orderMapper.lockById(orderId);
+        if (order != null) expireIfNecessary(order);
     }
 
     @Override
@@ -417,11 +428,22 @@ public class PeerPayServiceImpl implements PeerPayService {
             throw new BusinessException("当前支付仅支持单商品订单");
         }
 
-        // Conditional database updates are the final authority; any failure rolls back payment and fulfillment.
-        for (TradeOrderItem item : items) {
-            if (item.getQuantity() == null || item.getQuantity() <= 0
-                    || skuMapper.deductStock(item.getSkuId(), item.getProductId(), order.getMerchantId(), item.getQuantity()) != 1) {
-                throw new BusinessException("商品库存不足或SKU归属异常，扣减失败");
+        InventoryReservation held = reservationMapper.find(order.getId());
+        if (held != null) {
+            TradeOrderItem item = items.get(0);
+            if (!"HELD".equals(held.getStatus()) || !held.getSkuId().equals(item.getSkuId())
+                    || !held.getProductId().equals(item.getProductId()) || !held.getMerchantId().equals(order.getMerchantId())
+                    || !held.getQuantity().equals(item.getQuantity()) || !held.getExpiresAt().isAfter(LocalDateTime.now())
+                    || reservationMapper.transition(order.getId(), "CONSUMED") != 1) {
+                throw new BusinessException("库存预占已失效");
+            }
+        } else {
+            // Compatibility for pre-upgrade locks: they did not deduct stock.
+            for (TradeOrderItem item : items) {
+                if (item.getQuantity() == null || item.getQuantity() <= 0
+                        || skuMapper.deductStock(item.getSkuId(), item.getProductId(), order.getMerchantId(), item.getQuantity()) != 1) {
+                    throw new BusinessException("商品库存不足或SKU归属异常");
+                }
             }
         }
 
@@ -465,18 +487,6 @@ public class PeerPayServiceImpl implements PeerPayService {
         }
 
         order = orderMapper.save(order);
-        final String tokenOrderSn = order.getOrderSn();
-        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
-                new org.springframework.transaction.support.TransactionSynchronization() {
-                    @Override
-                    public void afterCommit() {
-                        try {
-                            redisTemplate.delete(PRELOCK_REDIS_PREFIX + tokenOrderSn);
-                        } catch (Exception e) {
-                            log.warn("支付已提交，Redis锁等待TTL释放: {}", tokenOrderSn);
-                        }
-                    }
-                });
         log.info("代付单 [{}] 支付成功落地！三方角色绑定完成: 卖家ID={}, 买家={}, 付款人={}",
                 order.getOrderSn(), order.getMerchantId(), order.getBuyerContact(), order.getPeerPayerId());
 

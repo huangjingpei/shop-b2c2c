@@ -45,8 +45,9 @@ public class PeerPayController {
 
     @Operation(summary = "【公开】付款人放弃/离开收银台主动释放预占锁")
     @PostMapping("/cancel-lock/{token}")
-    public R<Void> cancelPreLock(@PathVariable String token) {
-        peerPayService.cancelPreLock(token);
+    public R<Void> cancelPreLock(@PathVariable String token,
+            @RequestHeader("X-Reservation-Token") String ownerToken) {
+        peerPayService.cancelPreLock(token, ownerToken);
         return R.ok("预占库存已释放", null);
     }
 

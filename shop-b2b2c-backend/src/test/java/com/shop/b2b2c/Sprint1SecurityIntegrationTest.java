@@ -40,13 +40,14 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.sql.init.mode=always", "spring.sql.init.continue-on-error=false",
         "spring.sql.init.schema-locations=classpath:sprint1-schema.sql",
         "mybatis-plus.configuration.log-impl=org.apache.ibatis.logging.nologging.NoLoggingImpl",
-        "payment.mock=true"
+        "payment.mock=true", "inventory.expiry-delay-ms=3600000"
 })
 @AutoConfigureMockMvc
 class Sprint1SecurityIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired MockMvc mvc;
     @Autowired PeerPayService payments;
+    @Autowired com.shop.b2b2c.config.ReservationExpiryJob expiryJob;
     @Autowired TradeOrderMapper orders;
     @Autowired TradeOrderItemMapper items;
     @Autowired ProductSkuMapper skus;
@@ -57,7 +58,7 @@ class Sprint1SecurityIntegrationTest {
 
     @BeforeEach
     void fixtures() {
-        for (String table : List.of("trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
+        for (String table : List.of("inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -99,6 +100,87 @@ class Sprint1SecurityIntegrationTest {
 
     private TradeOrder pay(String token) {
         return payments.notifyPaymentSuccess(token, "verified-payer", "trade-" + token, "WECHAT");
+    }
+
+    private TradeOrder intent(String token) {
+        TradeOrder order = unpaid(token, 1);
+        order.setPeerStatus("INIT");
+        orders.save(order);
+        return order;
+    }
+
+    @Test
+    void reservationDeductsOnceAndOnlyOwnerCanRelease() {
+        intent("reserve");
+        var lock = payments.preLockInventory("reserve");
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        assertThrows(BusinessException.class, () -> payments.cancelPreLock("reserve", "wrong-owner"));
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        payments.cancelPreLock("reserve", lock.getOwnerToken());
+        payments.cancelPreLock("reserve", lock.getOwnerToken());
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        var next = payments.preLockInventory("reserve");
+        assertNotEquals(lock.getOwnerToken(), next.getOwnerToken());
+        assertThrows(BusinessException.class, () -> payments.cancelPreLock("reserve", lock.getOwnerToken()));
+    }
+
+    @Test
+    void lastUnitCanOnlyBeReservedByOneOrder() throws Exception {
+        intent("hold-one"); intent("hold-two");
+        AtomicInteger winners = new AtomicInteger();
+        race(2, i -> {
+            try { payments.preLockInventory(i == 0 ? "hold-one" : "hold-two"); winners.incrementAndGet(); }
+            catch (BusinessException expected) { }
+        });
+        assertEquals(1, winners.get());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_reservation WHERE status='HELD'", Integer.class));
+    }
+
+    @Test
+    void reservedPaymentConsumesHoldWithoutSecondDeductionOrLaterRelease() {
+        TradeOrder order = intent("consume");
+        var lock = payments.preLockInventory("consume");
+        assertEquals("COMPLETED", pay("consume").getOrderStatus());
+        payments.cancelPreLock("consume", lock.getOwnerToken());
+        payments.expireReservation(order.getId());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        assertEquals("CONSUMED", jdbc.queryForObject("SELECT status FROM inventory_reservation WHERE order_id=?", String.class, order.getId()));
+    }
+
+    @Test
+    void expiredReservationReleasesOnceAndCannotBePaidOrReservedAgain() {
+        TradeOrder order = intent("timeout");
+        payments.preLockInventory("timeout");
+        jdbc.update("UPDATE trade_order SET lock_expire_time=? WHERE id=?", LocalDateTime.now().minusMinutes(1), order.getId());
+        jdbc.update("UPDATE inventory_reservation SET expires_at=? WHERE order_id=?", LocalDateTime.now().minusMinutes(1), order.getId());
+        expiryJob.expire();
+        expiryJob.expire();
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals("CLOSED", orders.selectById(order.getId()).getOrderStatus());
+        assertThrows(BusinessException.class, () -> pay("timeout"));
+        assertThrows(BusinessException.class, () -> payments.preLockInventory("timeout"));
+    }
+
+    @Test
+    void reservedPaymentFailureRestoresHoldAndKeepsStockUnavailable() {
+        TradeOrder order = intent("hold-rollback");
+        payments.preLockInventory("hold-rollback");
+        doReturn(0).when(cards).claimCard(anyLong(), anyLong(), anyLong(), anyString());
+        assertThrows(BusinessException.class, () -> pay("hold-rollback"));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals("HELD", jdbc.queryForObject("SELECT status FROM inventory_reservation WHERE order_id=?", String.class, order.getId()));
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void staleOrCancelledIntentsCannotAcquireStock() {
+        TradeOrder order = intent("stale");
+        jdbc.update("UPDATE trade_order SET created_at=? WHERE id=?", LocalDateTime.now().minusHours(1), order.getId());
+        assertThrows(BusinessException.class, () -> payments.preLockInventory("stale"));
+        order.setPeerStatus("CANCELLED"); orders.save(order);
+        assertThrows(BusinessException.class, () -> payments.preLockInventory("stale"));
+        assertEquals(1, skus.selectById(1).getStockQuantity());
     }
 
     @Test

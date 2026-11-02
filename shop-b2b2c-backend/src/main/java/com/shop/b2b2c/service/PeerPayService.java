@@ -31,7 +31,9 @@ public interface PeerPayService {
     /**
      * 付款人主动关闭/离开收银台：主动释放预占锁
      */
-    void cancelPreLock(String token);
+    void cancelPreLock(String token, String ownerToken);
+
+    void expireReservation(Long orderId);
 
     /**
      * 内部支付落账入口，不允许直接暴露为HTTP接口。
