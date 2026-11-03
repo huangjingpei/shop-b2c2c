@@ -1,5 +1,5 @@
 # 文件：application.yml
-# 用途：Spring Boot数据源、会话、SQL初始化及前台地址等运行配置。
+# 用途：Spring Boot数据源、会话、SQL初始化、前台地址和认证/CORS边界配置。
 # 维护注意：升级至令牌级授权快照后旧登录需重新登录；生产应注入受控环境变量，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一入口；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；SQL错误容忍不是版本迁移机制；不得开启记录卡密/领取凭证的SQL参数日志。
 server:
   port: ${SERVER_PORT:8080}
@@ -71,6 +71,12 @@ payment:
 
 # 平台前台访问地址 (代付短链与二维码海报基准地址)
 app:
+  security:
+    # auto派生受控前台地址的来源并保留localhost开发端口；HTTPS代理终止须允许公网来源。空值关闭跨域。
+    cors-allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:auto}
+    login-account-limit: ${AUTH_LOGIN_ACCOUNT_LIMIT:20}
+    login-ip-limit: ${AUTH_LOGIN_IP_LIMIT:100}
+    login-window-seconds: ${AUTH_LOGIN_WINDOW_SECONDS:300}
   frontend:
     storefront-url: ${APP_FRONTEND_STOREFRONT_URL:http://localhost:3002}
 

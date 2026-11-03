@@ -1,7 +1,7 @@
 /*
  * 文件：AuthController.java
  * 用途：管理员和商家登录、退出、当前身份及存活探针接口。
- * 维护注意：密码用BCrypt验证，退出撤销服务端会话；me校验账号状态和授权变化，不能仅返回缓存身份；health仅为存活响应，不代表数据库和Redis就绪。登录节流等安全能力尚待完善。
+ * 维护注意：密码用BCrypt验证；登录先限制连接IP，再校验参数并限制账号，Redis故障拒绝登录；退出撤销服务端会话；me校验账号状态和授权变化；health仅为存活响应，不代表数据库和Redis就绪。员工细粒度权限尚待完善。
  */
 package com.shop.b2b2c.controller;
 
@@ -30,6 +30,7 @@ public class AuthController {
     private final SysUserMapper userMapper;
     private final com.shop.b2b2c.service.AuthSessionService sessions;
     private final MerchantStoreMapper storeMapper;
+    private final com.shop.b2b2c.service.AuthLoginLimiter loginLimiter;
 
     @Data
     public static class LoginDTO {
@@ -49,8 +50,15 @@ public class AuthController {
 
     @Operation(summary = "管理员/商家后台统一登录 (基于 Sa-Token 多端会话)")
     @PostMapping("/login")
-    public R<Map<String, Object>> login(@RequestBody LoginDTO dto) {
-        SysUser user = userMapper.findByUsername(dto.getUsername())
+    public R<Map<String, Object>> login(@RequestBody LoginDTO dto, jakarta.servlet.http.HttpServletRequest request) {
+        loginLimiter.checkAddress(request.getRemoteAddr());
+        if (dto == null || dto.getUsername() == null || dto.getUsername().isBlank() || dto.getUsername().length() > 64
+                || dto.getPassword() == null || dto.getPassword().isEmpty() || dto.getPassword().length() > 1024) {
+            throw new BusinessException(400, "请填写有效的账号和密码");
+        }
+        String username = dto.getUsername().strip();
+        loginLimiter.checkAccount(username);
+        SysUser user = userMapper.findByUsername(username)
                 .orElseThrow(() -> new BusinessException("用户名或密码错误"));
 
         if (!BCrypt.checkpw(dto.getPassword(), user.getPassword())) {

@@ -1,7 +1,7 @@
 /*
  * 文件：SaTokenConfigure.java
  * 用途：配置API角色拦截、公开路径与CORS。
- * 维护注意：公开路由不得加入可信支付落账；受保护请求先核验数据库中的账号和授权状态；角色检查不替代对象归属校验。当前跨域策略较宽，生产治理仍待处理，不可把注释当成安全加固实现。
+ * 维护注意：公开路由不得加入可信支付落账；受保护请求先核验数据库中的账号和授权状态；角色检查不替代对象归属校验。跨域仅允许配置的精确来源及必要请求头，Bearer授权不开放跨域Cookie。
  */
 package com.shop.b2b2c.config;
 
@@ -20,10 +20,13 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 @lombok.RequiredArgsConstructor
 public class SaTokenConfigure implements WebMvcConfigurer {
     private final com.shop.b2b2c.service.AuthSessionService sessions;
+    private final CorsOrigins corsOrigins;
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(new SaInterceptor(handle -> {
+            // 浏览器预检没有Bearer令牌；来源、方法和请求头仍由Spring CORS处理器校验。
+            if ("OPTIONS".equals(cn.dev33.satoken.context.SaHolder.getRequest().getMethod())) return;
             // 超级管理员路由拦截
             SaRouter.match("/api/v1/admin/**", r -> { sessions.requireCurrentUser(); StpUtil.checkRole("SUPERADMIN"); });
             // 商家工作台路由拦截 (超管与商家员工均可访问)
@@ -43,10 +46,10 @@ public class SaTokenConfigure implements WebMvcConfigurer {
     @Override
     public void addCorsMappings(CorsRegistry registry) {
         registry.addMapping("/**")
-                .allowedOriginPatterns("*")
+                .allowedOrigins(corsOrigins.allowedOrigins())
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")
-                .allowedHeaders("*")
-                .allowCredentials(true)
+                .allowedHeaders("Authorization", "Content-Type", "Idempotency-Key")
+                .allowCredentials(false)
                 .maxAge(3600);
     }
 }

@@ -1,7 +1,7 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
  * 用途：跨Sprint累计的建单幂等、Spring事务、Mapper SQL、公开响应及租户安全集成回归。
- * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
+ * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
 
@@ -46,7 +46,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.sql.init.mode=always", "spring.sql.init.continue-on-error=false",
         "spring.sql.init.schema-locations=classpath:sprint1-schema.sql",
         "mybatis-plus.configuration.log-impl=org.apache.ibatis.logging.nologging.NoLoggingImpl",
-        "payment.mock=true", "inventory.expiry-delay-ms=3600000"
+        "payment.mock=true", "inventory.expiry-delay-ms=3600000",
+        "app.security.cors-allowed-origins=https://admin.example.test",
+        "app.security.login-account-limit=3", "app.security.login-ip-limit=5"
 })
 @AutoConfigureMockMvc
 @org.springframework.context.annotation.Import(Sprint1SecurityIntegrationTest.SessionTestConfig.class)
@@ -107,6 +109,108 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
                 .andReturn().getResponse().getContentAsString();
         return json.readTree(response).path("data").path("token").asText();
+    }
+
+    @Test
+    void allowedPreflightDoesNotRequireLoginOrCookieCredentials() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options("/api/v1/merchant/products")
+                .header("Origin", "https://admin.example.test").header("Access-Control-Request-Method", "GET")
+                .header("Access-Control-Request-Headers", "Authorization,Content-Type,Idempotency-Key"))
+                .andExpect(status().isOk()).andExpect(header().string("Access-Control-Allow-Origin", "https://admin.example.test"))
+                .andExpect(header().doesNotExist("Access-Control-Allow-Credentials"));
+        mvc.perform(get("/api/v1/auth/me").header("Origin", "https://admin.example.test"))
+                .andExpect(status().isUnauthorized()).andExpect(header().string("Access-Control-Allow-Origin", "https://admin.example.test"));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"https://evil.example.test", "https://admin.example.test.evil.test", "https://admin.example.test:8443", "null"})
+    void unlistedOriginsCannotReadEvenPublicApi(String origin) throws Exception {
+        mvc.perform(get("/api/v1/auth/health").header("Origin", origin))
+                .andExpect(status().isForbidden()).andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+    }
+
+    @Test
+    void sameOriginAndNonBrowserRequestsRemainUsable() throws Exception {
+        mvc.perform(get("/api/v1/auth/health").header("Origin", "http://localhost"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200));
+        mvc.perform(get("/api/v1/auth/health")).andExpect(status().isOk());
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options("/api/v1/auth/login")
+                .header("Origin", "https://evil.example.test").header("Access-Control-Request-Method", "POST"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void unsupportedCorsHeadersAreRejected() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options("/api/v1/auth/login")
+                .header("Origin", "https://admin.example.test").header("Access-Control-Request-Method", "POST")
+                .header("Access-Control-Request-Headers", "X-Private-Header"))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void publicHttpsOriginWorksBehindHttpBackendWithoutTrustingForwardedHeaders() throws Exception {
+        authUser("MERCHANT_ADMIN", 1L);
+        mvc.perform(post("/api/v1/auth/login").contentType("application/json").header("Origin", "https://admin.example.test")
+                .with(request -> { request.setScheme("http"); request.setServerName("admin.example.test"); return request; })
+                .content(json.writeValueAsString(java.util.Map.of("username", "auth-fixture", "password", AUTH_PASSWORD))))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(header().string("Access-Control-Allow-Origin", "https://admin.example.test"));
+    }
+
+    @Test
+    void loginTrimsAccountButPreservesPasswordInput() throws Exception {
+        authUser("MERCHANT_ADMIN", 1L);
+        mvc.perform(post("/api/v1/auth/login").contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("username", " auth-fixture ", "password", AUTH_PASSWORD))))
+                .andExpect(jsonPath("$.code").value(200));
+        mvc.perform(post("/api/v1/auth/login").contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("username", "auth-fixture", "password", " " + AUTH_PASSWORD + " "))))
+                .andExpect(jsonPath("$.code").value(500)).andExpect(jsonPath("$.data.token").doesNotExist());
+    }
+
+    private void simulateLoginBuckets() {
+        var counts = new java.util.concurrent.ConcurrentHashMap<String, AtomicInteger>();
+        when(redis.<Long>execute(any(), anyList(), any(), any())).thenAnswer(invocation -> {
+            String key = ((List<String>) invocation.getArgument(1)).get(0);
+            int limit = Integer.parseInt(invocation.getArgument(2).toString());
+            return counts.computeIfAbsent(key, unused -> new AtomicInteger()).incrementAndGet() <= limit ? 1L : 0L;
+        });
+    }
+
+    @Test
+    void accountAttemptsAreSharedAcrossConnectionsAndSuccessDoesNotResetThem() throws Exception {
+        authUser("MERCHANT_ADMIN", 1L); simulateLoginBuckets();
+        for (int attempt = 1; attempt <= 4; attempt++) {
+            var login = post("/api/v1/auth/login").contentType("application/json")
+                    .content(json.writeValueAsString(java.util.Map.of("username", "auth-fixture", "password", AUTH_PASSWORD)));
+            final int connection = attempt;
+            mvc.perform(login.with(request -> { request.setRemoteAddr("192.0.2." + connection); return request; }))
+                    .andExpect(jsonPath("$.code").value(attempt <= 3 ? 200 : 429));
+        }
+    }
+
+    @Test
+    void addressLimitAppliesAcrossUnknownAccountsAndIgnoresSpoofedForwardingHeaders() throws Exception {
+        simulateLoginBuckets();
+        for (int attempt = 1; attempt <= 6; attempt++) {
+            mvc.perform(post("/api/v1/auth/login").contentType("application/json")
+                    .header("X-Forwarded-For", "192.0.2." + attempt).header("Forwarded", "for=192.0.2." + attempt)
+                    .content(json.writeValueAsString(java.util.Map.of("username", "missing-" + attempt, "password", AUTH_PASSWORD))))
+                    .andExpect(jsonPath("$.code").value(attempt <= 5 ? 500 : 429));
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"nullIp", "nullAccount", "exception"})
+    void rateStorageFailureNeverIssuesLoginToken(String scenario) throws Exception {
+        authUser("MERCHANT_ADMIN", 1L);
+        if (scenario.equals("nullAccount")) when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L, null);
+        else if (scenario.equals("exception")) when(redis.<Long>execute(any(), anyList(), any(), any())).thenThrow(new IllegalStateException("private-detail"));
+        else when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(null);
+        mvc.perform(post("/api/v1/auth/login").contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("username", "auth-fixture", "password", AUTH_PASSWORD))))
+                .andExpect(jsonPath("$.code").value(503)).andExpect(jsonPath("$.data.token").doesNotExist());
+        doReturn(1L).when(redis).execute(any(), anyList(), any(), any());
+        assertFalse(loginToken().isBlank());
     }
 
     @org.junit.jupiter.params.ParameterizedTest
