@@ -1,7 +1,7 @@
 <!--
 文件：Merchants.vue
 用途：平台商户资料、佣金、服务费、营业状态和收款模式配置页面。
-维护注意：进件仍有模拟数据，不能把成功提示当真实渠道开通；后台校验为权威，费率/状态编码变更须同步契约与测试。
+维护注意：进件仍有模拟数据，不能把成功提示当真实渠道开通；后台校验为权威；服务费五种编码分别展示，未知值须明确选择，配置不代表扣费或停服；日期按LocalDate提交。
 -->
 <template>
   <div class="merchants-page">
@@ -45,14 +45,8 @@
               <span style="font-size: 11px; color: #64748b;"> / 月</span>
             </div>
             <div style="margin-top: 2px;">
-              <el-tag v-if="row.feeStatus === 'EXEMPTED'" type="success" size="small" effect="plain">
-                免收豁免
-              </el-tag>
-              <el-tag v-else-if="row.feeStatus === 'ARREARS'" type="danger" size="small">
-                欠费待缴
-              </el-tag>
-              <el-tag v-else type="info" size="small">
-                正常计费
+              <el-tag :type="feeStatusView(row.feeStatus).type" size="small" effect="plain">
+                {{ feeStatusView(row.feeStatus).label }}
               </el-tag>
             </div>
             <div v-if="row.feeFreeUntil" style="font-size: 10px; color: #94a3b8; margin-top: 2px;">
@@ -169,13 +163,13 @@
           />
         </el-form-item>
         <el-form-item label="服务费状态">
-          <el-select v-model="feeForm.feeStatus" style="width: 100%;">
-            <el-option label="NORMAL (正常按月计费)" value="NORMAL" />
-            <el-option label="EXEMPTED (免收/特权豁免)" value="EXEMPTED" />
-            <el-option label="ARREARS (欠费停服催收)" value="ARREARS" />
+          <el-select v-model="feeForm.feeStatus" placeholder="请选择有效状态" style="width: 100%;">
+            <el-option v-for="option in FEE_STATUS_OPTIONS" :key="option.value"
+              :label="`${option.value} (${option.label})`" :value="option.value" />
           </el-select>
         </el-form-item>
       </el-form>
+      <p class="text-xs text-slate-500">这里只保存配置标记，不代表已扣费、豁免执行或自动停服；截止日留空会保留原值。</p>
       <template #footer>
         <el-button @click="feeDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="feeSaving" @click="handleSaveFee">保存服务费配置</el-button>
@@ -212,6 +206,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
+import { FEE_STATUS_OPTIONS, feeStatusView, serviceFeeForm, serviceFeePayload } from '../../utils/serviceFee.mjs'
 
 const loading = ref(false)
 const submitLoading = ref(false)
@@ -303,23 +298,19 @@ const editCommission = (row) => {
 // 打开服务费弹窗
 const openFeeDialog = (row) => {
   currentStoreId.value = row.id
-  feeForm.value = {
-    monthlyFee: row.monthlyFee || 0,
-    feeFreeUntil: row.feeFreeUntil || '',
-    feeStatus: row.feeStatus || 'NORMAL'
-  }
+  feeForm.value = serviceFeeForm(row)
   feeDialogVisible.value = true
 }
 
 const handleSaveFee = async () => {
   feeSaving.value = true
   try {
-    await request.put(`/admin/merchants/${currentStoreId.value}/service-fee`, feeForm.value)
+    await request.put(`/admin/merchants/${currentStoreId.value}/service-fee`, serviceFeePayload(feeForm.value))
     ElMessage.success('商户技术服务费配置已保存！')
     feeDialogVisible.value = false
     loadMerchants()
   } catch (e) {
-    ElMessage.error(e.response?.data?.message || '配置保存失败')
+    ElMessage.error(e.response?.data?.message || e.message || '配置保存失败')
   } finally {
     feeSaving.value = false
   }

@@ -1,7 +1,7 @@
 /*
  * 文件：MerchantController.java
  * 用途：平台商户配置及商家本店资料接口。
- * 维护注意：管理参数必须在持久化前校验，店铺资料写入按字段白名单；进件账户仍为本地模拟，不能将PASSED视为真实渠道开通。服务费状态保留历史编码兼容。
+ * 维护注意：管理参数必须在持久化前校验，店铺资料写入按字段白名单；进件账户仍为本地模拟，不能将PASSED视为真实渠道开通。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。
  */
 package com.shop.b2b2c.controller;
 
@@ -9,6 +9,7 @@ import cn.dev33.satoken.secure.BCrypt;
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.ManagementGuards;
+import com.shop.b2b2c.common.ServiceFeeStatus;
 import java.util.Set;
 import com.shop.b2b2c.common.SecurityUtils;
 import com.shop.b2b2c.entity.MerchantPaymentAccount;
@@ -157,14 +158,15 @@ public class MerchantController {
     public static class ServiceFeeConfigDTO {
         private BigDecimal monthlyFee;
         private java.time.LocalDate feeFreeUntil;
-        private String feeStatus; // NORMAL, EXEMPTED, ARREARS
+        private String feeStatus; // ServiceFeeStatus五种编码；null表示保留原值
     }
 
     @Operation(summary = "【超管】配置商户月度技术服务费与免收期")
     @PutMapping("/api/v1/admin/merchants/{id}/service-fee")
     public R<Void> updateServiceFee(@PathVariable Long id, @RequestBody ServiceFeeConfigDTO dto) {
+        if (dto == null) throw new BusinessException(400, "服务费配置不能为空");
         if (dto.getMonthlyFee() != null) ManagementGuards.monthlyFee(dto.getMonthlyFee());
-        if (dto.getFeeStatus() != null) ManagementGuards.choice(dto.getFeeStatus(), Set.of("NORMAL", "TRIAL", "OVERDUE", "EXEMPTED", "ARREARS"));
+        if (dto.getFeeStatus() != null) ManagementGuards.choice(dto.getFeeStatus(), ServiceFeeStatus.SUPPORTED);
         MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         if (dto.getMonthlyFee() != null) store.setMonthlyFee(dto.getMonthlyFee());

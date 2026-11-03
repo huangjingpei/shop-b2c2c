@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、公开查询、代付状态契约、事务和租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、公开查询、代付/服务费状态契约、事务和租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -120,6 +120,42 @@ class Sprint1SecurityIntegrationTest {
             jdbc.update("INSERT INTO product(id,merchant_id,category_id,title,goods_type,main_image,min_price,status) VALUES(?,?,?,?,1,'image',12.30,?)",
                     id, merchant, category, "catalog-" + id, id == 5 ? 0 : 1);
         }
+    }
+
+    @Test
+    void serviceFeeCodesRoundTripWithoutChangingOperatingStatus() throws Exception {
+        authUser("SUPERADMIN", null); String token = loginToken();
+        for (String code : List.of("NORMAL", "TRIAL", "OVERDUE", "EXEMPTED", "ARREARS")) {
+            mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/admin/merchants/1/service-fee")
+                    .header("Authorization", "Bearer " + token).contentType("application/json")
+                    .content(json.writeValueAsString(java.util.Map.of("feeStatus", code, "monthlyFee", 0, "feeFreeUntil", "2028-02-29"))))
+                    .andExpect(jsonPath("$.code").value(200));
+            assertEquals(code, jdbc.queryForObject("SELECT fee_status FROM merchant_store WHERE id=1", String.class));
+            assertEquals(1, jdbc.queryForObject("SELECT status FROM merchant_store WHERE id=1", Integer.class));
+            assertEquals(0, jdbc.queryForObject("SELECT monthly_fee FROM merchant_store WHERE id=1", java.math.BigDecimal.class).signum());
+        }
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/admin/merchants/1/service-fee")
+                .header("Authorization", "Bearer " + token).contentType("application/json")
+                .content("{\"feeStatus\":\"UNKNOWN\",\"monthlyFee\":99}"))
+                .andExpect(jsonPath("$.code").value(400));
+        assertEquals("ARREARS", jdbc.queryForObject("SELECT fee_status FROM merchant_store WHERE id=1", String.class));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/admin/merchants/1/service-fee")
+                .header("Authorization", "Bearer " + token).contentType("application/json").content("{\"monthlyFee\":10}"))
+                .andExpect(jsonPath("$.code").value(200));
+        assertEquals("ARREARS", jdbc.queryForObject("SELECT fee_status FROM merchant_store WHERE id=1", String.class));
+        assertEquals(java.time.LocalDate.of(2028, 2, 29), jdbc.queryForObject("SELECT fee_free_until FROM merchant_store WHERE id=1", java.sql.Timestamp.class).toLocalDateTime().toLocalDate());
+    }
+
+    @Test
+    void merchantCannotChangeServiceFeeEvenWithAnotherStoreId() throws Exception {
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/admin/merchants/2/service-fee")
+                .contentType("application/json").content("{\"feeStatus\":\"EXEMPTED\"}"))
+                .andExpect(status().isUnauthorized());
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/admin/merchants/2/service-fee")
+                .header("Authorization", "Bearer " + token).contentType("application/json").content("{\"feeStatus\":\"EXEMPTED\"}"))
+                .andExpect(status().isForbidden());
+        assertEquals("NORMAL", jdbc.queryForObject("SELECT fee_status FROM merchant_store WHERE id=2", String.class));
     }
 
     @Test

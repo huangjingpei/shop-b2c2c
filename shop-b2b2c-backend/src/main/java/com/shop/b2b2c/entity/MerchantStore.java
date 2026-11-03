@@ -1,7 +1,7 @@
 /*
  * 文件：MerchantStore.java
  * 用途：商户经营身份、展示资料、费用与收款模式模型。
- * 维护注意：含经营者身份及内部费用，公开接口必须转PublicStoreView；状态用于交易资格，历史服务费编码兼容待统一。不要直接绑定实体全字段更新。
+ * 维护注意：含经营者身份及内部费用，公开接口必须转PublicStoreView；状态用于交易资格，服务费编码复用ServiceFeeStatus，状态标记不代表自动扣费/停服。不要直接绑定实体全字段更新。
  */
 package com.shop.b2b2c.entity;
 
@@ -9,6 +9,7 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
+import com.shop.b2b2c.common.ServiceFeeStatus;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
@@ -32,7 +33,7 @@ public class MerchantStore {
     // ==================== 增量商业变现与合规直收扩展 ====================
     private BigDecimal monthlyFee = BigDecimal.ZERO; // 月度技术服务费 (前期=0)
     private LocalDateTime feeFreeUntil; // 免费试用截止日期
-    private String feeStatus = "NORMAL"; // NORMAL(正常), TRIAL(免费期), OVERDUE(欠费只读限制)
+    private String feeStatus = ServiceFeeStatus.NORMAL; // NORMAL, TRIAL, OVERDUE, EXEMPTED, ARREARS
     private String paymentChannelType = "C"; // B(商户自主直收-免EDI二清), C(Mock沙箱-研发期), A(电商收付通-成熟期)
     private String customPayQrcode; // 商家自主微信/支付宝收款二维码图片URL
 
