@@ -190,6 +190,11 @@
           <p class="text-xs text-slate-500 mt-1">订单流水号：<code>{{ successResult.orderSn }}</code></p>
         </div>
 
+        <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded text-xs">
+          <p class="font-bold">请私密保存订单号和买家领取凭证：</p>
+          <code class="block break-all select-all">{{ successResult.queryToken }}</code>
+          <p>领取凭证用于查单提货，请勿分享给代付人。关闭窗口前请保存。</p>
+        </div>
         <!-- 如果是虚拟卡密商品，立即交付 -->
         <div v-if="successResult.cards && successResult.cards.length > 0" class="mt-5">
           <div class="flex items-center justify-between text-xs font-bold text-slate-700 mb-1.5">
@@ -211,7 +216,7 @@
 
         <div class="mt-6 flex space-x-3">
           <router-link
-            :to="`/quick-query?sn=${successResult.orderSn}&contact=${successResult.buyerContact}`"
+            :to="receiptPath(successResult.orderSn)"
             class="flex-1 text-center py-2.5 rounded-lg border border-slate-300 text-xs font-bold text-slate-700 hover:bg-slate-50 transition"
           >
             前往免登录查单页
@@ -314,6 +319,11 @@
             <p class="text-xs text-slate-500 mt-1">好友在微信内点击链接即可打开直接买单，免注册免登录</p>
           </div>
 
+          <div class="p-3 bg-amber-50 border border-amber-200 rounded text-xs">
+            <p>订单号：<code class="select-all">{{ peerPayResult.orderSn }}</code></p>
+            <p>买家领取凭证（请私密保存，不要发给代付人）：</p>
+            <code class="block break-all select-all">{{ peerPayResult.queryToken }}</code>
+          </div>
           <!-- 核心微信专属复制与分享按钮组 -->
           <div class="space-y-2">
             <!-- 1. 复制微信卡片消息 (最适合直接发微信) -->
@@ -400,6 +410,7 @@
 </template>
 
 <script setup>
+import { receiptPath } from '../utils/buyerReceipt.mjs'
 import { createIdempotentSubmission } from '../utils/idempotency.mjs'
 const checkoutSubmission = createIdempotentSubmission()
 const peerSubmission = createIdempotentSubmission()

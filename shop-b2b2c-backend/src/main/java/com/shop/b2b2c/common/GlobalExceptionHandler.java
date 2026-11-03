@@ -1,7 +1,7 @@
 /*
  * 文件：GlobalExceptionHandler.java
- * 用途：统一后端异常到API响应的映射，为缺少必需请求头返回400、未知资源返回404。
- * 维护注意：业务错误码与HTTP状态目前并非完全一致；新增异常处理须同时检查客户端兼容和敏感错误信息，不能把不存在接口包装成成功。
+ * 用途：统一异常响应，无效请求头/JSON返回400、未知资源返回404，通用错误不回显内部文本。
+ * 维护注意：业务错误码与HTTP状态目前并非完全一致；内部异常堆栈仍须日志治理；新增处理须检查客户端兼容和敏感信息，不能把不存在接口包装成成功。
  */
 package com.shop.b2b2c.common;
 
@@ -21,6 +21,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public R<Void> handleUnreadableBody() {
+        // Parser exceptions may embed raw JSON containing buyer credentials; never echo or log that body.
+        return R.fail(400, "请求格式不正确，请检查填写内容");
+    }
 
     @ExceptionHandler(org.springframework.web.bind.MissingRequestHeaderException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
@@ -63,6 +70,6 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(Exception.class)
     public R<Void> handleException(Exception e) {
         log.error("系统未知异常", e);
-        return R.fail(500, "系统繁忙，请稍后再试: " + e.getMessage());
+        return R.fail(500, "系统繁忙，请稍后再试");
     }
 }

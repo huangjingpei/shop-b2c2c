@@ -66,6 +66,7 @@ class Sprint1SecurityIntegrationTest {
 
     @BeforeEach
     void fixtures() {
+        when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
         for (String table : List.of("order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
@@ -473,7 +474,7 @@ class Sprint1SecurityIntegrationTest {
     void publicProductAndQuickSearchNeverExposePrivateStoreFields() throws Exception {
         unpaid("privacy", 1);
         for (var request : List.of(get("/api/v1/public/products/1"),
-                get("/api/v1/public/orders/quick-search").param("orderSn", "ORD-privacy").param("contact", "buyer@example.com"))) {
+                post("/api/v1/public/orders/quick-search").contentType("application/json").content("{\"orderSn\":\"ORD-privacy\",\"contact\":\"buyer@example.com\",\"queryToken\":\"query-privacy\"}"))) {
             mvc.perform(request).andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
                     .andExpect(jsonPath("$.data.store.id").value(1))
@@ -615,6 +616,148 @@ class Sprint1SecurityIntegrationTest {
         mvc.perform(post("/api/v1/peer-pay/cancel-lock/missing-owner-header"))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
         assertEquals(0, skus.selectById(1).getStockQuantity());
+    }
+
+    private org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder receiptLookup(String token, String receipt) {
+        return post("/api/v1/public/orders/quick-search").contentType("application/json").content(
+                "{\"orderSn\":\"ORD-" + token + "\",\"contact\":\"buyer@example.com\",\"queryToken\":\"" + receipt + "\"}");
+    }
+
+    @Test
+    void completedCashierNeverExposesDeliveryOrPrivateReceipt() throws Exception {
+        TradeOrder order = unpaid("cashier-privacy", 1);
+        order.setOrderStatus("COMPLETED"); order.setPeerStatus("PAID"); order.setServiceVoucher("private-service-secret");
+        order.setPeerPayerId("private-payer"); orders.save(order);
+        var item = items.findByOrderSn(order.getOrderSn()).get(0); item.setCardDetails("private-card-secret"); items.save(item);
+        for (int type : List.of(2, 3)) {
+            order.setGoodsType(type); orders.save(order);
+            String body = mvc.perform(get("/api/v1/peer-pay/detail/cashier-privacy")).andExpect(status().isOk())
+                    .andExpect(jsonPath("$.data.serviceVoucher").doesNotExist())
+                    .andExpect(jsonPath("$.data.queryToken").doesNotExist()).andReturn().getResponse().getContentAsString();
+            for (String secret : List.of("private-card-secret", "private-service-secret", "private-payer", order.getQueryToken())) assertFalse(body.contains(secret));
+        }
+    }
+
+    @Test
+    void buyerReceiptReturnsCompletedCardsThroughExplicitWhitelist() throws Exception {
+        TradeOrder order = unpaid("receipt-card", 1); pay("receipt-card");
+        mvc.perform(receiptLookup("receipt-card", order.getQueryToken())).andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.items[0].cardDetails").value("secret"))
+                .andExpect(jsonPath("$.data.order.queryToken").doesNotExist())
+                .andExpect(jsonPath("$.data.order.peerPayToken").doesNotExist())
+                .andExpect(jsonPath("$.data.order.peerPayerId").doesNotExist())
+                .andExpect(jsonPath("$.data.order.payTradeNo").doesNotExist())
+                .andExpect(jsonPath("$.data.order.commissionAmount").doesNotExist());
+        for (String wrong : List.of("wrong-secret", "receipt-card", "")) {
+            mvc.perform(receiptLookup("receipt-card", wrong)).andExpect(jsonPath("$.code").value(400))
+                    .andExpect(jsonPath("$.data").isEmpty());
+        }
+    }
+
+    @Test
+    void buyerCanRetrieveCompletedCustomServiceButNotBeforeCompletion() throws Exception {
+        TradeOrder order = unpaid("receipt-service", 1); order.setGoodsType(3); order.setServiceVoucher("private-service"); orders.save(order);
+        mvc.perform(receiptLookup("receipt-service", order.getQueryToken())).andExpect(jsonPath("$.data.order.serviceVoucher").isEmpty());
+        order.setOrderStatus("COMPLETED"); orders.save(order);
+        mvc.perform(receiptLookup("receipt-service", order.getQueryToken())).andExpect(jsonPath("$.data.order.serviceVoucher").value("private-service"))
+                .andExpect(jsonPath("$.data.items[0].cardDetails").isEmpty());
+    }
+
+    @Test
+    void deprecatedGetNeverReturnsAssetsEvenWithCorrectCredentialsInUrl() throws Exception {
+        TradeOrder order = unpaid("retired-query", 1); pay("retired-query");
+        mvc.perform(get("/api/v1/public/orders/quick-search").param("orderSn", order.getOrderSn())
+                .param("contact", order.getBuyerContact()).param("queryToken", order.getQueryToken()))
+                .andExpect(status().isGone()).andExpect(jsonPath("$.code").value(410)).andExpect(jsonPath("$.data").isEmpty());
+    }
+
+    @Test
+    void malformedLookupCannotRevealWhetherOrderOrContactExists() throws Exception {
+        unpaid("lookup-error", 1);
+        String wrongReceipt = mvc.perform(receiptLookup("lookup-error", "wrong")).andReturn().getResponse().getContentAsString();
+        String missing = mvc.perform(receiptLookup("missing-order", "wrong")).andReturn().getResponse().getContentAsString();
+        assertEquals(wrongReceipt, missing);
+        mvc.perform(post("/api/v1/public/orders/quick-search").contentType("application/json")
+                        .content("{\"orderSn\":\"ORD-lookup-error\",\"contact\":\"buyer@example.com\"}"))
+                .andExpect(jsonPath("$.code").value(400)).andExpect(jsonPath("$.data").isEmpty());
+    }
+
+    @Test
+    void redisFailureOrRateLimitNeverDowngradesToAnonymousDelivery() throws Exception {
+        TradeOrder order = unpaid("lookup-rate", 1); pay("lookup-rate");
+        when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(0L);
+        mvc.perform(receiptLookup("lookup-rate", order.getQueryToken())).andExpect(jsonPath("$.code").value(429))
+                .andExpect(jsonPath("$.data").isEmpty());
+        when(redis.<Long>execute(any(), anyList(), any(), any())).thenThrow(new IllegalStateException("internal-cache-error"));
+        mvc.perform(receiptLookup("lookup-rate", order.getQueryToken())).andExpect(jsonPath("$.code").value(503))
+                .andExpect(jsonPath("$.data").isEmpty());
+    }
+
+    @Test
+    void creationIssuesPrivateReceiptWithoutPuttingItIntoPaymentShare() throws Exception {
+        var dto = checkoutRequest(); String receipt = (String) orderController.checkout(dto).getData().get("queryToken");
+        assertTrue(receipt.matches("[0-9a-f]{32}"));
+        PeerPayDTOs.BuyerCreateRequest request = new PeerPayDTOs.BuyerCreateRequest();
+        request.setProductId(1L); request.setSkuId(1L); request.setQuantity(1); request.setBuyerContact("buyer@example.com");
+        var created = payments.createBuyerPeerPay(request); String buyerReceipt = (String) created.get("queryToken");
+        assertTrue(buyerReceipt.matches("[0-9a-f]{32}"));
+        assertFalse(created.get("cashierUrl").toString().contains(buyerReceipt));
+        assertFalse(created.get("wechatShareText").toString().contains(buyerReceipt));
+        PeerPayDTOs.PushPayCreateRequest push = new PeerPayDTOs.PushPayCreateRequest();
+        push.setProductId(1L); push.setSkuId(1L); push.setQuantity(1);
+        var pushed = payments.createPushPayOrder(push, 1L); String pushedReceipt = (String) pushed.get("queryToken");
+        assertEquals("商户代客推单客户", pushed.get("buyerContact"));
+        assertTrue(pushedReceipt.matches("[0-9a-f]{32}"));
+        assertFalse(pushed.get("cashierUrl").toString().contains(pushedReceipt));
+        assertFalse(pushed.get("wechatShareText").toString().contains(pushedReceipt));
+    }
+
+    @Test
+    void serviceDeliveryLogsDoNotPrintBuyerOrVoucherSecrets() {
+        var logger = (ch.qos.logback.classic.Logger) org.slf4j.LoggerFactory.getLogger(com.shop.b2b2c.service.impl.PeerPayServiceImpl.class);
+        var appender = new ch.qos.logback.core.read.ListAppender<ch.qos.logback.classic.spi.ILoggingEvent>(); appender.start(); logger.addAppender(appender);
+        try {
+            jdbc.update("UPDATE product SET goods_type=3 WHERE id=1");
+            TradeOrder order = unpaid("redacted-log", 1); order.setGoodsType(3); orders.save(order); pay("redacted-log");
+            payments.fulfillVirtualOrder(order.getId(), "unique-private-voucher", 1L);
+            String logs = appender.list.stream().map(ch.qos.logback.classic.spi.ILoggingEvent::getFormattedMessage).collect(java.util.stream.Collectors.joining("\n"));
+            assertFalse(logs.contains("unique-private-voucher")); assertFalse(logs.contains("buyer@example.com")); assertFalse(logs.contains("verified-payer"));
+        } finally { logger.detachAppender(appender); appender.stop(); }
+    }
+
+    @Test
+    void correctReceiptCannotBeUsedWithAnotherOrderOrContact() throws Exception {
+        TradeOrder order = unpaid("bound-receipt", 1); pay("bound-receipt");
+        mvc.perform(receiptLookup("another-order", order.getQueryToken())).andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.data").isEmpty());
+        mvc.perform(post("/api/v1/public/orders/quick-search").contentType("application/json").content(
+                        "{\"orderSn\":\"ORD-bound-receipt\",\"contact\":\"other@example.com\",\"queryToken\":\"" + order.getQueryToken() + "\"}"))
+                .andExpect(jsonPath("$.code").value(400)).andExpect(jsonPath("$.data").isEmpty());
+    }
+
+    @Test
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    void untrustedForwardedHeadersCannotChangeRateLimitIdentity() throws Exception {
+        TradeOrder order = unpaid("forwarded-rate", 1);
+        mvc.perform(receiptLookup("forwarded-rate", order.getQueryToken()).header("X-Forwarded-For", "192.0.2.1"))
+                .andExpect(jsonPath("$.code").value(200));
+        mvc.perform(receiptLookup("forwarded-rate", order.getQueryToken()).header("X-Forwarded-For", "198.51.100.2"))
+                .andExpect(jsonPath("$.code").value(200));
+        var keys = org.mockito.ArgumentCaptor.forClass(List.class);
+        verify(redis, times(4)).execute(any(), keys.capture(), any(), eq("300"));
+        assertEquals(keys.getAllValues().get(0), keys.getAllValues().get(2));
+        assertEquals(keys.getAllValues().get(1), keys.getAllValues().get(3));
+    }
+
+    @Test
+    void malformedReceiptBodyIsRejectedWithoutEchoingItsCredentials() throws Exception {
+        String body = mvc.perform(post("/api/v1/public/orders/quick-search").contentType("application/json")
+                        .content("{\"queryToken\":\"unique-private-parser-secret\",broken"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400))
+                .andReturn().getResponse().getContentAsString();
+        assertFalse(body.contains("unique-private-parser-secret"));
+        assertFalse(body.contains("JsonParseException"));
     }
 
     private void race(int count, java.util.function.IntConsumer action) throws Exception {

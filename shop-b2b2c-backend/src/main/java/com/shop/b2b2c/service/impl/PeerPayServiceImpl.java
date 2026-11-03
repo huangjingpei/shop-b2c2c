@@ -1,7 +1,7 @@
 /*
  * 文件：PeerPayServiceImpl.java
  * 用途：代付交易与库存预占的事务实现，协调订单、SKU、卡密及人工服务履约。
- * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。保留无流水旧锁的升级兼容；卡密缺货必须回滚。当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
+ * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。保留无流水旧锁的升级兼容；卡密缺货必须回滚。公开代付详情不能返回卡密或服务凭证；当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
  */
 package com.shop.b2b2c.service.impl;
 
@@ -72,7 +72,7 @@ public class PeerPayServiceImpl implements PeerPayService {
 
         // 生成全局流水号与防撞代付短码
         String orderSn = "ORD" + UUID.randomUUID().toString().replace("-", "");
-        String queryToken = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        String queryToken = UUID.randomUUID().toString().replace("-", "");
         String peerPayToken = "PAY" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
 
         BigDecimal totalAmount = sku.getPrice().multiply(new BigDecimal(req.getQuantity()));
@@ -181,7 +181,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         BigDecimal merchantSettleAmount = totalAmount.subtract(commissionAmount);
 
         String orderSn = "ORD" + UUID.randomUUID().toString().replace("-", "");
-        String queryToken = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        String queryToken = UUID.randomUUID().toString().replace("-", "");
         String peerPayToken = "PUSH" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
 
         TradeOrder order = new TradeOrder();
@@ -236,6 +236,8 @@ public class PeerPayServiceImpl implements PeerPayService {
         result.put("peerPayToken", peerPayToken);
         result.put("cashierUrl", cashierUrl);
         result.put("posterBase64", posterBase64);
+        result.put("queryToken", queryToken);
+        result.put("buyerContact", order.getBuyerContact());
         result.put("unitPrice", unitPrice);
         result.put("payAmount", totalAmount);
         result.put("wechatShareText", wechatShareText);
@@ -289,10 +291,7 @@ public class PeerPayServiceImpl implements PeerPayService {
             resp.setQuantity(firstItem.getQuantity());
         }
 
-        // 线上服务凭证：已完结时展示
-        if ("COMPLETED".equals(order.getOrderStatus())) {
-            resp.setServiceVoucher(order.getServiceVoucher());
-        }
+        // 分享链接只展示付款摘要，领取内容必须由买家凭独立queryToken查询。
 
         // 隐私脱敏处理 (如: 138****8000)
         String contact = order.getBuyerContact();
@@ -503,8 +502,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         }
 
         order = orderMapper.save(order);
-        log.info("代付单 [{}] 支付成功落地！三方角色绑定完成: 卖家ID={}, 买家={}, 付款人={}",
-                order.getOrderSn(), order.getMerchantId(), order.getBuyerContact(), order.getPeerPayerId());
+        log.info("代付单 [{}] 支付落账完成，商户ID={}", order.getOrderSn(), order.getMerchantId());
 
         return order;
     }
@@ -537,7 +535,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setFinishTime(LocalDateTime.now());
         orderMapper.save(order);
 
-        log.info("商户 [{}] 完成线上服务订单 [{}] 凭证交付: {}", currentMerchantId, order.getOrderSn(), serviceVoucher);
+        log.info("商户 [{}] 完成线上服务订单 [{}]", currentMerchantId, order.getOrderSn());
     }
 
     @Override

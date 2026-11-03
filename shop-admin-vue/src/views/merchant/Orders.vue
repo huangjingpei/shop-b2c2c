@@ -274,6 +274,12 @@
         <h3 style="margin: 0; color: #0f172a; font-size: 16px; font-weight: bold;">代客推单账单已生成！</h3>
         <p style="font-size: 12px; color: #64748b; margin: 4px 0 16px;">复制链接发给微信客户，或将海报发送至微信群/朋友圈</p>
 
+        <el-alert type="warning" :closable="false" style="margin-bottom: 12px; text-align: left;">
+          <p>订单号：{{ pushPayResult.orderSn }}</p>
+          <p>买家查单时填写的联系标识：{{ pushPayResult.buyerContact }}</p>
+          <p>买家领取凭证（只私密交给买家，不包含在付款分享中）：</p>
+          <code style="user-select: all; word-break: break-all;">{{ pushPayResult.queryToken }}</code>
+        </el-alert>
         <!-- 专属收银台链接与微信卡片复制 -->
         <div style="margin-bottom: 16px; display: flex; flex-direction: column; gap: 8px;">
           <el-button type="success" size="default" @click="copyPushWechatCard" style="width: 100%; font-weight: bold;">

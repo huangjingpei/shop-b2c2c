@@ -1,6 +1,6 @@
 /*
  * 文件：SchemaInitializationTest.java
- * 用途：验证开发期初始化的单一入口、失败阻断和非破坏性SQL边界。
+ * 用途：验证开发期初始化的单一入口、失败阻断、非破坏性SQL及参数日志隐私边界。
  * 维护注意：只读取类路径资源，不连接数据库；实际MySQL执行与重复启动由SchemaMySqlTest覆盖。不能把静态契约检查当成SQL语法验收。
  */
 package com.shop.b2b2c;
@@ -21,6 +21,8 @@ class SchemaInitializationTest {
         assertEquals("always", properties.getProperty("spring.sql.init.mode"));
         assertEquals("classpath:db/schema.sql", properties.getProperty("spring.sql.init.schema-locations"));
         assertEquals("false", properties.getProperty("spring.sql.init.continue-on-error"));
+        assertEquals("org.apache.ibatis.logging.nologging.NoLoggingImpl", properties.getProperty("mybatis-plus.configuration.log-impl"),
+                "运行配置不得将买家联系方式、领取凭证和卡密参数打印到stdout");
         assertFalse(new ClassPathResource("db/migrations/002_inventory_reservation.sql").exists());
         assertFalse(new ClassPathResource("db/migrations/003_order_idempotency.sql").exists());
     }

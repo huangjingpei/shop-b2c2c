@@ -1,7 +1,7 @@
 <!--
 文件：QuickQuery.vue
 用途：免登录订单查单及卡密、定制服务凭证和物流展示。
-维护注意：类型3展示人工交付凭证；仅以文本插值渲染，不能直接v-html注入凭证。订单号/联系方式查单仍有待加强认证的历史问题，避免记录敏感查询参数。
+维护注意：类型3展示人工交付凭证；仅以文本插值渲染，不能直接v-html注入凭证。领取必须通过POST验证独立queryToken；不得把联系方式/凭证放URL、自动日志或持久化浏览器存储。
 -->
 <template>
   <div class="max-w-2xl mx-auto py-4">
@@ -12,7 +12,7 @@
       </span>
       <h1 class="text-2xl font-black text-slate-900 tracking-tight">免登录极速查单与卡密提取</h1>
       <p class="text-xs text-slate-500 mt-1.5">
-        输入下单时生成的订单号及预留手机号/邮箱，即可 3 秒内提取卡密或追踪物流。
+        输入订单号、下单联系方式和私密领取凭证，查询交付内容或物流。
       </p>
     </div>
 
@@ -45,13 +45,21 @@
           />
         </div>
 
+        <div>
+          <label class="block text-xs font-bold text-slate-700 mb-1">买家领取凭证 *</label>
+          <input v-model="queryToken" type="password" autocomplete="off" required maxlength="64"
+            placeholder="下单时保存的领取凭证（不是代付分享码）"
+            class="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm" />
+          <p class="text-xs text-slate-500 mt-1">请勿把领取凭证发给代付人或发到群聊。遗失后请联系店铺核实。</p>
+        </div>
+
         <button
           type="submit"
           :disabled="loading"
           class="w-full py-3 rounded-lg bg-brand-500 hover:bg-brand-600 disabled:bg-slate-300 text-white font-bold text-sm transition shadow-sm flex items-center justify-center space-x-2"
         >
-          <span v-if="loading">正在防刷验签检索中...</span>
-          <span v-else>立即免密检索订单</span>
+          <span v-if="loading">正在验证领取凭证...</span>
+          <span v-else>验证并查询订单</span>
         </button>
       </form>
     </div>
@@ -77,7 +85,7 @@
       <!-- 所属店铺 -->
       <div v-if="orderResult.store" class="py-3 flex items-center justify-between text-xs text-slate-600 border-b border-slate-100">
         <span>出货店铺：<strong class="text-slate-800">{{ orderResult.store.storeName }}</strong></span>
-        <span>平台二级分账：<strong class="text-green-600">已直结个人卡</strong></span>
+        <span>客服电话：{{ orderResult.store.contactPhone || '请联系店铺' }}</span>
       </div>
 
       <!-- 购买商品项 -->
@@ -123,31 +131,29 @@
 </template>
 
 <script setup>
+import { receiptRequest, receiptRouteQuery } from '../utils/buyerReceipt.mjs'
 import { serviceVoucherText } from '../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 
 const route = useRoute()
+const router = useRouter()
 const loading = ref(false)
 const orderSn = ref('')
 const contact = ref('')
+const queryToken = ref('')
 const orderResult = ref(null)
 
 const handleSearch = async () => {
-  if (!orderSn.value.trim() || !contact.value.trim()) {
-    alert('请输入订单号与下单预留手机号/邮箱')
-    return
-  }
+  let payload
+  try { payload = receiptRequest(orderSn.value, contact.value, queryToken.value) }
+  catch (error) { alert(error.message); return }
   loading.value = true
   orderResult.value = null
   try {
-    const res = await axios.get('/api/v1/public/orders/quick-search', {
-      params: {
-        orderSn: orderSn.value.trim(),
-        contact: contact.value.trim()
-      }
-    })
+    const res = await axios.post('/api/v1/public/orders/quick-search', payload)
+    if (res.data.code !== 200) { alert(res.data.message || '查询失败'); return }
     orderResult.value = res.data.data
   } catch (e) {
     alert(e.response?.data?.message || '未查询到订单信息，请确认订单号与联系方式')
@@ -162,10 +168,11 @@ const copyText = (txt) => {
 }
 
 onMounted(() => {
-  if (route.query.sn && route.query.contact) {
-    orderSn.value = route.query.sn
-    contact.value = route.query.contact
-    handleSearch()
+  const safeQuery = receiptRouteQuery(route.query)
+  if (safeQuery.sn) orderSn.value = safeQuery.sn
+  // 丢弃旧链接中的敏感参数，避免后续导航继续携带；不自动使用URL中的领取凭证。
+  if (Object.keys(route.query).some(key => key !== 'sn') || route.hash) {
+    router.replace({ path: route.path, query: safeQuery, hash: '' })
   }
 })
 </script>

@@ -1,7 +1,7 @@
 /*
  * 文件：OrderController.java
  * 用途：待付款建单、免登录查单、商家发货及平台订单查询入口。
- * 维护注意：HTTP建单强制Idempotency-Key，内部checkout仅在事务中使用；不得伪造到账或直接交付；实物发货必须验证店铺、类型和状态。查单店铺信息走PublicStoreView，查单身份校验和统计口径仍有待处理问题。
+ * 维护注意：HTTP建单强制Idempotency-Key，内部checkout仅在事务中使用；不得伪造到账或直接交付；实物发货必须验证店铺、类型和状态。查单店铺信息走PublicStoreView，领取内容须通过POST和独立queryToken验证，不能返回订单实体；统计口径仍待处理。
  */
 package com.shop.b2b2c.controller;
 
@@ -18,13 +18,11 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -40,7 +38,7 @@ public class OrderController {
     private final ProductMapper productMapper;
     private final ProductSkuMapper skuMapper;
     private final ProductVirtualCardMapper cardMapper;
-    private final StringRedisTemplate redisTemplate;
+    private final com.shop.b2b2c.service.BuyerOrderQueryService buyerQueries;
     private final PeerPayService peerPayService;
     private final com.shop.b2b2c.service.OrderIdempotencyService idempotency;
 
@@ -93,7 +91,7 @@ public class OrderController {
 
         // 生成唯一订单号 SN
         String orderSn = "ORD" + UUID.randomUUID().toString().replace("-", "");
-        String queryToken = UUID.randomUUID().toString().replace("-", "").substring(0, 16);
+        String queryToken = UUID.randomUUID().toString().replace("-", "");
 
         // 计算金额与抽佣
         BigDecimal totalAmount = sku.getPrice().multiply(new BigDecimal(dto.getQuantity()));
@@ -138,6 +136,7 @@ public class OrderController {
         Map<String, Object> result = new HashMap<>();
         result.put("orderSn", orderSn);
         result.put("buyerContact", order.getBuyerContact());
+        result.put("queryToken", queryToken);
         result.put("orderStatus", order.getOrderStatus());
         result.put("payAmount", order.getPayAmount());
         result.put("goodsType", order.getGoodsType());
@@ -146,35 +145,20 @@ public class OrderController {
         return R.ok("订单已创建，等待付款；支付通道暂未开放", result);
     }
 
-    @Operation(summary = "【16688 招牌】免登录订单极速查单 (凭订单号 + 手机/邮箱)")
+    @Operation(summary = "已停用的GET查单入口：领取凭证和联系方式不能放URL")
     @GetMapping("/api/v1/public/orders/quick-search")
-    public R<Map<String, Object>> quickSearch(
-            @RequestParam String orderSn,
-            @RequestParam String contact) {
+    @ResponseStatus(org.springframework.http.HttpStatus.GONE)
+    public R<Void> retiredQuickSearch() {
+        return R.fail(410, "请使用POST查单并提供买家领取凭证");
+    }
 
-        // Redis 频次限制防撞库 (单小时 60 次)
-        try {
-            String rateKey = "rate:order:query:" + contact;
-            Long count = redisTemplate.opsForValue().increment(rateKey, 1);
-            if (count != null && count == 1) {
-                redisTemplate.expire(rateKey, Duration.ofMinutes(5));
-            }
-            if (count != null && count > 60) {
-                return R.fail("查询过于频繁，请稍候再试");
-            }
-        } catch (Exception ignored) {}
-
-        TradeOrder order = orderMapper.findByOrderSnAndBuyerContact(orderSn.trim(), contact.trim())
-                .orElseThrow(() -> new BusinessException("未找到匹配的订单，请仔细核对订单号与下单时预留的手机/邮箱"));
-
-        List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
-        MerchantStore store = storeMapper.findById(order.getMerchantId()).orElse(null);
-
-        Map<String, Object> res = new HashMap<>();
-        res.put("order", order);
-        res.put("items", items);
-        res.put("store", com.shop.b2b2c.common.PublicStoreView.from(store));
-        return R.ok("订单查询成功", res);
+    @Operation(summary = "买家订单查询：订单号、联系方式及独立领取凭证")
+    @PostMapping("/api/v1/public/orders/quick-search")
+    public R<com.shop.b2b2c.dto.BuyerOrderView> quickSearch(
+            @RequestBody com.shop.b2b2c.dto.BuyerLookupRequest request,
+            jakarta.servlet.http.HttpServletRequest servletRequest, jakarta.servlet.http.HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        return R.ok("订单查询成功", buyerQueries.lookup(request, servletRequest.getRemoteAddr()));
     }
 
     // ==========================================

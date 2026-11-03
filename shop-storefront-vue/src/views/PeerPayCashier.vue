@@ -1,7 +1,7 @@
 <!--
 文件：PeerPayCashier.vue
 用途：代付账单详情、倒计时、分享海报及结果展示。
-维护注意：真实付款未开放，禁止恢复随机付款人Mock调用。将来取消预占须保存ownerToken并显式授权；本地倒计时不是库存锁或支付状态权威来源。
+维护注意：本页不接收或展示领取凭证、卡密及服务交付内容；真实付款未开放，禁止恢复随机付款人Mock调用。将来取消预占须保存ownerToken并显式授权；本地倒计时不是库存锁或支付状态权威来源。
 -->
 <template>
   <div class="min-h-screen bg-[#F5F5F7] text-slate-800 antialiased pb-12">
@@ -114,15 +114,9 @@
               ✓
             </div>
             <h3 class="text-base font-black text-slate-900">代付已成功！</h3>
-            <p class="text-xs text-slate-500">感谢您的仗义相助，商品与权益已即时交付给买家好友</p>
+            <p class="text-xs text-slate-500">感谢您的仗义相助，请让买家查询订单交付进度</p>
 
-            <!-- 交付凭证 / 虚拟卡密展示 -->
-            <div v-if="deliveredVoucher || detail.serviceVoucher" class="text-left p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs font-mono text-slate-800 space-y-1">
-              <div class="text-[11px] text-slate-400 font-sans font-bold">交付凭证信息：</div>
-              <div class="text-emerald-700 font-bold select-all break-all">
-                {{ deliveredVoucher || detail.serviceVoucher }}
-              </div>
-            </div>
+            <p class="text-xs text-slate-500">商品与服务内容由买家凭独立领取凭证查询，付款分享页不展示交付内容。</p>
 
             <!-- 【我也想开店】引流位 -->
             <div v-if="adBanner" class="mt-4 p-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white text-left shadow-sm">
@@ -352,7 +346,6 @@ const detail = ref(null)
 const selectedChannel = ref('WECHAT')
 const showPosterModal = ref(false)
 const isPaidSuccess = ref(false)
-const deliveredVoucher = ref('')
 const adBanner = ref(null)
 
 const lockCountdown = ref(0)
