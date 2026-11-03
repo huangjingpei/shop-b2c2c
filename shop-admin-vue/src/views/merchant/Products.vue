@@ -1,14 +1,14 @@
 <!--
 文件：Products.vue
-用途：商家商品与SKU发布及交付类型展示。
-维护注意：1实物、2自动卡密、3定制服务；类型2才显示卡密管理。表单便利校验不能替代后端输入/归属校验，新增字段须同步DTO契约。
+用途：商家商品发布、资料与SKU售价编辑及上下架操作。
+维护注意：1实物、2自动卡密、3定制服务；编辑从私有快照加载revision，冲突后需重载，库存只展示不回写。违规下架不可自行恢复；表单校验不能替代后端输入/归属和事务校验。
 -->
 <template>
   <div class="merchant-products">
     <div class="page-header">
       <div>
         <h2>商品发布与规格变体 SKU 管理</h2>
-        <p>挂靠平台标准类目发布实物或虚拟卡密商品，配置多规格阶梯售价</p>
+        <p>发布实物、自动卡密或定制服务，维护商品资料与SKU售价</p>
       </div>
       <el-button type="primary" icon="Plus" @click="openDialog">发布新商品</el-button>
     </div>
@@ -41,13 +41,16 @@
         </el-table-column>
         <el-table-column prop="status" label="在售状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.status === 1 ? 'success' : 'info'">
-              {{ row.status === 1 ? '在售' : '下架' }}
+            <el-tag :type="row.status === 1 ? 'success' : row.status === 2 ? 'danger' : 'info'">
+              {{ productStatusLabel(row.status) }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="160" fixed="right">
+        <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
+            <el-button size="small" link type="primary" :disabled="editorLoading || editSaving" @click="openEditor(row)">编辑</el-button>
+            <el-button v-if="statusAction(row)" size="small" link :type="row.status === 1 ? 'warning' : 'success'"
+              :loading="statusLoading === row.id" :disabled="statusLoading !== null || editSaving" @click="changeStatus(row)">{{ statusAction(row).label }}</el-button>
             <router-link v-if="row.goodsType === 2" to="/merchant/cards">
               <el-button size="small" type="primary" link>卡密库管理</el-button>
             </router-link>
@@ -55,6 +58,32 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <el-dialog v-model="editVisible" title="编辑商品资料与售价" width="760px" :close-on-click-modal="false" :close-on-press-escape="!editSaving" :show-close="!editSaving">
+      <el-alert title="交付类型与SKU编码固定；库存仅供查看，请通过对应库存业务维护。" type="info" :closable="false" />
+      <el-form v-if="editForm" :model="editForm" :disabled="editSaving || editorLoading" label-width="110px" style="margin-top: 16px;">
+        <el-form-item label="平台类目" required>
+          <el-select v-model="editForm.categoryId"><el-option v-for="c in categories" :key="c.id" :label="c.name" :value="c.id" /></el-select>
+        </el-form-item>
+        <el-form-item label="商品标题" required><el-input v-model="editForm.title" maxlength="255" /></el-form-item>
+        <el-form-item label="副标题"><el-input v-model="editForm.subTitle" maxlength="255" /></el-form-item>
+        <el-form-item label="主图URL" required><el-input v-model="editForm.mainImage" maxlength="255" /></el-form-item>
+        <el-form-item v-if="editingType === 3" label="服务交付说明"><el-input v-model="editForm.serviceDesc" type="textarea" :rows="4" maxlength="10000" /></el-form-item>
+        <el-table :data="editForm.skus">
+          <el-table-column prop="skuCode" label="SKU编码" />
+          <el-table-column prop="specData" label="规格" />
+          <el-table-column label="售价(元)" width="190"><template #default="{ row }">
+            <el-input-number v-model="row.price" :min="0.01" :max="99999999.99" :precision="2" style="width: 170px;" />
+          </template></el-table-column>
+          <el-table-column prop="stockQuantity" label="可售库存" width="90" />
+        </el-table>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="editSaving || editorLoading" @click="reloadEditor">重新载入</el-button>
+        <el-button :disabled="editSaving" @click="editVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editSaving" :disabled="editorLoading" @click="saveEditor">保存资料与售价</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 发布商品弹窗 -->
     <el-dialog v-model="dialogVisible" title="发布新商品" width="600px">
@@ -103,14 +132,58 @@
 <script setup>
 import { goodsTypeLabel } from '../../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
+import { editorForm, updatePayload, statusAction, productStatusLabel } from '../../utils/productEditing.mjs'
 
 const loading = ref(false)
 const submitLoading = ref(false)
 const dialogVisible = ref(false)
 const products = ref([])
 const categories = ref([])
+const editVisible = ref(false), editorLoading = ref(false), editSaving = ref(false), statusLoading = ref(null)
+const editForm = ref(null), editingId = ref(null), editingType = ref(null)
+
+const openEditor = async row => {
+  if (editorLoading.value || editSaving.value) return
+  editorLoading.value = true
+  try {
+    const { data } = await request.get(`/merchant/products/${row.id}/editor`)
+    editForm.value = editorForm(data); editingId.value = row.id; editingType.value = data.product.goodsType
+    editVisible.value = true
+  } catch { /* 请求层显示服务端错误，不记录认证配置。 */ }
+  finally { editorLoading.value = false }
+}
+const reloadEditor = async () => {
+  try { await ElMessageBox.confirm('重新载入会覆盖当前未保存的修改，是否继续？', '重新载入', { type: 'warning' }) }
+  catch { return }
+  await openEditor({ id: editingId.value })
+}
+const saveEditor = async () => {
+  if (editSaving.value || editorLoading.value) return
+  let payload
+  try { payload = updatePayload(editForm.value) } catch (error) { ElMessage.warning(error.message); return }
+  editSaving.value = true
+  try {
+    await request.put(`/merchant/products/${editingId.value}`, payload)
+    ElMessage.success('商品资料与售价已保存'); editVisible.value = false; await loadProducts()
+  } catch { /* 冲突保留当前表单，用户可明确选择重新载入。 */ }
+  finally { editSaving.value = false }
+}
+const changeStatus = async row => {
+  if (statusLoading.value !== null || editSaving.value) return
+  statusLoading.value = row.id
+  try {
+    const { data } = await request.get(`/merchant/products/${row.id}/editor`)
+    const action = statusAction(data.product)
+    if (!action) { ElMessage.warning('该商品状态需由平台处理'); return }
+    try { await ElMessageBox.confirm(`确定${action.label}商品“${data.product.title}”吗？`, '商品状态', { type: 'warning' }) }
+    catch { return }
+    await request.patch(`/merchant/products/${row.id}/status`, { revision: data.revision, status: action.target })
+    ElMessage.success(`商品已${action.label}`); await loadProducts()
+  } catch { /* 请求层统一提示，失败后列表保留原状态。 */ }
+  finally { statusLoading.value = null }
+}
 
 const form = ref({
   categoryId: 1,

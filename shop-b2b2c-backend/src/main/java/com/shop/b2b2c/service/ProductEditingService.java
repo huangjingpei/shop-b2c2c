@@ -1,0 +1,120 @@
+/*
+ * 文件：ProductEditingService.java
+ * 用途：本店商品资料、全量既有SKU售价及上下架的事务维护与旧版本冲突检测。
+ * 维护注意：商品后SKU的行锁序列和内容摘要共同防并发覆盖；摘要排除可售库存/时间字段，库存变动不要求重填资料。SQL只更新白名单列，禁止复用整实体保存；历史订单快照不改，违规下架不能由商家自行恢复。
+ */
+package com.shop.b2b2c.service;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.shop.b2b2c.common.*;
+import com.shop.b2b2c.dto.ProductEditingDTOs.*;
+import com.shop.b2b2c.mapper.*;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.util.*;
+
+@Service
+@RequiredArgsConstructor
+public class ProductEditingService {
+    private final ProductEditingMapper mapper;
+    private final CategoryMapper categories;
+    private final MerchantStoreMapper stores;
+    private final ObjectMapper json;
+
+    @Transactional
+    public Editor get(Long merchant, Long id) { return snapshot(merchant, id); }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Editor update(Long merchant, Long id, Update edit) {
+        if (edit == null) throw new BusinessException(400, "商品资料不能为空");
+        checkRevisionFormat(edit.revision());
+        ManagementGuards.text(edit.title(), 255, true);
+        ManagementGuards.text(edit.subTitle(), 255, false);
+        ManagementGuards.text(edit.mainImage(), 255, true);
+        ManagementGuards.text(edit.serviceDesc(), 10000, false);
+        if (edit.categoryId() == null || edit.categoryId() < 1 || edit.skus() == null || edit.skus().isEmpty() || edit.skus().size() > 100) {
+            throw new BusinessException(400, "类目和SKU列表不合法，单次最多100个SKU");
+        }
+        Map<Long, BigDecimal> prices = new HashMap<>();
+        for (Price price : edit.skus()) {
+            if (price == null || price.id() == null || price.id() < 1 || prices.containsKey(price.id())) {
+                throw new BusinessException(400, "SKU编号不合法或重复");
+            }
+            TradeGuards.requireMoney(price.price());
+            prices.put(price.id(), price.price());
+        }
+        Editor current = snapshot(merchant, id);
+        requireRevision(current, edit.revision());
+        if (categories.findById(edit.categoryId()).isEmpty()) throw new BusinessException(400, "平台类目不存在");
+        Set<Long> existing = new HashSet<>();
+        current.skus().forEach(sku -> existing.add(sku.getId()));
+        if (!existing.equals(prices.keySet())) throw new BusinessException(400, "请提交本商品全部既有SKU，不允许增删或混入其他商品SKU");
+        BigDecimal minimum = prices.values().stream().min(BigDecimal::compareTo).orElseThrow();
+        for (var sku : current.skus()) {
+            BigDecimal next = prices.get(sku.getId());
+            if ((sku.getPrice() == null || sku.getPrice().compareTo(next) != 0)
+                    && mapper.updatePrice(id, merchant, sku.getId(), next) != 1) throw new BusinessException(409, "SKU已变化，请刷新后重试");
+        }
+        var product = current.product();
+        boolean metadataChanged = !Objects.equals(product.getCategoryId(), edit.categoryId()) || !Objects.equals(product.getTitle(), edit.title())
+                || !Objects.equals(product.getSubTitle(), edit.subTitle()) || !Objects.equals(product.getMainImage(), edit.mainImage())
+                || !Objects.equals(product.getServiceDesc(), edit.serviceDesc()) || !Objects.equals(money(product.getMinPrice()), money(minimum));
+        // 不把未变化的列写回：兼容MySQL useAffectedRows=true时无变化更新返回0。
+        if (metadataChanged && mapper.updateMetadata(id, merchant, edit, minimum) != 1) throw new BusinessException(409, "商品已变化，请刷新后重试");
+        return snapshot(merchant, id);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Editor changeStatus(Long merchant, Long id, Status change) {
+        if (change == null || change.status() == null || (change.status() != 0 && change.status() != 1)) {
+            throw new BusinessException(400, "商家仅可选择上架或下架");
+        }
+        checkRevisionFormat(change.revision());
+        Editor current = snapshot(merchant, id);
+        requireRevision(current, change.revision());
+        if (!Integer.valueOf(0).equals(current.product().getStatus()) && !Integer.valueOf(1).equals(current.product().getStatus())) {
+            throw new BusinessException(403, "违规下架商品须由平台处理，商家不能自行变更状态");
+        }
+        if (change.status() == 1) {
+            var store = stores.findById(merchant).orElse(null);
+            if (store == null || !Integer.valueOf(1).equals(store.getStatus()) || current.skus().isEmpty()) {
+                throw new BusinessException(400, "店铺不可营业或商品没有SKU，无法上架");
+            }
+            TradeGuards.requireGoodsType(current.product().getGoodsType());
+            current.skus().forEach(sku -> TradeGuards.requireMoney(sku.getPrice()));
+        }
+        if (!Objects.equals(current.product().getStatus(), change.status()) && mapper.updateStatus(id, merchant, change.status()) != 1) {
+            throw new BusinessException(409, "商品已变化，请刷新后重试");
+        }
+        return snapshot(merchant, id);
+    }
+
+    private Editor snapshot(Long merchant, Long id) {
+        if (merchant == null || merchant < 1) throw new BusinessException(403, "当前账号未绑定店铺");
+        if (id == null || id < 1) throw new BusinessException(400, "商品编号不合法");
+        var product = mapper.lockProduct(id, merchant);
+        if (product == null) throw new BusinessException(404, "商品不存在或不属于本店");
+        var skus = mapper.lockSkus(id, merchant);
+        try {
+            var payload = Arrays.asList(product.getId(), product.getMerchantId(), product.getCategoryId(), product.getTitle(),
+                    product.getSubTitle(), product.getMainImage(), product.getServiceDesc(), product.getGoodsType(), product.getStatus(),
+                    money(product.getMinPrice()), skus.stream().map(sku -> Arrays.asList(sku.getId(), sku.getSkuCode(), money(sku.getPrice()))).toList());
+            String revision = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(json.writeValueAsBytes(payload)));
+            return new Editor(product, skus, revision);
+        } catch (Exception e) { throw new IllegalStateException("生成商品编辑版本失败", e); }
+    }
+
+    private String money(BigDecimal value) { return value == null ? null : value.stripTrailingZeros().toPlainString(); }
+    private void checkRevisionFormat(String revision) {
+        if (revision == null || !revision.matches("[a-f0-9]{64}")) throw new BusinessException(400, "请重新加载商品编辑资料");
+    }
+    private void requireRevision(Editor current, String expected) {
+        if (!MessageDigest.isEqual(current.revision().getBytes(StandardCharsets.US_ASCII), expected.getBytes(StandardCharsets.US_ASCII))) {
+            throw new BusinessException(409, "商品已被其他操作修改，请刷新后重新编辑");
+        }
+    }
+}

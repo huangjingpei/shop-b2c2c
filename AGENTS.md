@@ -15,7 +15,7 @@
 
 - 每次行为修改都应补充或调整相应单元测试，必要时补数据库事务、并发和接口集成测试；修复既要覆盖拒绝非法操作，也要覆盖合法操作。
 - 注释、文档变更应检查格式和语法兼容；不得借补注释夹带业务行为变化。
-- 目前后端测试入口为`mvn -f shop-b2b2c-backend/pom.xml test`；前端规则测试入口为`node --test shared/goodsType.test.mjs shared/idempotency.test.mjs shared/buyerReceipt.test.mjs shared/authSession.test.mjs`。涉及Vue或前端模块时检查对应工程的生产构建。
+- 目前后端测试入口为`mvn -f shop-b2b2c-backend/pom.xml test`；前端规则测试入口为`node --test shared/goodsType.test.mjs shared/idempotency.test.mjs shared/buyerReceipt.test.mjs shared/authSession.test.mjs shared/productEditing.test.mjs`。涉及Vue或前端模块时检查对应工程的生产构建。
 - 同一工作区的Maven clean/compile/test必须串行执行，避免共享target被其他构建覆盖；不同前端工程的独立构建可并行。
 - 测试使用隔离环境，不连接业务数据库。H2通过不能替代真实MySQL或渠道联调，报告中应明确验证范围。
 - 问题台账位于`docs/B2B2C_项目缺陷与未实现功能清单_2026-11-03.md`。处理问题时同步状态；部分完成的项目保留“部分修复”，不要把整个业务域标为已完成。

@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、Spring事务、Mapper SQL、公开响应及租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品维护、Spring事务、Mapper SQL、公开响应及租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -76,6 +76,8 @@ class Sprint1SecurityIntegrationTest {
     @Autowired ProductController products;
     @Autowired OrderController orderController;
     @SpyBean ProductVirtualCardMapper cards;
+    @SpyBean ProductEditingMapper editingMapper;
+    @Autowired com.shop.b2b2c.service.ProductEditingService editing;
     @MockBean StringRedisTemplate redis;
 
     @BeforeEach
@@ -97,6 +99,126 @@ class Sprint1SecurityIntegrationTest {
     @org.junit.jupiter.api.AfterEach
     void clearAuthSessions() {
         cn.dev33.satoken.stp.StpUtil.logout(200L);
+    }
+
+    private com.shop.b2b2c.dto.ProductEditingDTOs.Update productEdit(String revision, String title, String price) {
+        jdbc.update("MERGE INTO category(id,parent_id,name,sort_order) KEY(id) VALUES(1,0,'standard',0)");
+        return new com.shop.b2b2c.dto.ProductEditingDTOs.Update(revision, 1L, title, null, "updated-image", null,
+                List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(1L, new java.math.BigDecimal(price))));
+    }
+
+    @Test
+    void merchantEditorEnforcesHttpAuthenticationAndTenantBoundary() throws Exception {
+        mvc.perform(get("/api/v1/merchant/products/1/editor")).andExpect(status().isUnauthorized());
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        mvc.perform(get("/api/v1/merchant/products/1/editor").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.revision").isNotEmpty());
+        mvc.perform(get("/api/v1/merchant/products/2/editor").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(404)).andExpect(jsonPath("$.data").isEmpty());
+        var body = productEdit(editing.get(1L, 1L).revision(), "owned", "12.00");
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/merchant/products/2")
+                .header("Authorization", "Bearer " + token).contentType("application/json").content(json.writeValueAsString(body)))
+                .andExpect(jsonPath("$.code").value(404));
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch("/api/v1/merchant/products/2/status")
+                .header("Authorization", "Bearer " + token).contentType("application/json")
+                .content(json.writeValueAsString(new com.shop.b2b2c.dto.ProductEditingDTOs.Status(body.revision(), 0))))
+                .andExpect(jsonPath("$.code").value(404));
+        assertEquals("goods", jdbc.queryForObject("SELECT title FROM product WHERE id=2", String.class));
+    }
+
+    @Test
+    void editorWritesWhitelistAndDerivesMinimumWithoutChangingInventoryOrOrders() throws Exception {
+        TradeOrder order = unpaid("edit-history", 1);
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        var request = productEdit(editing.get(1L, 1L).revision(), "new-title", "12.50");
+        var body = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(request);
+        body.put("stockQuantity", 999); body.put("merchantId", 2); body.put("goodsType", 1); body.put("status", 0); body.put("minPrice", 1);
+        ((com.fasterxml.jackson.databind.node.ObjectNode) body.path("skus").get(0)).put("stockQuantity", 999);
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put("/api/v1/merchant/products/1")
+                .header("Authorization", "Bearer " + token).contentType("application/json").content(json.writeValueAsString(body)))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.product.title").value("new-title"))
+                .andExpect(jsonPath("$.data.product.minPrice").value(12.5));
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals(1, jdbc.queryForObject("SELECT status FROM product WHERE id=1", Integer.class));
+        assertEquals(2, jdbc.queryForObject("SELECT goods_type FROM product WHERE id=1", Integer.class));
+        assertEquals(1L, jdbc.queryForObject("SELECT merchant_id FROM product WHERE id=1", Long.class));
+        assertEquals(0, orders.selectById(order.getId()).getPayAmount().compareTo(java.math.BigDecimal.TEN));
+        assertEquals("goods", items.findByOrderSn(order.getOrderSn()).get(0).getProductTitle());
+    }
+
+    @Test
+    void skuListMustExactlyMatchOwnedProductAndMinimumUsesAllPrices() {
+        jdbc.update("INSERT INTO product_sku(id,merchant_id,product_id,sku_code,spec_data,price,stock_quantity) VALUES(3,1,1,'SKU3','{}',20,5)");
+        String revision = editing.get(1L, 1L).revision();
+        var partial = productEdit(revision, "partial", "9.00");
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.update(1L, 1L, partial)).getCode());
+        var full = new com.shop.b2b2c.dto.ProductEditingDTOs.Update(revision, 1L, "complete", null, "image", null,
+                List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(1L, new java.math.BigDecimal("9.00")),
+                        new com.shop.b2b2c.dto.ProductEditingDTOs.Price(3L, new java.math.BigDecimal("7.00"))));
+        var result = editing.update(1L, 1L, full);
+        assertEquals(0, result.product().getMinPrice().compareTo(new java.math.BigDecimal("7.00")));
+        assertEquals(5, skus.selectById(3).getStockQuantity());
+        assertEquals(0, skus.selectById(2).getPrice().compareTo(java.math.BigDecimal.TEN));
+    }
+
+    @Test
+    void editingDoesNotRestoreReservedStockAndDoesNotBlockOwnerRelease() {
+        String revision = editing.get(1L, 1L).revision();
+        intent("edit-reserved"); var lock = payments.preLockInventory("edit-reserved");
+        editing.update(1L, 1L, productEdit(revision, "changed", "15.00"));
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        payments.cancelPreLock("edit-reserved", lock.getOwnerToken());
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals(0, skus.selectById(1).getPrice().compareTo(new java.math.BigDecimal("15.00")));
+    }
+
+    @Test
+    void editRollsBackAllSkuChangesWhenMetadataWriteFails() {
+        var request = productEdit(editing.get(1L, 1L).revision(), "should-rollback", "15.00");
+        doReturn(0).when(editingMapper).updateMetadata(any(), any(), any(), any());
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.update(1L, 1L, request)).getCode());
+        assertEquals(0, skus.selectById(1).getPrice().compareTo(java.math.BigDecimal.TEN));
+        assertEquals("goods", jdbc.queryForObject("SELECT title FROM product WHERE id=1", String.class));
+    }
+
+    @Test
+    void concurrentEditsFromSameRevisionHaveExactlyOneWinner() throws Exception {
+        String revision = editing.get(1L, 1L).revision();
+        var first = productEdit(revision, "first", "11.00"); var second = productEdit(revision, "second", "12.00");
+        AtomicInteger successes = new AtomicInteger(), conflicts = new AtomicInteger();
+        race(2, i -> {
+            try { editing.update(1L, 1L, i == 0 ? first : second); successes.incrementAndGet(); }
+            catch (BusinessException e) { assertEquals(409, e.getCode()); conflicts.incrementAndGet(); }
+        });
+        assertEquals(1, successes.get()); assertEquals(1, conflicts.get());
+        var saved = editing.get(1L, 1L);
+        assertEquals(saved.product().getTitle().equals("first") ? "11" : "12", saved.skus().get(0).getPrice().stripTrailingZeros().toPlainString());
+    }
+
+    @Test
+    void offSaleHidesPublicDetailAndOnSaleRestoresItWithoutUnbanning() throws Exception {
+        var current = editing.get(1L, 1L);
+        var off = editing.changeStatus(1L, 1L, new com.shop.b2b2c.dto.ProductEditingDTOs.Status(current.revision(), 0));
+        mvc.perform(get("/api/v1/public/products/1")).andExpect(jsonPath("$.code").value(400));
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.changeStatus(1L, 1L,
+                new com.shop.b2b2c.dto.ProductEditingDTOs.Status(current.revision(), 1))).getCode());
+        editing.changeStatus(1L, 1L, new com.shop.b2b2c.dto.ProductEditingDTOs.Status(off.revision(), 1));
+        mvc.perform(get("/api/v1/public/products/1")).andExpect(jsonPath("$.code").value(200));
+        jdbc.update("UPDATE product SET status=2 WHERE id=1");
+        assertEquals(403, assertThrows(BusinessException.class, () -> editing.changeStatus(1L, 1L,
+                new com.shop.b2b2c.dto.ProductEditingDTOs.Status(editing.get(1L, 1L).revision(), 1))).getCode());
+    }
+
+    @Test
+    void newOrdersUseEditedPriceAndOffSalePreventsNewCheckout() {
+        var updated = editing.update(1L, 1L, productEdit(editing.get(1L, 1L).revision(), "new-catalog", "16.50"));
+        var response = orderController.checkout(checkoutRequest()).getData();
+        var order = orders.findByOrderSn((String) response.get("orderSn")).orElseThrow();
+        assertEquals(0, order.getPayAmount().compareTo(new java.math.BigDecimal("16.50")));
+        assertEquals("new-catalog", items.findByOrderSn(order.getOrderSn()).get(0).getProductTitle());
+        editing.changeStatus(1L, 1L, new com.shop.b2b2c.dto.ProductEditingDTOs.Status(updated.revision(), 0));
+        assertThrows(BusinessException.class, () -> orderController.checkout(checkoutRequest()));
+        assertEquals(1, orders.selectCount(null));
     }
 
     private void authUser(String role, Long merchantId) {

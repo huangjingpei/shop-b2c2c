@@ -1,6 +1,6 @@
 /*
  * 文件：SchemaMySqlTest.java
- * 用途：在独立临时MySQL8实例上执行完整schema.sql，验证空库初始化、索引、种子及重复执行保留数据。
+ * 用途：在独立临时MySQL8实例上验证完整schema初始化、重复执行保留数据及商品维护Mapper白名单SQL和回滚。
  * 维护注意：仅显式提供schema.mysql.bin时运行；--no-defaults、随机空闲端口和target下独立数据目录隔离现有服务，校验@@datadir后才写入。不能改为连接开发/生产服务，测试实例停止后保留日志和临时数据供检查。
  */
 package com.shop.b2b2c;
@@ -95,6 +95,7 @@ class SchemaMySqlTest {
                 try (ResultSet otherDatabase = statement.executeQuery("SHOW DATABASES LIKE 'shop_b2b2c'")) {
                     assertFalse(otherDatabase.next(), "schema不得隐式创建固定名称数据库");
                 }
+                verifyProductEditingSql(url);
                 }
             }
         } finally {
@@ -104,6 +105,37 @@ class SchemaMySqlTest {
                 } catch (SQLException shuttingDown) { /* Server may close the socket while shutting down. */ }
             }
             if (!server.waitFor(10, TimeUnit.SECONDS)) { server.destroy(); if (!server.waitFor(5, TimeUnit.SECONDS)) server.destroyForcibly(); }
+        }
+    }
+
+    private void verifyProductEditingSql(String baseUrl) {
+        var configuration = new org.apache.ibatis.session.Configuration();
+        configuration.setMapUnderscoreToCamelCase(true);
+        configuration.setEnvironment(new org.apache.ibatis.mapping.Environment("isolated-editing",
+                new org.apache.ibatis.transaction.jdbc.JdbcTransactionFactory(),
+                new org.apache.ibatis.datasource.unpooled.UnpooledDataSource("com.mysql.cj.jdbc.Driver",
+                        baseUrl.replace("/?", "/bootstrap_contract_test?") + "&useAffectedRows=true", "root", "")));
+        configuration.addMapper(com.shop.b2b2c.mapper.ProductEditingMapper.class);
+        var factory = new org.apache.ibatis.session.SqlSessionFactoryBuilder().build(configuration);
+        try (var session = factory.openSession(false)) {
+            var mapper = session.getMapper(com.shop.b2b2c.mapper.ProductEditingMapper.class);
+            var original = mapper.lockProduct(1L, 1L);
+            var sku = mapper.lockSkus(1L, 1L).get(0);
+            int stock = sku.getStockQuantity();
+            var edit = new com.shop.b2b2c.dto.ProductEditingDTOs.Update("unused-at-mapper", 1L, "mysql-edited", null, "image", null,
+                    List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(sku.getId(), new java.math.BigDecimal("3.50"))));
+            assertEquals(1, mapper.updatePrice(1L, 1L, sku.getId(), new java.math.BigDecimal("3.50")));
+            assertEquals(1, mapper.updateMetadata(1L, 1L, edit, new java.math.BigDecimal("3.50")));
+            assertEquals(1, mapper.updateStatus(1L, 1L, 0));
+            assertEquals(stock, mapper.lockSkus(1L, 1L).get(0).getStockQuantity());
+            assertEquals("mysql-edited", mapper.lockProduct(1L, 1L).getTitle());
+            assertNull(mapper.lockProduct(1L, 2L));
+            assertEquals(0, mapper.updatePrice(1L, 2L, sku.getId(), java.math.BigDecimal.ONE));
+            session.rollback();
+            assertEquals(original.getTitle(), mapper.lockProduct(1L, 1L).getTitle());
+            assertEquals(0, sku.getPrice().compareTo(mapper.lockSkus(1L, 1L).get(0).getPrice()));
+            assertEquals(original.getStatus(), mapper.lockProduct(1L, 1L).getStatus());
+            session.rollback();
         }
     }
 
