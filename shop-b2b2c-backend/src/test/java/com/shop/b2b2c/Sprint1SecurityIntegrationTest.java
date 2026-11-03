@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、公开空店、事务和租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、公开店铺/商品组合查询、事务和租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -111,6 +111,64 @@ class Sprint1SecurityIntegrationTest {
         jdbc.update("MERGE INTO category(id,parent_id,name,sort_order) KEY(id) VALUES(1,0,'standard',0)");
         return new com.shop.b2b2c.dto.ProductEditingDTOs.Update(revision, 1L, title, null, "updated-image", null,
                 List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(1L, new java.math.BigDecimal(price))));
+    }
+
+    private void publicCatalogFixture() {
+        for (int id = 3; id <= 7; id++) {
+            long merchant = id == 4 ? 2L : id == 6 ? 999L : 1L;
+            int category = id == 3 || id == 4 ? 2 : 1;
+            jdbc.update("INSERT INTO product(id,merchant_id,category_id,title,goods_type,main_image,min_price,status) VALUES(?,?,?,?,1,'image',12.30,?)",
+                    id, merchant, category, "catalog-" + id, id == 5 ? 0 : 1);
+        }
+    }
+
+    @Test
+    void publicCatalogCombinesFiltersAndPreservesStableDisplayOrder() throws Exception {
+        publicCatalogFixture();
+        assertEquals(List.of(1L, 2L, 3L, 4L, 7L), products.listPublicProducts(null, null).getData().stream()
+                .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
+        assertEquals(List.of(3L, 4L), products.listPublicProducts(2L, null).getData().stream()
+                .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
+        assertEquals(List.of(1L, 3L, 7L), products.listPublicProducts(null, 1L).getData().stream()
+                .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
+        assertEquals(List.of(3L), products.listPublicProducts(2L, 1L).getData().stream()
+                .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
+        assertTrue(products.listPublicProducts(999L, 1L).getData().isEmpty());
+        assertTrue(products.listPublicProducts(null, 999L).getData().isEmpty());
+        jdbc.update("UPDATE product SET sort_order=-1 WHERE id=3");
+        mvc.perform(get("/api/v1/public/products").param("merchantId", "1"))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data[0].id").value(3))
+                .andExpect(jsonPath("$.data[0].minPrice").value(12.30))
+                .andExpect(jsonPath("$.data[0].storeName").value("store1"))
+                .andExpect(jsonPath("$.data[0].totalStock").value(0))
+                .andExpect(jsonPath("$.data[0].subTitle").isEmpty())
+                .andExpect(jsonPath("$.data[0].serviceDesc").doesNotExist())
+                .andExpect(jsonPath("$.data[0].ownerName").doesNotExist());
+        mvc.perform(get("/api/v1/public/products").param("categoryId", "0"))
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    void publicCatalogStockUsesOnlyOwnedSkusAndDoesNotOverflowInt() {
+        publicCatalogFixture();
+        jdbc.update("INSERT INTO product_sku(id,merchant_id,product_id,sku_code,spec_data,price,stock_quantity) VALUES(10,1,1,'LARGE','{}',10,2147483647)");
+        jdbc.update("INSERT INTO product_sku(id,merchant_id,product_id,sku_code,spec_data,price,stock_quantity) VALUES(11,2,1,'BAD-OWNER','{}',10,500)");
+        var rows = products.listPublicProducts(1L, 1L).getData();
+        assertEquals(List.of(1L, 7L), rows.stream().map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
+        assertEquals(Long.valueOf(2147483648L), rows.get(0).getTotalStock());
+        assertEquals(Long.valueOf(0L), rows.get(1).getTotalStock());
+    }
+
+    @Test
+    void publicCatalogOmitsAllNonOperatingStoreStates() {
+        for (int status : new int[] {0, 2, 3, 99}) {
+            jdbc.update("UPDATE merchant_store SET status=? WHERE id=1", status);
+            assertTrue(products.listPublicProducts(null, 1L).getData().isEmpty());
+            assertEquals(List.of(2L), products.listPublicProducts(null, null).getData().stream()
+                    .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
+        }
+        jdbc.update("UPDATE merchant_store SET status=1 WHERE id=1");
+        assertEquals(1, products.listPublicProducts(1L, 1L).getData().size());
     }
 
     @Test

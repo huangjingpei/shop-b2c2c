@@ -1,6 +1,6 @@
 /*
  * 文件：ProductController.java
- * 用途：商品浏览、商家发布、本店卡密去重导入及成功批次记录入口。
+ * 用途：商品浏览、商家发布、本店卡密去重导入及成功批次记录入口。公开列表复用固定白名单单SQL组合查询。
  * 维护注意：自动卡密发布初始库存为0；导入委托独立READ_COMMITTED资产事务，禁止在入口加外层事务。先验证租户再去重增库存，公开详情验证交易资格和店铺白名单，类型3不走卡密导入。
  */
 package com.shop.b2b2c.controller;
@@ -44,50 +44,13 @@ public class ProductController {
 
     @Operation(summary = "【公开】货源大厅商品流 (对标 16688 卡片式流)")
     @GetMapping("/api/v1/public/products")
-    public R<List<Map<String, Object>>> listPublicProducts(
+    public R<List<com.shop.b2b2c.dto.PublicProductView>> listPublicProducts(
             @RequestParam(required = false) Long categoryId,
             @RequestParam(required = false) Long merchantId) {
-
-        List<Product> products;
-        if (categoryId != null) {
-            products = productMapper.findByCategoryIdAndStatusOrderBySortOrderAsc(categoryId, 1);
-        } else if (merchantId != null) {
-            products = productMapper.findByMerchantIdAndStatus(merchantId, 1);
-        } else {
-            products = productMapper.findByStatusOrderBySortOrderAsc(1);
+        if ((categoryId != null && categoryId <= 0) || (merchantId != null && merchantId <= 0)) {
+            throw new BusinessException(400, "分类或店铺编号不正确");
         }
-
-        List<Map<String, Object>> result = new ArrayList<>();
-        Map<Long, MerchantStore> storeCache = new HashMap<>();
-
-        for (Product p : products) {
-            Map<String, Object> vo = new HashMap<>();
-            vo.put("id", p.getId());
-            vo.put("title", p.getTitle());
-            vo.put("subTitle", p.getSubTitle());
-            vo.put("goodsType", p.getGoodsType());
-            vo.put("mainImage", p.getMainImage());
-            vo.put("minPrice", p.getMinPrice());
-            vo.put("merchantId", p.getMerchantId());
-
-            MerchantStore store = storeCache.computeIfAbsent(p.getMerchantId(),
-                    id -> storeMapper.findById(id).orElse(null));
-            if (store == null || !Integer.valueOf(1).equals(store.getStatus())) continue;
-            if (store != null) {
-                vo.put("storeName", store.getStoreName());
-                vo.put("storeCode", store.getStoreCode());
-                vo.put("storeLogo", store.getLogoUrl());
-            }
-
-            // 查询可用库存总数
-            List<ProductSku> skus = skuMapper.findByProductId(p.getId());
-            int totalStock = skus.stream().mapToInt(ProductSku::getStockQuantity).sum();
-            vo.put("totalStock", totalStock);
-
-            result.add(vo);
-        }
-
-        return R.ok(result);
+        return R.ok(productMapper.findPublicProducts(categoryId, merchantId));
     }
 
     @Operation(summary = "【公开】商品详情与 SKU 变体信息")
