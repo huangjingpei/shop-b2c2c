@@ -1,6 +1,6 @@
 /*
  * 文件：OrderStatistics.java
- * 用途：平台与本店共用的订单状态统计口径，不从意向单或分账标记推断实际资金收入。
+ * 用途：代付关闭编码复用PeerStatus；平台与本店共用的订单状态统计口径，不从意向单或分账标记推断实际资金收入。
  * 维护注意：PAID/SHIPPED/COMPLETED/REFUNDED计历史支付，REFUNDED订单金额不是实际退款额；预计佣金仅含前三种且支付金额有效的订单。BigDecimal累计并输出字符串；坏金额计异常，未知状态单列。退款/净额/结算依赖事件账本，当前返回null，不用0冒充已知。
  */
 package com.shop.b2b2c.common;
@@ -16,7 +16,7 @@ public record OrderStatistics(long totalOrders, long paidOrders, long pendingOrd
                               String settledCommission, boolean financialLedgerAvailable) {
     private static final Set<String> ACTIVE_PAID = Set.of("PAID", "SHIPPED", "COMPLETED");
     private static final Set<String> CLOSED = Set.of("CLOSED", "CANCELLED", "EXPIRED");
-    private static final Set<String> CLOSED_PEER = Set.of("EXPIRED", "CANCELLED");
+    private static final Set<String> CLOSED_PEER = Set.of(PeerStatus.EXPIRED, PeerStatus.CANCELLED);
 
     public static OrderStatistics from(List<TradeOrder> orders) {
         Objects.requireNonNull(orders, "统计查询结果不能为空引用");

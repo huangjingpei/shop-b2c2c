@@ -1,11 +1,12 @@
 /*
  * 文件：OrderController.java
- * 用途：待付款建单、免登录查单、商家发货、平台订单及统一状态统计入口。
+ * 用途：待付款建单、免登录查单、商家发货、平台订单及统一状态统计入口；建单代付编码复用PeerStatus。
  * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。查单用独立凭证/白名单；统计用OrderStatistics，订单金额不是账本收入，退款和已结算指标当前不可用。旧总额键仅作修正口径兼容，查询分页/SQL聚合仍待D30处理。
  */
 package com.shop.b2b2c.controller;
 
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.PeerStatus;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.SecurityUtils;
 import com.shop.b2b2c.common.TradeGuards;
@@ -114,7 +115,7 @@ public class OrderController {
         order.setMerchantSettleAmount(merchantSettleAmount);
         order.setPaymentChannel(dto.getPaymentChannel() != null ? dto.getPaymentChannel() : "WECHAT");
         order.setOrderStatus("UNPAID");
-        order.setPeerStatus("INIT");
+        order.setPeerStatus(PeerStatus.INIT);
         order.setQueryToken(queryToken);
 
         order = orderMapper.save(order);

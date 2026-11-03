@@ -1,11 +1,12 @@
 /*
  * 文件：PeerPayServiceImpl.java
- * 用途：代付交易与库存预占的事务实现，协调订单、SKU、卡密及人工服务履约。
+ * 用途：代付交易与库存预占的事务实现，协调订单、SKU、卡密及人工服务履约；代付编码统一复用PeerStatus。
  * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。保留无流水旧锁的升级兼容；卡密缺货必须回滚。公开代付详情不能返回卡密或服务凭证；当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
  */
 package com.shop.b2b2c.service.impl;
 
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.PeerStatus;
 import com.shop.b2b2c.common.TradeGuards;
 import com.shop.b2b2c.common.PosterUtils;
 import com.shop.b2b2c.dto.PeerPayDTOs;
@@ -100,7 +101,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         // 代付专属元数据
         order.setPeerPayToken(peerPayToken);
         order.setPeerPayType(1); // 1-买家求助代付
-        order.setPeerStatus("INIT"); // 两段式 Stage 1: 意向生成
+        order.setPeerStatus(PeerStatus.INIT); // 两段式 Stage 1: 意向生成
         order.setPeerMessage(req.getPeerMessage() != null && !req.getPeerMessage().trim().isEmpty() 
                 ? req.getPeerMessage().trim() : "好心人帮我买个单呗，谢谢老铁！");
 
@@ -202,7 +203,7 @@ public class PeerPayServiceImpl implements PeerPayService {
 
         order.setPeerPayToken(peerPayToken);
         order.setPeerPayType(2); // 2-卖家代客推单
-        order.setPeerStatus("INIT");
+        order.setPeerStatus(PeerStatus.INIT);
         order.setPeerMessage(req.getSellerNote() != null && !req.getSellerNote().isBlank() 
                 ? req.getSellerNote().trim() : "这是商家为您定制的支付账单，请查收完成付款");
 
@@ -303,18 +304,18 @@ public class PeerPayServiceImpl implements PeerPayService {
 
         // 计算美团风格 15 分钟倒计时剩余秒数
         LocalDateTime now = LocalDateTime.now();
-        if ("PAID".equals(order.getPeerStatus())) {
+        if (PeerStatus.PAID.equals(order.getPeerStatus())) {
             resp.setLockSecondsRemaining(0L);
-        } else if ("RESERVED_LOCK".equals(order.getPeerStatus()) && order.getLockExpireTime() != null) {
+        } else if (PeerStatus.RESERVED_LOCK.equals(order.getPeerStatus()) && order.getLockExpireTime() != null) {
             long remaining = Duration.between(now, order.getLockExpireTime()).getSeconds();
             resp.setLockSecondsRemaining(Math.max(0, remaining));
             resp.setLockExpireTime(order.getLockExpireTime());
-        } else if ("INIT".equals(order.getPeerStatus()) && order.getCreatedAt() != null) {
+        } else if (PeerStatus.INIT.equals(order.getPeerStatus()) && order.getCreatedAt() != null) {
             LocalDateTime orderExpireAt = order.getCreatedAt().plusMinutes(15);
             if (now.isAfter(orderExpireAt)) {
-                order.setPeerStatus("EXPIRED");
+                order.setPeerStatus(PeerStatus.EXPIRED);
                 orderMapper.save(order);
-                resp.setPeerStatus("EXPIRED");
+                resp.setPeerStatus(PeerStatus.EXPIRED);
                 resp.setLockSecondsRemaining(0L);
             } else {
                 long remaining = Duration.between(now, orderExpireAt).getSeconds();
@@ -334,7 +335,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
                 .orElseThrow(() -> new BusinessException("代付账单不存在"));
 
-        if (!"UNPAID".equals(order.getOrderStatus()) || !"INIT".equals(order.getPeerStatus())
+        if (!"UNPAID".equals(order.getOrderStatus()) || !PeerStatus.INIT.equals(order.getPeerStatus())
                 || order.getCreatedAt() == null || order.getCreatedAt().plusMinutes(15).isBefore(LocalDateTime.now())) {
             throw new BusinessException("订单已过期或不可预占，请刷新账单");
         }
@@ -359,14 +360,14 @@ public class PeerPayServiceImpl implements PeerPayService {
         reservation.setExpiresAt(expireTime);
         reservationMapper.deleteReleased(order.getId());
         reservationMapper.insert(reservation);
-        order.setPeerStatus("RESERVED_LOCK");
+        order.setPeerStatus(PeerStatus.RESERVED_LOCK);
         order.setLockExpireTime(expireTime);
         orderMapper.save(order);
 
         PeerPayDTOs.PreLockResult result = new PeerPayDTOs.PreLockResult();
         result.setOwnerToken(reservation.getOwnerToken());
         result.setSuccess(true);
-        result.setPeerStatus("RESERVED_LOCK");
+        result.setPeerStatus(PeerStatus.RESERVED_LOCK);
         result.setLockSeconds(DEFAULT_LOCK_MINUTES * 60);
         result.setExpireTime(expireTime);
         result.setMessage("库存预占成功，为您保留 15 分钟支付时间");
@@ -384,7 +385,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         }
         if (!"UNPAID".equals(order.getOrderStatus())) return;
         if (release(reservation)) {
-            order.setPeerStatus("INIT");
+            order.setPeerStatus(PeerStatus.INIT);
             orderMapper.save(order);
         }
     }
@@ -399,12 +400,12 @@ public class PeerPayServiceImpl implements PeerPayService {
 
     private void expireIfNecessary(TradeOrder order) {
         if (!"UNPAID".equals(order.getOrderStatus())) return;
-        LocalDateTime deadline = "RESERVED_LOCK".equals(order.getPeerStatus()) ? order.getLockExpireTime()
+        LocalDateTime deadline = PeerStatus.RESERVED_LOCK.equals(order.getPeerStatus()) ? order.getLockExpireTime()
                 : order.getCreatedAt() == null ? null : order.getCreatedAt().plusMinutes(15);
         if (deadline != null && !deadline.isAfter(LocalDateTime.now())) {
             release(reservationMapper.find(order.getId()));
             order.setOrderStatus("CLOSED");
-            order.setPeerStatus("EXPIRED");
+            order.setPeerStatus(PeerStatus.EXPIRED);
             orderMapper.save(order);
         }
     }
@@ -466,7 +467,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         }
 
         // 绑定三方完整对账角色 <卖家, 买家, 付款人>
-        order.setPeerStatus("PAID");
+        order.setPeerStatus(PeerStatus.PAID);
         order.setPeerPayerId(payerId);
         order.setPayTradeNo(payTradeNo);
         order.setPaymentChannel(channel);

@@ -1,6 +1,6 @@
 /*
  * 文件：TradeOrderMapper.java
- * 用途：订单查询、行锁和有效待付预占的支付CAS迁移。
+ * 用途：订单查询、行锁和有效待付预占的支付CAS迁移；SQL代付编码复用PeerStatus。
  * 维护注意：所有订单写者须保持一致的订单行锁顺序；支付状态变更影响行数必须检查。不能在事务外使用FOR UPDATE来声称拥有并发保护。
  */
 package com.shop.b2b2c.mapper;
@@ -8,6 +8,7 @@ package com.shop.b2b2c.mapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.shop.b2b2c.entity.TradeOrder;
+import com.shop.b2b2c.common.PeerStatus;
 import org.apache.ibatis.annotations.Mapper;
 
 import java.util.List;
@@ -27,9 +28,9 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
     @org.apache.ibatis.annotations.Select("SELECT * FROM trade_order WHERE id = #{id} FOR UPDATE")
     TradeOrder lockById(@org.apache.ibatis.annotations.Param("id") Long id);
 
-    @org.apache.ibatis.annotations.Update("UPDATE trade_order SET order_status = 'PAID', peer_status = 'PAID', "
+    @org.apache.ibatis.annotations.Update("UPDATE trade_order SET order_status = 'PAID', peer_status = '" + PeerStatus.PAID + "', "
             + "peer_payer_id = #{payerId}, pay_trade_no = #{tradeNo}, payment_channel = #{channel} "
-            + "WHERE id = #{id} AND order_status = 'UNPAID' AND peer_status = 'RESERVED_LOCK' "
+            + "WHERE id = #{id} AND order_status = 'UNPAID' AND peer_status = '" + PeerStatus.RESERVED_LOCK + "' "
             + "AND lock_expire_time > CURRENT_TIMESTAMP")
     int markPaidIfUnpaid(@org.apache.ibatis.annotations.Param("id") Long id,
                         @org.apache.ibatis.annotations.Param("payerId") String payerId,

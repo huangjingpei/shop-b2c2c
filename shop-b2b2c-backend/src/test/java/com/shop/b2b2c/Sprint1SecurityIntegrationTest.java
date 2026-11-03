@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、公开店铺/商品组合查询、事务和租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、公开查询、代付状态契约、事务和租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -119,6 +119,51 @@ class Sprint1SecurityIntegrationTest {
             int category = id == 3 || id == 4 ? 2 : 1;
             jdbc.update("INSERT INTO product(id,merchant_id,category_id,title,goods_type,main_image,min_price,status) VALUES(?,?,?,?,1,'image',12.30,?)",
                     id, merchant, category, "catalog-" + id, id == 5 ? 0 : 1);
+        }
+    }
+
+    @Test
+    void defaultPeerStatusSurvivesMapperPersistenceAndMatchesDatabaseDefault() {
+        var order = new TradeOrder();
+        order.setOrderSn("STATE-ENTITY"); order.setMerchantId(1L); order.setBuyerContact("fixture-contact");
+        order.setQueryToken("state-query"); order.setTotalAmount(java.math.BigDecimal.TEN);
+        order.setPayAmount(java.math.BigDecimal.TEN);
+        orders.save(order);
+        assertEquals("INIT", orders.findById(order.getId()).orElseThrow().getPeerStatus());
+        jdbc.update("INSERT INTO trade_order(order_sn,merchant_id,buyer_contact,query_token,total_amount,pay_amount) VALUES('STATE-SQL',1,'fixture-contact','sql-query',10,10)");
+        assertEquals("INIT", orders.findByOrderSn("STATE-SQL").orElseThrow().getPeerStatus());
+    }
+
+    @Test
+    void peerStateContractCoversHoldReleaseReholdAndPaidResponse() throws Exception {
+        TradeOrder order = intent("state-flow");
+        mvc.perform(get("/api/v1/peer-pay/detail/state-flow"))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.peerStatus").value("INIT"));
+        var held = payments.preLockInventory("state-flow");
+        assertEquals("RESERVED_LOCK", held.getPeerStatus());
+        assertEquals("RESERVED_LOCK", orders.findById(order.getId()).orElseThrow().getPeerStatus());
+        payments.cancelPreLock("state-flow", held.getOwnerToken());
+        assertEquals("INIT", orders.findById(order.getId()).orElseThrow().getPeerStatus());
+        payments.preLockInventory("state-flow");
+        assertEquals("PAID", pay("state-flow").getPeerStatus());
+        mvc.perform(get("/api/v1/peer-pay/detail/state-flow"))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.peerStatus").value("PAID"))
+                .andExpect(jsonPath("$.data.serviceVoucher").doesNotExist());
+        assertEquals(0, skus.selectById(1L).getStockQuantity());
+    }
+
+    @Test
+    void legacyAndUnknownPeerStatesCannotBecomePaymentReservations() {
+        for (String state : List.of("INTENT", "LOCKED", "UNKNOWN", "EXPIRED", "CANCELLED")) {
+            String token = "state-" + state;
+            TradeOrder order = unpaid(token, 1); order.setPeerStatus(state); orders.save(order);
+            assertThrows(BusinessException.class, () -> payments.preLockInventory(token));
+            assertThrows(BusinessException.class, () -> pay(token));
+            var stored = orders.findById(order.getId()).orElseThrow();
+            assertEquals(state, stored.getPeerStatus()); assertEquals("UNPAID", stored.getOrderStatus());
+            assertEquals(1, skus.selectById(1L).getStockQuantity());
+            assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_reservation WHERE order_id=?", Integer.class, order.getId()));
+            assertEquals(0, cards.selectById(1L).getStatus());
         }
     }
 
@@ -1024,6 +1069,7 @@ class Sprint1SecurityIntegrationTest {
         expiryJob.expire();
         assertEquals(1, skus.selectById(1).getStockQuantity());
         assertEquals("CLOSED", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals("EXPIRED", orders.selectById(order.getId()).getPeerStatus());
         assertThrows(BusinessException.class, () -> pay("timeout"));
         assertThrows(BusinessException.class, () -> payments.preLockInventory("timeout"));
     }
