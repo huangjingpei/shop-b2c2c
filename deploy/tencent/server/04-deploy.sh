@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文件：04-deploy.sh
 # 用途：切换发布产物并配置或重启systemd/Nginx服务。
-# 维护注意：会影响线上服务，先完成迁移、备份和产物核对；运行探针不等于资金链路验收，不能为语法检查执行部署。
+# 维护注意：会影响线上服务，先完成迁移、备份和产物核对；发布检查使用依赖就绪接口，但不等于资金链路验收，不能为语法检查执行部署。
 # ============================================================================
 # Shop-B2B2C 部署脚本 —— 切换 releases/latest 产物上线 (systemd + Nginx)
 # ============================================================================
@@ -194,7 +194,7 @@ if [[ "${DO_HEALTHCHECK}" == "yes" ]]; then
   log "执行后端健康检查（最多等待 ${HEALTH_TIMEOUT} 秒）..."
   BACKEND_OK="no"
   for i in $(seq 1 "$((HEALTH_TIMEOUT / 3))"); do
-    if curl -fsS --max-time 3 "http://127.0.0.1:${SERVER_PORT:-8080}/api/v1/auth/health" 2>/dev/null | grep -q '"code":200'; then
+    if curl -fsS --max-time 3 "http://127.0.0.1:${SERVER_PORT:-8080}/api/v1/auth/ready" 2>/dev/null | grep -q '"code":200'; then
       BACKEND_OK="yes"
       log "后端响应正常 (耗时约 $((i*3)) 秒)"
       break

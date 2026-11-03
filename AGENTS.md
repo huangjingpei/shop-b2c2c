@@ -22,7 +22,7 @@
 - 用户手动验证入口：后端`mvn -f shop-b2b2c-backend/pom.xml test`；前端规则`node --test shared/goodsType.test.mjs shared/idempotency.test.mjs shared/buyerReceipt.test.mjs shared/authSession.test.mjs shared/productEditing.test.mjs shared/inventoryAdjustment.test.mjs shared/cardAssets.test.mjs shared/orderStatistics.test.mjs shared/storePage.test.mjs shared/serviceFee.test.mjs`。涉及Vue或前端模块时交付对应工程的生产构建命令。
 - 同一工作区的Maven clean/compile/test必须串行执行，避免共享target被其他构建覆盖；不同前端工程的独立构建可并行。
 - 阿里云打包/构建隔离用例由用户在Linux/WSL运行`python3 -m unittest discover -s deploy/tests -p 'test_aliyun_build.py' -v`；假工具不编译业务，不连接远端。Windows原生跳过不代表验证通过，真实构建按对应Sprint文档另行执行。
-- 通用网关隔离用例由用户在已安装Nginx的Linux/WSL运行`python3 -m unittest discover -s deploy/tests -p 'test_nginx_gateway.py' -v`；仅启动随机回环端口测试进程，不修改系统站点。缺Nginx跳过不算通过，具体范围见Sprint 19。
+- 通用网关隔离用例由用户在已安装Nginx的Linux/WSL运行`python3 -m unittest discover -s deploy/tests -p 'test_nginx_gateway.py' -v`；仅启动随机回环端口测试进程，不修改系统站点。缺Nginx跳过不算通过，Sprint 20后含8项Nginx回归及2项只读脚本契约，具体范围见Sprint 19/20。
 - 测试使用隔离环境，不连接业务数据库。H2通过不能替代真实MySQL或渠道联调，报告中应明确验证范围。
 - 问题台账位于`docs/B2B2C_项目缺陷与未实现功能清单_2026-11-03.md`。处理问题时同步状态；部分完成的项目保留“部分修复”，不要把整个业务域标为已完成。
 - Git提交说明须清楚记录问题范围、具体行为变化、验证结果和未完成事项。不要覆盖与当前任务无关的已有修改。

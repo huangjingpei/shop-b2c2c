@@ -1,11 +1,12 @@
 # 文件：test_nginx_gateway.py
-# 用途：用真实Nginx、临时静态产物及本地假后端验证D35通用网关路由。
+# 用途：用真实Nginx、临时静态产物及本地假后端验证D35网关和D37探针透传，并锁定部署脚本探针契约。
 # 维护注意：Linux/WSL运行，随机回环端口且不改/etc或系统服务；缺Nginx跳过不算通过。
 # 假页面与后端不能证明真实Vue、Spring Boot、数据库/Redis或TLS已验收；只终止本用例创建的进程。
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -23,10 +24,14 @@ TEMPLATE = Path(__file__).resolve().parents[1] / "nginx/nginx.prod.conf"
 class BackendFixture(BaseHTTPRequestHandler):
     def do_GET(self):
         status = 401 if self.path.startswith("/api/v1/protected") else 200
-        body = json.dumps({"code": status, "data": {"status": "UP", "uri": self.path,
+        if self.path == "/api/v1/auth/ready" and not getattr(self.server, "ready", True):
+            status = 503
+        body = json.dumps({"code": status, "data": {"status": "UP" if status == 200 else "DOWN", "uri": self.path,
                                                    "forwardedProto": self.headers.get("X-Forwarded-Proto")}}).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        if self.path == "/api/v1/auth/ready":
+            self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -161,6 +166,15 @@ http {{
         self.stop_backend()
         self.assertEqual(502, self.request("/healthz")[0])
 
+    def test_readiness_has_its_own_endpoint_and_preserves_http_503(self):
+        status, headers, body = self.request("/readyz")
+        self.assertEqual(200, status)
+        self.assertEqual("/api/v1/auth/ready", json.loads(body)["data"]["uri"])
+        self.assertIn("no-store", headers.get("cache-control", ""))
+        self.backend.ready = False
+        self.assertEqual(503, self.request("/readyz")[0])
+        self.assertEqual(200, self.request("/healthz")[0])
+
     def test_unsupported_legacy_entries_do_not_fake_success_or_register(self):
         for path in ["/m", "/m/product/1", "/invite", "/invite/register", "/actuator/health", "/admin", "/admin/login"]:
             with self.subTest(path=path):
@@ -173,6 +187,21 @@ http {{
         self.assertIn("max-age", headers.get("cache-control", ""))
         self.assertEqual("application/javascript", headers.get("content-type"))
         self.assertEqual("nosniff", headers.get("x-content-type-options"))
+
+
+class ProbeScriptContractTest(unittest.TestCase):
+    def test_infrastructure_never_disables_or_rewrites_redis_write_protection(self):
+        script = (TEMPLATE.parents[1] / "tencent/server/02-init-infra.sh").read_text(encoding="utf-8")
+        executable = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+        self.assertIsNone(re.search(r"config\s+set\s+stop-writes-on-bgsave-error\s+no", executable, re.I))
+        self.assertIsNone(re.search(r"config\s+rewrite", executable, re.I))
+
+    def test_tencent_deploy_uses_readiness_and_checks_http_failure(self):
+        script = (TEMPLATE.parents[1] / "tencent/server/04-deploy.sh").read_text(encoding="utf-8")
+        probe = next(line for line in script.splitlines() if "if curl " in line)
+        self.assertIn("curl -fsS --max-time 3", probe)
+        self.assertIn("/api/v1/auth/ready", probe)
+        self.assertNotIn("/api/v1/auth/health", probe)
 
 
 if __name__ == "__main__":

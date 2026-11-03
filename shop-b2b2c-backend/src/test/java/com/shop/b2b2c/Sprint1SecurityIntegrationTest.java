@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、公开查询、代付/服务费状态契约、事务和租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、状态契约、就绪探针、事务和租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -85,6 +85,7 @@ class Sprint1SecurityIntegrationTest {
     @SpyBean CardImportBatchMapper cardBatches;
     @Autowired com.shop.b2b2c.service.CardImportBatchService batchQueries;
     @MockBean StringRedisTemplate redis;
+    @SpyBean com.shop.b2b2c.service.ReadinessService readiness;
 
     @BeforeEach
     void fixtures() {
@@ -119,6 +120,34 @@ class Sprint1SecurityIntegrationTest {
             int category = id == 3 || id == 4 ? 2 : 1;
             jdbc.update("INSERT INTO product(id,merchant_id,category_id,title,goods_type,main_image,min_price,status) VALUES(?,?,?,?,1,'image',12.30,?)",
                     id, merchant, category, "catalog-" + id, id == 5 ? 0 : 1);
+        }
+    }
+
+    @Test
+    void readinessIsAnonymousUsesHttp503AndDoesNotChangeLiveness() throws Exception {
+        doReturn(new com.shop.b2b2c.service.ReadinessService.Report("UP", "UP", "UP")).when(readiness).check();
+        mvc.perform(get("/api/v1/auth/ready"))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.status").value("UP"));
+        doReturn(new com.shop.b2b2c.service.ReadinessService.Report("DOWN", "UP", "DOWN")).when(readiness).check();
+        mvc.perform(get("/api/v1/auth/ready"))
+                .andExpect(status().isServiceUnavailable()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.code").value(503)).andExpect(jsonPath("$.data.status").value("DOWN"))
+                .andExpect(jsonPath("$.data.redis").value("DOWN"))
+                .andExpect(jsonPath("$.data.message").doesNotExist()).andExpect(jsonPath("$.data.password").doesNotExist());
+        mvc.perform(get("/api/v1/auth/health"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("UP"));
+    }
+
+    @Test
+    void readinessExecutesIsolatedDatabaseCheckAndFailsWhenRedisCannotBeConfirmed() {
+        when(redis.execute(org.mockito.ArgumentMatchers.<org.springframework.data.redis.core.RedisCallback<Boolean>>any())).thenReturn(true);
+        try (var probe = new com.shop.b2b2c.service.ReadinessService(jdbc, redis)) {
+            assertTrue(probe.check().ready());
+        }
+        when(redis.execute(org.mockito.ArgumentMatchers.<org.springframework.data.redis.core.RedisCallback<Boolean>>any())).thenReturn(null);
+        try (var probe = new com.shop.b2b2c.service.ReadinessService(jdbc, redis)) {
+            assertEquals(new com.shop.b2b2c.service.ReadinessService.Report("DOWN", "UP", "DOWN"), probe.check());
         }
     }
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文件：02-init-infra.sh
 # 用途：初始化数据库账号/表结构和检查Redis等基础设施。
-# 维护注意：涉及真实凭据与数据库写入；确认目标库、权限和备份，不能将演示初始化当成存量迁移或恢复验证。
+# 维护注意：涉及真实凭据与数据库写入；确认目标库、权限和备份，不能将演示初始化当成存量迁移或恢复验证。Redis检查不修改持久化写保护配置，故障须修复根因。
 # ============================================================================
 # Shop-B2B2C 基础设施初始化 —— 生成 .env 配置 / 创建 MySQL 数据库 / 导入 schema
 #
@@ -118,8 +118,7 @@ if ! grep -q 'vm.overcommit_memory = 1' /etc/sysctl.conf 2>/dev/null; then
   echo 'vm.overcommit_memory = 1' >> /etc/sysctl.conf 2>/dev/null || true
 fi
 if command -v redis-cli >/dev/null 2>&1; then
-  redis-cli -a "${REDIS_PASS}" config set stop-writes-on-bgsave-error no >/dev/null 2>&1 || true
-  redis-cli -a "${REDIS_PASS}" config rewrite >/dev/null 2>&1 || true
+  # 不通过关闭写保护掩盖持久化失败，也不重写用户管理的Redis配置。
   if redis-cli -h "${REDIS_HOST}" -p "${REDIS_PORT}" -a "${REDIS_PASS}" ping 2>/dev/null | grep -q PONG; then
     log "Redis 连接正常 (PONG)"
   else

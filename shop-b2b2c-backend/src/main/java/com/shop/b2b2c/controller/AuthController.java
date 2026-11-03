@@ -38,7 +38,7 @@ public class AuthController {
         private String password;
     }
 
-    @Operation(summary = "系统健康探测接口 (运维监控与部署就绪探测)")
+    @Operation(summary = "应用存活探针（不检查依赖；部署就绪使用/api/v1/auth/ready）")
     @GetMapping("/health")
     public R<Map<String, Object>> health() {
         Map<String, Object> map = new HashMap<>();
