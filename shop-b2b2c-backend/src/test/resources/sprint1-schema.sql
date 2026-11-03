@@ -1,6 +1,6 @@
 -- 文件：sprint1-schema.sql
 -- 用途：H2 MySQL兼容模式的隔离集成测试数据库结构。
--- 维护注意：源自业务表列定义但去除了MySQL建库、引擎和部分索引语法；不含业务种子，含业务幂等、人工库存调整及卡密作废表。仅用于测试，不能部署到生产；表结构变化须同步生产结构和迁移，H2通过不等于MySQL验证。
+-- 维护注意：源自业务表列定义但去除了MySQL建库、引擎和部分索引语法；不含业务种子，含业务幂等、人工库存调整、卡密作废及导入批次表。仅用于测试，不能部署到生产；表结构变化须同步生产结构和迁移，H2通过不等于MySQL验证。
 -- ========================================================
 -- Shop B2B2C 全局全量初始化数据库脚本 (Single Source of Truth)
 -- 适用: 开发期启动自愈 / 删库一键重建 (Drop & Re-create)
@@ -278,4 +278,24 @@ CREATE TABLE IF NOT EXISTS virtual_card_void (
   after_stock INT NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT chk_card_void_stock CHECK (before_stock >= 1 AND after_stock = before_stock - 1)
+);
+
+-- 17/18. 成功卡密导入批次及成员：不保存卡密正文，不回填旧记录。
+CREATE TABLE IF NOT EXISTS card_import_batch (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT NOT NULL,
+  product_id BIGINT NOT NULL,
+  sku_id BIGINT NOT NULL,
+  actor_id BIGINT NOT NULL,
+  imported_count INT NOT NULL,
+  before_stock INT NOT NULL,
+  after_stock INT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_card_batch_quantity CHECK (imported_count BETWEEN 1 AND 1000 AND before_stock >= 0 AND after_stock = before_stock + imported_count)
+);
+CREATE TABLE IF NOT EXISTS card_import_item (
+  card_id BIGINT NOT NULL PRIMARY KEY,
+  batch_id BIGINT NOT NULL,
+  CONSTRAINT fk_card_import_item_batch FOREIGN KEY (batch_id) REFERENCES card_import_batch(id),
+  CONSTRAINT fk_card_import_item_card FOREIGN KEY (card_id) REFERENCES product_virtual_card(id)
 );

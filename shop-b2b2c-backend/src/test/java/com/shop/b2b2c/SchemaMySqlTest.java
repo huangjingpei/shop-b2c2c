@@ -1,6 +1,6 @@
 /*
  * 文件：SchemaMySqlTest.java
- * 用途：在临时MySQL8验证schema/记录保留、商品/库存/卡密作废Mapper、约束和回滚。
+ * 用途：在临时MySQL8验证schema/记录保留、商品/库存/卡密批次与作废SQL、约束和回滚。
  * 维护注意：仅显式提供schema.mysql.bin时运行；--no-defaults、随机空闲端口和target下独立数据目录隔离现有服务，校验@@datadir后才写入。不能改为连接开发/生产服务，测试实例停止后保留日志和临时数据供检查。
  */
 package com.shop.b2b2c;
@@ -69,7 +69,7 @@ class SchemaMySqlTest {
                 try (ResultSet result = statement.executeQuery("SHOW TABLES")) {
                     while (result.next()) tables.add(result.getString(1));
                 }
-                assertEquals(16, tables.size());
+                assertEquals(18, tables.size());
                 try (ResultSet indexes = statement.executeQuery("SHOW INDEX FROM inventory_reservation WHERE Key_name='idx_reservation_expiry'")) {
                     List<String> columns = new ArrayList<>();
                     while (indexes.next()) columns.add(indexes.getString("Column_name"));
@@ -90,6 +90,9 @@ class SchemaMySqlTest {
                     audit.setString(1, "c".repeat(64)); audit.executeUpdate();
                 }
                 statement.executeUpdate("INSERT INTO virtual_card_void(card_id,merchant_id,product_id,sku_id,actor_id,reason,before_stock,after_stock) VALUES(999999999,1,1,1,1,'retention-fixture',1,0)");
+                statement.executeUpdate("INSERT INTO product_virtual_card(id,merchant_id,product_id,sku_id,card_content,status) VALUES(900000000,1,1,1,'batch-retention-fixture',2)");
+                statement.executeUpdate("INSERT INTO card_import_batch(id,merchant_id,product_id,sku_id,actor_id,imported_count,before_stock,after_stock) VALUES(900000000,1,1,1,1,1,0,1)");
+                statement.executeUpdate("INSERT INTO card_import_item(card_id,batch_id) VALUES(900000000,900000000)");
                 Map<String,Long> counts = counts(connection, tables);
                 ScriptUtils.executeSqlScript(connection, resource);
                 assertEquals(counts, counts(connection, tables), "重复初始化不能增加演示数据或清空已有记录");
@@ -123,6 +126,7 @@ class SchemaMySqlTest {
         configuration.addMapper(com.shop.b2b2c.mapper.InventoryAdjustmentMapper.class);
         configuration.addMapper(com.shop.b2b2c.mapper.IdempotencyMapper.class);
         configuration.addMapper(com.shop.b2b2c.mapper.CardAssetMapper.class);
+        configuration.addMapper(com.shop.b2b2c.mapper.CardImportBatchMapper.class);
         var factory = new org.apache.ibatis.session.SqlSessionFactoryBuilder().build(configuration);
         try (var session = factory.openSession(false)) {
             try { session.getConnection().setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED); }
@@ -178,6 +182,21 @@ class SchemaMySqlTest {
             assertEquals(1, cardAssets.insertVoid(voidRecord));
             assertEquals("native-void", cardAssets.voidRecord(1L, cardId).getReason());
             assertNull(cardAssets.voidRecord(2L, cardId));
+            var batches = session.getMapper(com.shop.b2b2c.mapper.CardImportBatchMapper.class);
+            var batch = new com.shop.b2b2c.entity.CardImportBatch();
+            batch.setMerchantId(1L); batch.setProductId(1L); batch.setSkuId(sku.getId()); batch.setActorId(1L);
+            batch.setImportedCount(1); batch.setBeforeStock(stock); batch.setAfterStock(stock + 1);
+            assertEquals(1, batches.insert(batch)); assertNotNull(batch.getId());
+            assertEquals(1, batches.link(batch.getId(), cardId));
+            assertEquals(1, batches.find(1L, batch.getId()).getImportedCount()); assertNull(batches.find(2L, batch.getId()));
+            assertEquals(batch.getId(), batches.list(1L, sku.getId(), null, 1).get(0).getId());
+            assertEquals(1, batches.list(1L, sku.getId(), batch.getId(), 10).size());
+            var members = batches.members(1L, batch.getId(), null, 2);
+            assertEquals(1, members.size()); assertEquals(cardId, members.get(0).cardId()); assertEquals(2, members.get(0).status());
+            assertTrue(batches.members(1L, batch.getId(), cardId, 2).isEmpty());
+            assertTrue(batches.members(2L, batch.getId(), null, 2).isEmpty());
+            assertThrows(org.apache.ibatis.exceptions.PersistenceException.class, () -> batches.link(900000000L, cardId));
+            assertThrows(org.apache.ibatis.exceptions.PersistenceException.class, () -> batches.link(batch.getId(), Long.MAX_VALUE));
             session.rollback();
             assertEquals(original.getTitle(), mapper.lockProduct(1L, 1L).getTitle());
             assertEquals(0, sku.getPrice().compareTo(mapper.lockSkus(1L, 1L).get(0).getPrice()));
@@ -185,6 +204,7 @@ class SchemaMySqlTest {
             assertEquals(stock, inventory.lockSku(1L, 1L, sku.getId()).getStockQuantity());
             assertNull(inventory.find(1L, audit.getId()));
             assertNull(cardAssets.findCard(1L, cardId)); assertNull(cardAssets.voidRecord(1L, cardId));
+            assertNull(batches.find(1L, batch.getId())); assertTrue(batches.members(1L, batch.getId(), null, 2).isEmpty());
             session.rollback();
         }
     }

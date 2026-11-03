@@ -1,7 +1,7 @@
 /*
  * 文件：CardAssetService.java
- * 用途：本店历史卡密去重导入、安全作废及自然幂等重放。
- * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，所有应用写入路径必须遵守。历史扫描仅在内存计算摘要，不补存明文日志；暂未提供数据库唯一指纹、加密、批次或存量重复修复。作废拒绝HELD预占和数量不一致，不反向锁预占行。
+ * 用途：本店卡密去重导入、成功批次记录、安全作废及自然幂等重放。
+ * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，批次/成员/卡/库存同事务。历史扫描仅在内存计算摘要，不补存明文日志；唯一指纹、加密和存量修复仍待完善。作废拒绝HELD预占和数量不一致，不反向锁预占行。
  */
 package com.shop.b2b2c.service;
 
@@ -22,15 +22,18 @@ public class CardAssetService {
     private final InventoryAdjustmentMapper inventory;
     private final ProductVirtualCardMapper cards;
     private final ProductSkuMapper skus;
+    private final CardImportBatchMapper batches;
     private final TransactionTemplate transaction;
     public CardAssetService(CardAssetMapper assets, ProductEditingMapper products, InventoryAdjustmentMapper inventory,
-                            ProductVirtualCardMapper cards, ProductSkuMapper skus, PlatformTransactionManager manager) {
+                            ProductVirtualCardMapper cards, ProductSkuMapper skus, CardImportBatchMapper batches, PlatformTransactionManager manager) {
         this.assets = assets; this.products = products; this.inventory = inventory; this.cards = cards; this.skus = skus;
+        this.batches = batches;
         transaction = new TransactionTemplate(manager); transaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 
-    public Map<String,Object> importCards(Long merchant, Long product, Long sku, List<String> contents) {
+    public Map<String,Object> importCards(Long merchant, Long actor, Long product, Long sku, List<String> contents) {
         requireEntry(merchant);
+        if (actor == null || actor < 1) throw new BusinessException(401, "登录状态已失效");
         if (product == null || product < 1 || sku == null || sku < 1 || contents == null || contents.isEmpty() || contents.size() > 1000) {
             throw new BusinessException(400, "请选择商品和SKU，每批导入1至1000条卡密");
         }
@@ -54,12 +57,16 @@ public class CardAssetService {
                     throw new BusinessException(409, "卡密已存在于本店历史记录，整批未导入；请核对库存");
                 }
             }
+            var batch = new CardImportBatch(); batch.setMerchantId(merchant); batch.setActorId(actor); batch.setProductId(product); batch.setSkuId(sku);
+            batch.setImportedCount(normalized.size()); batch.setBeforeStock(current.getStockQuantity()); batch.setAfterStock(current.getStockQuantity() + normalized.size());
+            if (batches.insert(batch) != 1 || batch.getId() == null || batch.getId() < 1) throw new IllegalStateException("导入批次记录失败");
             for (String content : normalized) {
                 var card = new ProductVirtualCard(); card.setMerchantId(merchant); card.setProductId(product); card.setSkuId(sku); card.setCardContent(content);
                 if (cards.insert(card) != 1) throw new IllegalStateException("卡密入库失败");
+                if (card.getId() == null || card.getId() < 1 || batches.link(batch.getId(), card.getId()) != 1) throw new IllegalStateException("导入批次关联失败");
             }
             if (skus.addStock(sku, merchant, normalized.size()) != 1) throw new IllegalStateException("卡密库存更新失败");
-            return Map.of("importedCount", normalized.size(), "newStock", current.getStockQuantity() + normalized.size());
+            return Map.of("importedCount", normalized.size(), "newStock", batch.getAfterStock(), "batchId", batch.getId());
         });
     }
 

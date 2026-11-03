@@ -1,6 +1,6 @@
 /*
  * 文件：CardAssetServiceTest.java
- * 用途：卡密初始库存、批内/历史去重、导入容量、作废拒绝及自然幂等单元测试。
+ * 用途：卡密初始库存、去重/批次写入、导入容量、作废拒绝及自然幂等单元测试。
  * 维护注意：仅使用虚构卡密与Mock事务，不能替代真实回滚/并发验证；错误断言不能输出卡密明文，数据库场景由Spring/H2和临时MySQL测试承担。
  */
 package com.shop.b2b2c;
@@ -32,8 +32,9 @@ class CardAssetServiceTest {
     final InventoryAdjustmentMapper inventory = mock(InventoryAdjustmentMapper.class);
     final ProductVirtualCardMapper cards = mock(ProductVirtualCardMapper.class);
     final ProductSkuMapper skus = mock(ProductSkuMapper.class);
+    final CardImportBatchMapper batches = mock(CardImportBatchMapper.class);
     final PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
-    final CardAssetService service = new CardAssetService(assets, products, inventory, cards, skus, manager);
+    final CardAssetService service = new CardAssetService(assets, products, inventory, cards, skus, batches, manager);
     final Product product = new Product(); final ProductSku sku = new ProductSku(); final ProductVirtualCard card = new ProductVirtualCard();
     CardVoidRecord record;
     @BeforeEach void setup() {
@@ -42,7 +43,10 @@ class CardAssetServiceTest {
         product.setId(1L); product.setMerchantId(1L); product.setGoodsType(2); when(products.lockProduct(1L, 1L)).thenReturn(product);
         sku.setId(1L); sku.setMerchantId(1L); sku.setProductId(1L); sku.setStockQuantity(1); when(inventory.lockSku(1L, 1L, 1L)).thenReturn(sku);
         when(assets.historyContents(1L)).thenReturn(List.of("fixture-private"));
-        when(cards.insert(any(ProductVirtualCard.class))).thenReturn(1); when(skus.addStock(any(), any(), anyInt())).thenReturn(1);
+        var nextCardId = new java.util.concurrent.atomic.AtomicLong(10);
+        when(cards.insert(any(ProductVirtualCard.class))).thenAnswer(call -> { ((ProductVirtualCard) call.getArgument(0)).setId(nextCardId.incrementAndGet()); return 1; });
+        when(batches.insert(any())).thenAnswer(call -> { ((CardImportBatch) call.getArgument(0)).setId(7L); return 1; });
+        when(batches.link(any(), any())).thenReturn(1); when(skus.addStock(any(), any(), anyInt())).thenReturn(1);
         card.setId(1L); card.setProductId(1L); card.setSkuId(1L); card.setMerchantId(1L); card.setCardContent("fixture-private");
         when(assets.findCard(1L, 1L)).thenReturn(card); when(assets.lockCard(1L, 1L)).thenReturn(card);
         when(assets.availableCount(1L, 1L, 1L)).thenReturn(1L);
@@ -52,8 +56,14 @@ class CardAssetServiceTest {
         when(assets.voidRecord(1L, 1L)).thenAnswer(call -> record);
     }
     @Test void validImportKeepsCaseAndAddsOnlyInsertedQuantity() {
-        var result = service.importCards(1L, 1L, 1L, List.of(" item ", "ITEM"));
+        var result = service.importCards(1L, 9L, 1L, 1L, List.of(" item ", "ITEM"));
         assertEquals(2, result.get("importedCount")); assertEquals(3, result.get("newStock"));
+        assertEquals(7L, result.get("batchId"));
+        var batch = org.mockito.ArgumentCaptor.forClass(CardImportBatch.class);
+        verify(batches).insert(batch.capture());
+        assertEquals(9L, batch.getValue().getActorId()); assertEquals(1, batch.getValue().getBeforeStock());
+        assertEquals(3, batch.getValue().getAfterStock()); assertEquals(2, batch.getValue().getImportedCount());
+        verify(batches).link(7L, 11L); verify(batches).link(7L, 12L);
         var captured = org.mockito.ArgumentCaptor.forClass(ProductVirtualCard.class);
         verify(cards, times(2)).insert(captured.capture());
         assertEquals(List.of("item", "ITEM"), captured.getAllValues().stream().map(ProductVirtualCard::getCardContent).toList());
@@ -68,24 +78,39 @@ class CardAssetServiceTest {
             case "tooMany" -> Collections.nCopies(1001, "item"); case "tooLong" -> List.of("x".repeat(4097));
             default -> List.of("item", " item ");
         };
-        assertEquals(400, assertThrows(BusinessException.class, () -> service.importCards(1L, 1L, 1L, input)).getCode());
-        verifyNoInteractions(assets, products, inventory, cards, skus, manager);
+        assertEquals(400, assertThrows(BusinessException.class, () -> service.importCards(1L, 9L, 1L, 1L, input)).getCode());
+        verifyNoInteractions(assets, products, inventory, cards, skus, batches, manager);
     }
     @Test void historyDuplicateIsAtomicAndErrorNeverContainsCardContent() {
-        var error = assertThrows(BusinessException.class, () -> service.importCards(1L, 1L, 1L, List.of("new-item", " fixture-private ")));
+        var error = assertThrows(BusinessException.class, () -> service.importCards(1L, 9L, 1L, 1L, List.of("new-item", " fixture-private ")));
         assertEquals(409, error.getCode()); assertFalse(error.getMessage().contains("fixture-private"));
         verify(cards, never()).insert(any(ProductVirtualCard.class)); verify(skus, never()).addStock(any(), any(), anyInt());
+        verifyNoInteractions(batches);
+    }
+    @Test void importWithoutActorNeverCreatesUnattributedBatch() {
+        assertEquals(401, assertThrows(BusinessException.class, () -> service.importCards(1L, null, 1L, 1L, List.of("new"))).getCode());
+        verifyNoInteractions(manager, batches, cards);
+    }
+    @Test void missingGeneratedBatchIdCannotCreateCards() {
+        doReturn(1).when(batches).insert(any());
+        assertThrows(IllegalStateException.class, () -> service.importCards(1L, 9L, 1L, 1L, List.of("new")));
+        verify(cards, never()).insert(any(ProductVirtualCard.class)); verify(manager).rollback(any());
+    }
+    @Test void missingGeneratedCardIdCannotCreateUntraceableMember() {
+        doReturn(1).when(cards).insert(any(ProductVirtualCard.class));
+        assertThrows(IllegalStateException.class, () -> service.importCards(1L, 9L, 1L, 1L, List.of("new")));
+        verify(batches, never()).link(any(), any()); verify(skus, never()).addStock(any(), any(), anyInt()); verify(manager).rollback(any());
     }
     @Test void importLeavesCapacityForHeldRelease() {
         sku.setStockQuantity(Integer.MAX_VALUE - 1); when(inventory.heldQuantity(1L, 1L)).thenReturn(1L);
-        assertEquals(400, assertThrows(BusinessException.class, () -> service.importCards(1L, 1L, 1L, List.of("new-item"))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> service.importCards(1L, 9L, 1L, 1L, List.of("new-item"))).getCode());
         verify(cards, never()).insert(any(ProductVirtualCard.class));
     }
     @Test void wrongTypeOrForeignSkuNeverImports() {
         product.setGoodsType(1);
-        assertEquals(403, assertThrows(BusinessException.class, () -> service.importCards(1L, 1L, 1L, List.of("new"))).getCode());
+        assertEquals(403, assertThrows(BusinessException.class, () -> service.importCards(1L, 9L, 1L, 1L, List.of("new"))).getCode());
         product.setGoodsType(2);
-        assertEquals(404, assertThrows(BusinessException.class, () -> service.importCards(1L, 1L, 2L, List.of("new"))).getCode());
+        assertEquals(404, assertThrows(BusinessException.class, () -> service.importCards(1L, 9L, 1L, 2L, List.of("new"))).getCode());
         verify(cards, never()).insert(any(ProductVirtualCard.class));
     }
     @Test void voidIsNaturallyIdempotentAndDoesNotExposeContent() {

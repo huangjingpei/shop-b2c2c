@@ -1,6 +1,6 @@
 /*
  * 文件：ProductController.java
- * 用途：商品浏览、商家发布以及本店卡密去重导入和查询。
+ * 用途：商品浏览、商家发布、本店卡密去重导入及成功批次记录入口。
  * 维护注意：自动卡密发布初始库存为0；导入委托独立READ_COMMITTED资产事务，禁止在入口加外层事务。先验证租户再去重增库存，公开详情验证交易资格和店铺白名单，类型3不走卡密导入。
  */
 package com.shop.b2b2c.controller;
@@ -204,7 +204,7 @@ public class ProductController {
     public R<Map<String, Object>> importCards(@RequestBody BatchImportCardDTO dto) {
         if (dto == null) throw new BusinessException(400, "请输入卡密导入资料");
         return R.ok("卡密批量导入成功", cardAssets.importCards(SecurityUtils.requireCurrentMerchantId(),
-                dto.getProductId(), dto.getSkuId(), dto.getCardContents()));
+                SecurityUtils.getCurrentUserId(), dto.getProductId(), dto.getSkuId(), dto.getCardContents()));
     }
 
     @Operation(summary = "【商家】查询虚拟卡密库存")

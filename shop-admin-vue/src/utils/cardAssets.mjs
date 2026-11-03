@@ -1,6 +1,6 @@
 /*
  * 文件：cardAssets.mjs
- * 用途：卡密导入白名单/批内去重与作废状态、权限展示规则。
+ * 用途：卡密导入白名单/批内去重、批次查询参数及作废状态/权限展示规则。
  * 维护注意：卡密不得输出到日志；行首尾清理兼容Java trim的ASCII控制符，不改变大小写或内部字符。本地角色只管展示，历史去重、预占、状态和库存校验由后端完成。
  */
 export function cardImportPayload(form) {
@@ -15,4 +15,13 @@ export function cardImportPayload(form) {
 export function cardStatusLabel(status) { return ({ 0: '未售出（在库）', 1: '已售出', 2: '已作废' })[status] ?? '未知状态' }
 export function canVoidCard(role, card) {
   return ['SUPERADMIN', 'MERCHANT_ADMIN'].includes(role) && card.status === 0 && card.orderSn == null
+}
+export function cardBatchQuery(skuId, beforeId) {
+  const id = value => {
+    if (value == null || String(value).trim() === '') return undefined
+    const text = String(value).trim(), number = Number(text)
+    if (!/^[1-9]\d*$/.test(text) || !Number.isSafeInteger(number)) throw new Error('SKU或分页游标须为正整数')
+    return number
+  }
+  return { skuId: id(skuId), beforeId: id(beforeId), limit: 20 }
 }

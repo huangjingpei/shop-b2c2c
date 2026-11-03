@@ -1,7 +1,7 @@
 <!--
 文件：Cards.vue
-用途：本店卡密去重导入、库存浏览、安全作废及记录查看。
-维护注意：选择真实商品/SKU，不绑定演示ID；未确认作废结果时保留原因供同卡重试。作废条件和权限由服务端核验，列表状态含0未售/1售出/2作废，禁止把卡密或请求配置写日志。
+用途：本店卡密去重导入、成功批次/成员查询、库存浏览及安全作废。
+维护注意：批次/成员游标分别管理，查询不展示卡密正文，不伪造旧批次；选择真实商品/SKU。未确认作废结果保留原因供重试，权限由服务端核验，禁止把卡密或请求配置写日志。
 -->
 <template>
   <div class="merchant-cards">
@@ -44,6 +44,41 @@
       </el-table>
     </el-card>
 
+    <el-card shadow="never" style="margin-top: 20px;">
+      <h3>成功导入批次</h3>
+      <p>仅记录本功能启用后的导入。前后库存是当时快照，成员状态按查询时显示。</p>
+      <div style="display: flex; gap: 12px; margin-bottom: 12px;">
+        <el-input v-model="batchSku" :disabled="batchLoading" placeholder="按SKU ID筛选，留空查询本店" style="width: 300px;" />
+        <el-button :disabled="batchLoading" @click="loadBatches(false)">查询/刷新</el-button>
+        <el-button v-if="batchNext" :disabled="batchLoading" @click="loadBatches(true)">加载更多</el-button>
+      </div>
+      <el-table :data="batches" v-loading="batchLoading">
+        <el-table-column prop="id" label="批次ID" width="100" />
+        <el-table-column prop="productId" label="商品ID" width="90" />
+        <el-table-column prop="skuId" label="SKU" width="90" />
+        <el-table-column prop="actorId" label="操作人ID" width="100" />
+        <el-table-column prop="importedCount" label="导入数" width="85" />
+        <el-table-column prop="beforeStock" label="导入前" width="85" />
+        <el-table-column prop="afterStock" label="导入后" width="85" />
+        <el-table-column prop="createdAt" label="时间" min-width="170" />
+        <el-table-column label="成员" width="90"><template #default="{ row }">
+          <el-button link type="primary" :disabled="memberLoading" @click="openBatch(row)">明细</el-button>
+        </template></el-table-column>
+      </el-table>
+    </el-card>
+    <el-dialog v-model="membersVisible" :title="`批次 ${selectedBatch} 成员`" width="650px">
+      <el-table :data="members" v-loading="memberLoading">
+        <el-table-column prop="cardId" label="卡ID" />
+        <el-table-column label="当前状态"><template #default="{ row }">{{ cardStatusLabel(row.status) }}</template></el-table-column>
+        <el-table-column prop="orderSn" label="售出订单号" />
+      </el-table>
+      <template #footer>
+        <el-button v-if="memberNext" :disabled="memberLoading" @click="loadMembers(true)">加载更多</el-button>
+        <el-button :disabled="memberLoading" @click="loadMembers(false)">刷新状态</el-button>
+        <el-button @click="membersVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 批量导入卡密弹窗 -->
     <el-dialog v-model="dialogVisible" title="批量录入虚拟卡密" width="540px" :close-on-click-modal="false" :close-on-press-escape="!submitLoading" :show-close="!submitLoading">
       <el-alert title="每批最多1000条，重复时整批拒绝；结果未确认时请先核对列表。" type="info" :closable="false" />
@@ -79,7 +114,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
-import { cardImportPayload, cardStatusLabel, canVoidCard } from '../../utils/cardAssets.mjs'
+import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery } from '../../utils/cardAssets.mjs'
 
 const loading = ref(false)
 const submitLoading = ref(false)
@@ -88,6 +123,39 @@ const cards = ref([])
 const importProducts = ref([]), importSkus = ref([]), skuLoading = ref(false), voidLoading = ref(null)
 const currentRole = localStorage.getItem('roleCode') || ''
 const pendingVoidReasons = new Map()
+const batches = ref([]), batchSku = ref(''), batchLoading = ref(false), batchNext = ref(null)
+const members = ref([]), memberLoading = ref(false), memberNext = ref(null), selectedBatch = ref(null), membersVisible = ref(false)
+let appliedBatchSku = undefined
+
+const loadBatches = async (more = false) => {
+  if (batchLoading.value || (more && !batchNext.value)) return
+  let params
+  try {
+    params = cardBatchQuery(batchSku.value, more ? batchNext.value : null)
+    if (more && params.skuId !== appliedBatchSku) { ElMessage.warning('筛选已变化，请先查询/刷新'); return }
+  } catch (error) { ElMessage.warning(error.message); return }
+  batchLoading.value = true
+  try {
+    const { data } = await request.get('/merchant/card-import-batches', { params })
+    batches.value = more ? [...batches.value, ...data.items] : data.items
+    batchNext.value = data.nextBeforeId; appliedBatchSku = params.skuId
+  } catch { /* 请求层提示，保留现有记录。 */ }
+  finally { batchLoading.value = false }
+}
+const loadMembers = async (more = false) => {
+  if (memberLoading.value || !selectedBatch.value || (more && !memberNext.value)) return
+  memberLoading.value = true
+  try {
+    const { data } = await request.get(`/merchant/card-import-batches/${selectedBatch.value}/cards`, { params: cardBatchQuery(undefined, more ? memberNext.value : null) })
+    members.value = more ? [...members.value, ...data.items] : data.items; memberNext.value = data.nextBeforeId
+  } catch { /* 不将失败当成空批次，明细不读取卡密正文。 */ }
+  finally { memberLoading.value = false }
+}
+const openBatch = async row => {
+  if (memberLoading.value) return
+  selectedBatch.value = row.id; members.value = []; memberNext.value = null; membersVisible.value = true
+  await loadMembers()
+}
 
 const importForm = ref({
   productId: null,
@@ -112,10 +180,11 @@ const handleImport = async () => {
   submitLoading.value = true
   try {
     const res = await request.post('/merchant/cards/import', payload)
-    ElMessage.success(`成功导入 ${res.data.importedCount} 条卡密，当前可用总库存更新为 ${res.data.newStock}`)
+    ElMessage.success(`成功导入 ${res.data.importedCount} 条卡密，批次 ${res.data.batchId ?? '未记录'}，导入后库存 ${res.data.newStock}`)
     dialogVisible.value = false
     importForm.value.rawText = ''
     await loadCards()
+    await loadBatches(false)
   } catch { /* 保留本批输入供核对，不记录敏感内容。 */ } finally {
     submitLoading.value = false
   }
@@ -157,6 +226,7 @@ const showVoidRecord = async row => {
 
 onMounted(() => {
   loadCards()
+  loadBatches(false)
   request.get('/merchant/products').then(res => { importProducts.value = res.data.filter(p => p.goodsType === 2) }).catch(() => {})
 })
 </script>

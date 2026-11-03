@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密维护、Spring事务、SQL、公开响应及租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、事务、SQL及租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -82,12 +82,14 @@ class Sprint1SecurityIntegrationTest {
     @Autowired com.shop.b2b2c.service.InventoryAdjustmentService adjustments;
     @SpyBean CardAssetMapper cardAssetsMapper;
     @Autowired com.shop.b2b2c.service.CardAssetService cardAssets;
+    @SpyBean CardImportBatchMapper cardBatches;
+    @Autowired com.shop.b2b2c.service.CardImportBatchService batchQueries;
     @MockBean StringRedisTemplate redis;
 
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
+        for (String table : List.of("card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -376,7 +378,7 @@ class Sprint1SecurityIntegrationTest {
     void cardImportRejectsDuplicatesFromAllHistoricalStates(int state) {
         jdbc.update("UPDATE product_virtual_card SET status=? WHERE id=1", state);
         assertEquals(409, assertThrows(BusinessException.class,
-                () -> cardAssets.importCards(1L, 1L, 1L, List.of("fresh-fixture", " secret "))).getCode());
+                () -> cardAssets.importCards(1L, 200L, 1L, 1L, List.of("fresh-fixture", " secret "))).getCode());
         assertEquals(1, cards.selectCount(null)); assertEquals(1, skus.selectById(1).getStockQuantity());
     }
 
@@ -386,7 +388,7 @@ class Sprint1SecurityIntegrationTest {
         jdbc.update("INSERT INTO product_sku(id,merchant_id,product_id,sku_code,spec_data,price,stock_quantity) VALUES(3,1,3,'SKU3','{}',10,0)");
         AtomicInteger success = new AtomicInteger(), duplicates = new AtomicInteger();
         race(2, i -> {
-            try { cardAssets.importCards(1L, i == 0 ? 1L : 3L, i == 0 ? 1L : 3L, List.of("shared-new-fixture")); success.incrementAndGet(); }
+            try { cardAssets.importCards(1L, 200L, i == 0 ? 1L : 3L, i == 0 ? 1L : 3L, List.of("shared-new-fixture")); success.incrementAndGet(); }
             catch (BusinessException e) { assertEquals(409, e.getCode()); duplicates.incrementAndGet(); }
         });
         assertEquals(1, success.get()); assertEquals(1, duplicates.get());
@@ -395,9 +397,9 @@ class Sprint1SecurityIntegrationTest {
 
     @Test
     void cardImportScopesHistoryToMerchantAndRollsBackStockFailure() {
-        assertEquals(1, cardAssets.importCards(2L, 2L, 2L, List.of("secret")).get("importedCount"));
+        assertEquals(1, cardAssets.importCards(2L, 200L, 2L, 2L, List.of("secret")).get("importedCount"));
         doReturn(0).when(skus).addStock(1L, 1L, 2);
-        assertThrows(IllegalStateException.class, () -> cardAssets.importCards(1L, 1L, 1L, List.of("new-a", "new-b")));
+        assertThrows(IllegalStateException.class, () -> cardAssets.importCards(1L, 200L, 1L, 1L, List.of("new-a", "new-b")));
         assertEquals(1, skus.selectById(1).getStockQuantity()); assertEquals(2, cards.selectCount(null));
         assertEquals(1, cards.findByMerchantId(1L).size());
     }
@@ -443,7 +445,7 @@ class Sprint1SecurityIntegrationTest {
         var original = cardAssets.voidCard(1L, 200L, 1L, "expired");
         assertEquals(original, cardAssets.voidCard(1L, 200L, 1L, " expired "));
         assertEquals(409, assertThrows(BusinessException.class, () -> cardAssets.voidCard(1L, 200L, 1L, "new-reason")).getCode());
-        assertEquals(409, assertThrows(BusinessException.class, () -> cardAssets.importCards(1L, 1L, 1L, List.of("secret"))).getCode());
+        assertEquals(409, assertThrows(BusinessException.class, () -> cardAssets.importCards(1L, 200L, 1L, 1L, List.of("secret"))).getCode());
         assertEquals(0, skus.selectById(1).getStockQuantity());
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM virtual_card_void", Integer.class));
     }
@@ -498,7 +500,7 @@ class Sprint1SecurityIntegrationTest {
     @Test
     void cardAssetEntryRejectsOuterTransaction() {
         var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
-        assertThrows(IllegalStateException.class, () -> transaction.execute(status -> cardAssets.importCards(1L, 1L, 1L, List.of("fixture"))));
+        assertThrows(IllegalStateException.class, () -> transaction.execute(status -> cardAssets.importCards(1L, 200L, 1L, 1L, List.of("fixture"))));
         assertThrows(IllegalStateException.class, () -> transaction.execute(status -> cardAssets.voidCard(1L, 200L, 1L, "reason")));
     }
 
@@ -517,12 +519,98 @@ class Sprint1SecurityIntegrationTest {
         }
         Long skuId = skus.findByProductId(productId).get(0).getId();
         assertEquals(0, skus.selectById(skuId).getStockQuantity());
-        cardAssets.importCards(1L, productId, skuId, List.of("new-product-card-a", "new-product-card-b"));
+        cardAssets.importCards(1L, 200L, productId, skuId, List.of("new-product-card-a", "new-product-card-b"));
         assertEquals(2, skus.selectById(skuId).getStockQuantity());
         var imported = cards.findAvailableForMerchant(skuId, 1L);
         cardAssets.voidCard(1L, 200L, imported.get(0).getId(), "expired");
         assertEquals(1, skus.selectById(skuId).getStockQuantity());
         assertEquals(1, cards.findAvailableForMerchant(skuId, 1L).size());
+    }
+
+    @Test
+    void importBatchHttpUsesSessionActorAndHidesCardContent() throws Exception {
+        mvc.perform(get("/api/v1/merchant/card-import-batches")).andExpect(status().isUnauthorized());
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        String response = mvc.perform(post("/api/v1/merchant/cards/import").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content("{\"productId\":1,\"skuId\":1,\"actorId\":999,\"cardContents\":[\"batch-private-fixture\"]}"))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.batchId").isNumber())
+                .andReturn().getResponse().getContentAsString();
+        long batch = json.readTree(response).path("data").path("batchId").asLong();
+        mvc.perform(get("/api/v1/merchant/card-import-batches").header("Authorization", "Bearer " + token))
+                .andExpect(header().string("Cache-Control", "no-store")).andExpect(jsonPath("$.data.items[0].actorId").value(200))
+                .andExpect(jsonPath("$.data.items[0].importedCount").value(1));
+        String members = mvc.perform(get("/api/v1/merchant/card-import-batches/" + batch + "/cards").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].cardContent").doesNotExist()).andReturn().getResponse().getContentAsString();
+        assertFalse(members.contains("batch-private-fixture"));
+    }
+
+    @Test
+    void failedBatchLinkRollsBackBatchCardsAndStock() {
+        doReturn(0).when(cardBatches).link(any(), any());
+        assertThrows(IllegalStateException.class, () -> cardAssets.importCards(1L, 200L, 1L, 1L, List.of("batch-new-a", "batch-new-b")));
+        assertEquals(1, cards.selectCount(null)); assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM card_import_batch", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM card_import_item", Integer.class));
+    }
+
+    @Test
+    void stockFailureRollsBackFullyLinkedBatch() {
+        doReturn(0).when(skus).addStock(1L, 1L, 2);
+        assertThrows(IllegalStateException.class, () -> cardAssets.importCards(1L, 200L, 1L, 1L, List.of("batch-new-a", "batch-new-b")));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM card_import_batch", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM card_import_item", Integer.class));
+        assertEquals(1, cards.selectCount(null)); assertEquals(1, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void duplicateImportDoesNotLeaveEmptyBatchAndKeepsHistoricalCardsUnassigned() {
+        assertTrue(batchQueries.list(1L, null, null, 20).items().isEmpty());
+        assertEquals(409, assertThrows(BusinessException.class,
+                () -> cardAssets.importCards(1L, 200L, 1L, 1L, List.of("secret"))).getCode());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM card_import_batch", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM card_import_item", Integer.class));
+    }
+
+    @Test
+    void batchAndMemberPagesUseIndependentCursorsAndEnforceTenant() {
+        Long latest = null;
+        for (int i = 0; i < 3; i++) latest = (Long) cardAssets.importCards(1L, 200L, 1L, 1L,
+                List.of("batch-a-" + i, "batch-b-" + i, "batch-c-" + i)).get("batchId");
+        var first = batchQueries.list(1L, 1L, null, 2); var last = batchQueries.list(1L, 1L, first.nextBeforeId(), 2);
+        assertEquals(2, first.items().size()); assertEquals(1, last.items().size()); assertNull(last.nextBeforeId());
+        var members = batchQueries.members(1L, latest, null, 2);
+        assertEquals(2, members.items().size()); assertNotNull(members.nextBeforeId());
+        var rest = batchQueries.members(1L, latest, members.nextBeforeId(), 2);
+        assertEquals(1, rest.items().size()); assertNull(rest.nextBeforeId());
+        assertTrue(rest.items().get(0).cardId() < members.nextBeforeId());
+        assertTrue(batchQueries.list(2L, null, null, 20).items().isEmpty());
+        final Long batch = latest;
+        assertEquals(404, assertThrows(BusinessException.class, () -> batchQueries.members(2L, batch, null, 20)).getCode());
+        assertTrue(batchQueries.list(1L, 2L, null, 20).items().isEmpty());
+    }
+
+    @Test
+    void batchMembersShowCurrentStateWithoutRewritingImportSnapshot() {
+        cardAssets.voidCard(1L, 200L, 1L, "legacy-expired");
+        long batch = (Long) cardAssets.importCards(1L, 200L, 1L, 1L, List.of("member-a", "member-b")).get("batchId");
+        unpaid("batch-payment", 1); pay("batch-payment");
+        var available = cards.findAvailableForMerchant(1L, 1L).get(0);
+        cardAssets.voidCard(1L, 200L, available.getId(), "expired");
+        var members = batchQueries.members(1L, batch, null, 20);
+        assertEquals(java.util.Set.of(1, 2), members.items().stream().map(com.shop.b2b2c.dto.CardImportDTOs.Item::status).collect(java.util.stream.Collectors.toSet()));
+        var original = batchQueries.list(1L, 1L, null, 20).items().get(0);
+        assertEquals(2, original.getImportedCount()); assertEquals(2, original.getAfterStock());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void corruptedCrossTenantMemberLinkCannotExposeForeignCard() throws Exception {
+        long batch = (Long) cardAssets.importCards(1L, 200L, 1L, 1L, List.of("owned-member")).get("batchId");
+        jdbc.update("INSERT INTO product_virtual_card(id,merchant_id,product_id,sku_id,card_content,status,order_sn) VALUES(900000,2,2,2,'foreign-fixture',1,'FOREIGN-ORDER')");
+        cardBatches.link(batch, 900000L);
+        var members = batchQueries.members(1L, batch, null, 20);
+        assertEquals(1, members.items().size()); assertFalse(json.writeValueAsString(members).contains("FOREIGN-ORDER"));
     }
 
     private void authUser(String role, Long merchantId) {
@@ -985,6 +1073,7 @@ class Sprint1SecurityIntegrationTest {
         dto.setProductId(2L); dto.setSkuId(2L); dto.setCardContents(List.of("foreign"));
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(200L);
             assertThrows(BusinessException.class, () -> products.listCards(2L));
             assertThrows(BusinessException.class, () -> products.importCards(dto));
             dto.setProductId(1L);
@@ -1001,6 +1090,7 @@ class Sprint1SecurityIntegrationTest {
         dto.setProductId(1L); dto.setSkuId(1L); dto.setCardContents(List.of("new-secret"));
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(200L);
             products.importCards(dto);
         }
         assertEquals(2, skus.selectById(1).getStockQuantity());

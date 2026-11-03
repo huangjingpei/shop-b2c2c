@@ -1,5 +1,5 @@
 -- 文件：schema.sql
--- 用途：开发期唯一运行时SQL入口，完整创建16张业务表、必要索引和演示数据。
+-- 用途：开发期唯一运行时SQL入口，完整创建18张业务表、必要索引和演示数据。
 -- 维护注意：只操作当前连接库，不包含删库/删表语句。CREATE TABLE IF NOT EXISTS不升级旧结构；开发重建会丢失旧数据，保留数据的环境须另做版本迁移；生产不得依赖演示账号。
 -- ========================================================
 -- Shop B2B2C 全局全量初始化数据库脚本 (Single Source of Truth)
@@ -409,3 +409,26 @@ CREATE TABLE IF NOT EXISTS virtual_card_void (
   KEY idx_card_void_merchant (merchant_id,sku_id,card_id),
   CONSTRAINT chk_card_void_stock CHECK (before_stock >= 1 AND after_stock = before_stock - 1)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='卡密作废操作记录，不含卡密内容';
+
+-- 17/18. 成功卡密导入批次及成员：不保存卡密正文，不回填旧记录。
+CREATE TABLE IF NOT EXISTS card_import_batch (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT UNSIGNED NOT NULL,
+  product_id BIGINT UNSIGNED NOT NULL,
+  sku_id BIGINT UNSIGNED NOT NULL,
+  actor_id BIGINT UNSIGNED NOT NULL,
+  imported_count INT NOT NULL,
+  before_stock INT NOT NULL,
+  after_stock INT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_card_batch_merchant (merchant_id,id),
+  KEY idx_card_batch_sku (merchant_id,sku_id,id),
+  CONSTRAINT chk_card_batch_quantity CHECK (imported_count BETWEEN 1 AND 1000 AND before_stock >= 0 AND after_stock = before_stock + imported_count)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='成功卡密导入批次';
+CREATE TABLE IF NOT EXISTS card_import_item (
+  card_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  batch_id BIGINT UNSIGNED NOT NULL,
+  KEY idx_card_import_item_batch (batch_id,card_id),
+  CONSTRAINT fk_card_import_item_batch FOREIGN KEY (batch_id) REFERENCES card_import_batch(id),
+  CONSTRAINT fk_card_import_item_card FOREIGN KEY (card_id) REFERENCES product_virtual_card(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='导入批次成员，不复制卡密正文';

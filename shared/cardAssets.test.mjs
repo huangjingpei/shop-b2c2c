@@ -1,12 +1,21 @@
 /*
  * 文件：cardAssets.test.mjs
- * 用途：卡密导入SKU选择、批内边界、内容保持及作废权限/状态规则测试。
+ * 用途：卡密导入SKU选择、批内边界、批次游标参数及作废权限/状态规则测试。
  * 维护注意：只使用虚构文本，不使用真实卡密；服务端另测历史去重、事务、并发和预占拒绝。本地展示判断不能作为资产授权。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cardImportPayload, cardStatusLabel, canVoidCard } from '../shop-admin-vue/src/utils/cardAssets.mjs'
+import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery } from '../shop-admin-vue/src/utils/cardAssets.mjs'
 const form = () => ({ productId: 9, skuId: 12, rawText: ' Code-A \r\n\nCode-b' })
+test('批次查询只包含有界游标参数，可清空SKU筛选', () => {
+  assert.deepEqual(cardBatchQuery(' 12 ', 30), { skuId: 12, beforeId: 30, limit: 20 })
+  assert.deepEqual(cardBatchQuery(' ', null), { skuId: undefined, beforeId: undefined, limit: 20 })
+})
+for (const value of [0, -1, 1.5, '1e3', true, 'not-an-id', Number.MAX_SAFE_INTEGER + 1]) {
+  test(`批次查询拒绝无效筛选或游标：${String(value)}`, () => {
+    assert.throws(() => cardBatchQuery(value, null)); assert.throws(() => cardBatchQuery(null, value))
+  })
+}
 test('提交实际选定的商品与SKU，保留卡密大小写', () => {
   assert.deepEqual(cardImportPayload(form()), { productId: 9, skuId: 12, cardContents: ['Code-A', 'Code-b'] })
 })
