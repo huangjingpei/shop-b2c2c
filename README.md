@@ -1,9 +1,11 @@
 <!--
 文件：README.md
-用途：项目入口说明、三端工程结构及本地启动参考。
+用途：项目入口说明、文档导航、三端工程结构及本地启动参考。
 维护注意：此处描述包含规划或历史验收记录，不代表当前代码已全部实现；现状以问题台账及最新Sprint记录为准，旧截图/链接不能替代可重复测试。
 -->
 # Shop B2B2C 电商平台 (Spring Boot 3 + Vue 3)
+
+开发进度与范围请先看[文档目录及需求归属追踪](docs/README.md)和[问题主台账](docs/B2B2C_项目缺陷与未实现功能清单_2026-11-03.md)。最新的[Sprint 11](docs/SPRINT_11_卡密去重与安全作废.md)、[Sprint 12](docs/SPRINT_12_卡密导入批次与追溯.md)均待人工验证。
 
 > **技术栈**：Spring Boot 3.2.5 (JDK 17) + Vue 3 (Vite + Element Plus + Tailwind CSS) + MySQL 8.0 + Redis 7  
 > **商业模型**：对标 16688 模式（数字权益自动秒发 / 实体电商 / 小微自然人免执照开店 / 微信电商收付通与支付宝直付通二级分账零二清 / 免登录极速查单）
@@ -15,6 +17,10 @@
 ```
 E:\shop-b2b2c\
 ├── docs/                        # 【业务设计与规范交付文档归档】
+│   ├── README.md                         # 文档导航、最近提交归属及待确认规则
+│   ├── B2B2C_项目缺陷与未实现功能清单_2026-11-03.md # 问题状态主台账
+│   ├── SPRINT_11_卡密去重与安全作废.md     # 待人工验证
+│   ├── SPRINT_12_卡密导入批次与追溯.md     # 待人工验证
 │   ├── B2B2C_MVP_PEER_PAY_SPECIFICATION.md   # 核心业务架构与找人代付引擎设计规范 (Markdown)
 │   ├── B2B2C_MVP_PEER_PAY_SPECIFICATION.docx # Word 排版交付件
 │   ├── B2B2C_MVP_PEER_PAY_SPECIFICATION.pdf  # 矢量 PDF 交付件
