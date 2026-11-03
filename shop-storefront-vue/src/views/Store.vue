@@ -1,13 +1,18 @@
 <!--
 文件：Store.vue
 用途：按商户浏览店铺商品。
-维护注意：服务与卡密分别展示；当前公告/客服仍含历史演示值，店铺独立资料接口及空店体验尚待整改，不能将演示值当真实资料。
+维护注意：先读取公开白名单店铺资料再读取本店商品；无演示公告、电话或认证承诺。路由切换使旧请求失效，商品失败不能当作空店，交易资格仍由后端校验。
 -->
 <template>
   <div v-if="loading" class="text-center py-12 text-slate-400 text-sm">
     正在加载店铺资料与货源...
   </div>
-  <div v-else>
+  <div v-else-if="error" role="alert" class="text-center py-12 text-slate-500">
+    <p>{{ error }}</p>
+    <button type="button" class="mt-3 text-brand-600" @click="retry++">重新加载</button>
+    <router-link to="/" class="block mt-3 text-brand-600">返回货源大厅</router-link>
+  </div>
+  <div v-else-if="store">
     <!-- 店铺招牌 Header -->
     <div class="bg-white rounded-xl border border-slate-200 p-6 md:p-8 mb-6 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
       <div class="flex items-center space-x-4">
@@ -17,11 +22,10 @@
         <div>
           <div class="flex items-center space-x-2">
             <h1 class="text-xl font-black text-slate-900">{{ store?.storeName || '店铺主页' }}</h1>
-            <span class="px-2 py-0.5 rounded text-[11px] font-semibold bg-green-100 text-green-700">官方认证小微商户</span>
           </div>
-          <p class="text-xs text-slate-500 mt-1">商户编码：<code>{{ store?.storeCode }}</code> · 客服电话：{{ store?.contactPhone }}</p>
+          <p class="text-xs text-slate-500 mt-1">商户编码：<code>{{ store?.storeCode }}</code> · 客服电话：{{ store?.contactPhone || '暂未提供' }}</p>
           <div class="mt-2 text-xs text-amber-700 bg-amber-50 px-3 py-1.5 rounded-lg border border-amber-200/60 inline-block">
-            📢 店铺公告：{{ store?.notice || '欢迎光临本店，全自动秒级极速发货！' }}
+            📢 店铺公告：{{ store?.notice || '暂无公告' }}
           </div>
         </div>
       </div>
@@ -32,8 +36,12 @@
     </div>
 
     <!-- 本店商品列表 -->
-    <h2 class="text-base font-bold text-slate-900 mb-4">本店在售全部货源 ({{ products.length }})</h2>
-    <div v-if="products.length === 0" class="text-center py-16 bg-white rounded-xl border border-slate-200 text-sm text-slate-400">
+    <h2 class="text-base font-bold text-slate-900 mb-4">本店已上架商品<span v-if="!productsError"> ({{ products.length }})</span></h2>
+    <div v-if="productsError" role="alert" class="text-center py-12 text-slate-500">
+      {{ productsError }}
+      <button type="button" class="ml-3 text-brand-600" @click="retry++">重新加载</button>
+    </div>
+    <div v-else-if="products.length === 0" class="text-center py-16 bg-white rounded-xl border border-slate-200 text-sm text-slate-400">
       该商户暂未上架商品
     </div>
     <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
@@ -70,38 +78,34 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
+import { loadStorePage } from '../utils/storePage.mjs'
 
 const route = useRoute()
-const loading = ref(false)
+const loading = ref(true)
 const store = ref(null)
 const products = ref([])
+const error = ref('')
+const productsError = ref('')
+const retry = ref(0)
 
-const loadStore = async () => {
+watch([() => route.params.id, retry], async ([id], _, onCleanup) => {
+  let active = true
+  onCleanup(() => { active = false })
   loading.value = true
-  try {
-    const res = await axios.get('/api/v1/public/products', {
-      params: { merchantId: route.params.id }
-    })
-    products.value = res.data.data
-    if (products.value.length > 0) {
-      store.value = {
-        storeName: products.value[0].storeName,
-        storeCode: products.value[0].storeCode,
-        notice: '官方直营，全自动秒级极速发货！24小时在线客服售后无忧。',
-        contactPhone: '13800138000'
-      }
-    }
-  } catch (e) {
-    console.error(e)
-  } finally {
-    loading.value = false
-  }
-}
-
-onMounted(() => {
-  loadStore()
-})
+  store.value = null
+  products.value = []
+  error.value = ''
+  productsError.value = ''
+  const result = await loadStorePage(id, axios.get)
+  // Vue复用组件或卸载时，迟到响应不得覆盖新店铺资料。
+  if (!active) return
+  store.value = result.store
+  products.value = result.products
+  error.value = result.error
+  productsError.value = result.productsError
+  loading.value = false
+}, { immediate: true })
 </script>

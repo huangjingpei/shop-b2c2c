@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、事务和租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、公开空店、事务和租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -111,6 +111,25 @@ class Sprint1SecurityIntegrationTest {
         jdbc.update("MERGE INTO category(id,parent_id,name,sort_order) KEY(id) VALUES(1,0,'standard',0)");
         return new com.shop.b2b2c.dto.ProductEditingDTOs.Update(revision, 1L, title, null, "updated-image", null,
                 List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(1L, new java.math.BigDecimal(price))));
+    }
+
+    @Test
+    void publicEmptyStoreIsAnonymousAndUsesAllowlistThroughSecurityChain() throws Exception {
+        jdbc.update("INSERT INTO merchant_store(id,store_code,store_name,owner_name,id_card_number,contact_phone) VALUES(?,?,?,?,?,?)",
+                99L, "EMPTY99", "真实空店", "private-owner", "private-id", "public-contact");
+        mvc.perform(get("/api/v1/public/stores/99"))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.storeName").value("真实空店"))
+                .andExpect(jsonPath("$.data.ownerName").doesNotExist())
+                .andExpect(jsonPath("$.data.idCardNumber").doesNotExist());
+        mvc.perform(get("/api/v1/public/products").param("merchantId", "99"))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data").isEmpty());
+        jdbc.update("UPDATE merchant_store SET status=3 WHERE id=99");
+        mvc.perform(get("/api/v1/public/stores/99"))
+                .andExpect(jsonPath("$.code").value(404)).andExpect(jsonPath("$.data").isEmpty());
+        mvc.perform(get("/api/v1/public/stores/999999"))
+                .andExpect(jsonPath("$.code").value(404));
     }
 
     @Test
