@@ -1,12 +1,13 @@
 /*
  * 文件：main.js
- * 用途：Vue应用启动并注册路由、状态管理。
+ * 用途：Vue应用启动并导入本地构建CSS，注册路由、状态管理。
  * 维护注意：插件注册顺序与app挂载节点应保持一致；新增全局依赖须核对打包和初始化副作用，权限不得仅由前端状态判断。
  */
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
 import router from './router'
+import './styles/tailwind.css'
 
 const app = createApp(App)
 app.use(createPinia())

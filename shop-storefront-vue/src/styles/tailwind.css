@@ -1,0 +1,12 @@
+/*
+ * 文件：tailwind.css
+ * 用途：商城统一CSS入口，交给Vite/PostCSS构建为本站静态资源。
+ * 维护注意：main.js必须导入本文件；三层Tailwind指令须经构建处理，不能直接给浏览器加载源码。保留原系统字体，不引入网络字体；页面私有样式留在对应Vue组件。
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}

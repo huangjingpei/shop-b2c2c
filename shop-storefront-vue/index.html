@@ -5,7 +5,7 @@
 <!--
 文件：index.html
 用途：前端HTML启动壳与应用挂载节点。
-维护注意：保留doctype、字符集和app节点；商城仍使用外部Tailwind资源，离线可用性待治理。不要把运行配置凭据嵌入HTML。
+维护注意：保留doctype、字符集和app节点；CSS由main.js导入并经Vite本地构建，不恢复Tailwind CDN或内联运行时配置。不要把运行配置凭据嵌入HTML。
 -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <meta name="format-detection" content="telephone=no" />
@@ -13,29 +13,6 @@
     <meta property="og:title" content="16688 担保交易 · 极速好友代付" />
     <meta property="og:description" content="好心人帮我买个单呗！微信内直接点开即付，免注册免登录。" />
     <title>16688 货源优选 · 批发与数字权益自动交付平台</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            colors: {
-              brand: {
-                50: '#fff7ed',
-                100: '#ffedd5',
-                500: '#f97316',
-                600: '#ea580c',
-                700: '#c2410c'
-              }
-            }
-          }
-        }
-      }
-    </script>
-    <style>
-      body {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-      }
-    </style>
   </head>
   <body class="bg-[#f8fafc] text-slate-800 antialiased min-h-screen flex flex-col">
     <div id="app" class="flex-1 flex flex-col"></div>

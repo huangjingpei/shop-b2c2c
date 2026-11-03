@@ -19,7 +19,8 @@
 - 每个任务交付执行目录、准确验证命令、预期结果及未验证项；用户反馈通过前保留“待验证”说明，不宣称检查通过或将待验证问题标为“已修复”。Git提交须注明执行方与验证状态。此前已执行结果只作历史记录，不覆盖后续修改。
 - 每次行为修改都应补充或调整相应单元测试，必要时补数据库事务、并发和接口集成测试；修复既要覆盖拒绝非法操作，也要覆盖合法操作。
 - 注释、文档变更应检查格式和语法兼容；不得借补注释夹带业务行为变化。
-- 用户手动验证入口：后端`mvn -f shop-b2b2c-backend/pom.xml test`；前端规则`node --test shared/goodsType.test.mjs shared/idempotency.test.mjs shared/buyerReceipt.test.mjs shared/authSession.test.mjs shared/productEditing.test.mjs shared/inventoryAdjustment.test.mjs shared/cardAssets.test.mjs shared/orderStatistics.test.mjs shared/storePage.test.mjs shared/serviceFee.test.mjs`。涉及Vue或前端模块时交付对应工程的生产构建命令。
+- 用户手动验证入口：后端`mvn -f shop-b2b2c-backend/pom.xml test`；前端规则`node --test shared/goodsType.test.mjs shared/idempotency.test.mjs shared/buyerReceipt.test.mjs shared/authSession.test.mjs shared/productEditing.test.mjs shared/inventoryAdjustment.test.mjs shared/cardAssets.test.mjs shared/orderStatistics.test.mjs shared/storePage.test.mjs shared/serviceFee.test.mjs shared/storefrontStyles.test.mjs`。涉及Vue或前端模块时交付对应工程的生产构建命令。
+- 样式规则测试storefrontStyles.test.mjs会在内存运行真实PostCSS/Tailwind；用户须先执行`npm --prefix shop-storefront-vue ci`安装锁定依赖，不得因缺依赖跳过。JSON依赖文件不插注释，维护说明见Sprint 21。
 - 同一工作区的Maven clean/compile/test必须串行执行，避免共享target被其他构建覆盖；不同前端工程的独立构建可并行。
 - 阿里云打包/构建隔离用例由用户在Linux/WSL运行`python3 -m unittest discover -s deploy/tests -p 'test_aliyun_build.py' -v`；假工具不编译业务，不连接远端。Windows原生跳过不代表验证通过，真实构建按对应Sprint文档另行执行。
 - 通用网关隔离用例由用户在已安装Nginx的Linux/WSL运行`python3 -m unittest discover -s deploy/tests -p 'test_nginx_gateway.py' -v`；仅启动随机回环端口测试进程，不修改系统站点。缺Nginx跳过不算通过，Sprint 20后含8项Nginx回归及2项只读脚本契约，具体范围见Sprint 19/20。
