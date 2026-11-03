@@ -1,41 +1,48 @@
 <!--
 文件：Dashboard.vue
-用途：商家商品、订单数量和快捷入口看板。
-维护注意：页面部分经营/结算文案仍是历史演示，统计口径与真实支付待完善；不得据此认定收付通已开通或资金已结算。
+用途：本店实际营业状态、已上架商品、统一订单状态统计及快捷入口。
+维护注意：零费率必须保留；统计走专用本店接口，不用订单列表长度算成交。金额按状态而非渠道账本，不展示写死的开通/到账状态；网络缺失显示未知，不能回退演示店铺。
 -->
 <template>
   <div class="merchant-dashboard">
     <div class="store-banner">
       <div class="banner-info">
-        <h2>🏪 {{ storeInfo.storeName || '极速数卡旗舰店' }}</h2>
-        <p>商户编码：<code>{{ storeInfo.storeCode || 'STORE001' }}</code> · 平台抽成比率：<span class="rate">{{ storeInfo.commissionRate || '3.00' }}%</span></p>
+        <h2>🏪 {{ banner.name }}</h2>
+        <p>商户编码：<code>{{ banner.code }}</code> · 平台抽成比率：<span class="rate">{{ banner.rate }}%</span></p>
       </div>
-      <el-tag type="success" size="large" effect="dark">正常营业中</el-tag>
+      <el-tag :type="storeInfo.status === 1 ? 'success' : 'info'" size="large" effect="dark">{{ banner.status }}</el-tag>
     </div>
 
     <el-row :gutter="20" class="stat-row">
-      <el-col :span="8">
+      <el-col :span="6">
         <el-card shadow="hover" class="stat-card">
-          <div class="stat-title">本店在售商品</div>
+          <div class="stat-title">本店已上架商品</div>
           <div class="stat-num">{{ productCount }} 件</div>
-          <div class="stat-desc">含多规格变体 SKU 现货</div>
+          <div class="stat-desc">按商品上架状态，不代表均有现货</div>
         </el-card>
       </el-col>
-      <el-col :span="8">
+      <el-col :span="6">
         <el-card shadow="hover" class="stat-card">
-          <div class="stat-title">累计成交订单</div>
-          <div class="stat-num">{{ orderCount }} 笔</div>
-          <div class="stat-desc">自动秒发卡密与实物发货</div>
+          <div class="stat-title">历史已支付订单数</div>
+          <div class="stat-num">{{ stats.paidOrders }} 笔</div>
+          <div class="stat-desc">含退款状态，不含待付/关闭订单</div>
         </el-card>
       </el-col>
-      <el-col :span="8">
+      <el-col :span="6">
         <el-card shadow="hover" class="stat-card">
-          <div class="stat-title">二级分账官方状态</div>
-          <div class="stat-num" style="color: #16a34a; font-size: 20px;">✅ 微信直结生效</div>
-          <div class="stat-desc">净货款直入个人储蓄卡 (零二清)</div>
+          <div class="stat-title">历史已支付订单金额</div>
+          <div class="stat-num">￥{{ stats.paidTurnover }}</div>
+          <div class="stat-desc">含退款状态金额，非退款净额</div>
         </el-card>
       </el-col>
+      <el-col :span="6"><el-card shadow="hover" class="stat-card">
+        <div class="stat-title">未退款订单预计佣金</div><div class="stat-num">￥{{ stats.estimatedCommission }}</div>
+        <div class="stat-desc">按订单快照，不是已结算金额</div>
+      </el-card></el-col>
     </el-row>
+    <el-alert :title="STATISTICS_NOTICE" type="info" :closable="false" style="margin-bottom: 16px;" />
+    <p>待付款 {{ stats.pendingOrders }} 笔，意向金额 ￥{{ stats.pendingIntentAmount }}；退款状态 {{ stats.refundedOrders }} 笔。</p>
+    <el-alert v-if="stats.unknownOrders > 0 || stats.amountAnomalyOrders > 0" :title="`需核对：未知状态 ${stats.unknownOrders} 单，异常金额 ${stats.amountAnomalyOrders} 单。`" type="warning" :closable="false" />
 
     <!-- 快捷入口卡片 -->
     <el-card shadow="never" class="quick-entry">
@@ -61,12 +68,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import request from '../../api/request'
+import { statisticsView, listedProductCount, storeDisplay, STATISTICS_NOTICE } from '../../utils/orderStatistics.mjs'
 
 const storeInfo = ref({})
-const productCount = ref(0)
-const orderCount = ref(0)
+const productCount = ref('—')
+const stats = ref(statisticsView())
+const banner = computed(() => storeDisplay(storeInfo.value))
 
 const loadData = async () => {
   try {
@@ -74,12 +83,12 @@ const loadData = async () => {
     storeInfo.value = res.data.store || {}
 
     const pRes = await request.get('/merchant/products')
-    productCount.value = pRes.data.length
+    productCount.value = listedProductCount(pRes.data)
 
-    const oRes = await request.get('/merchant/orders')
-    orderCount.value = oRes.data.length
-  } catch (e) {
-    console.error(e)
+    const oRes = await request.get('/merchant/orders/statistics')
+    stats.value = statisticsView(oRes.data)
+  } catch {
+    // 请求层提示错误，不将失败或旧演示值当作经营数据。
   }
 }
 

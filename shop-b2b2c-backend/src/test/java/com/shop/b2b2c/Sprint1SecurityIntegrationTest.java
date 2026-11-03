@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、事务、SQL及租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、事务和租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -615,6 +615,56 @@ class Sprint1SecurityIntegrationTest {
 
     private void authUser(String role, Long merchantId) {
         jdbc.update("INSERT INTO sys_user(id,username,password,role_code,merchant_id,is_active) VALUES(200,'auth-fixture',?,?,?,1)", AUTH_HASH, role, merchantId);
+    }
+
+    private void statisticsOrder(String token, long merchant, String state, String peer, String amount, String commission) {
+        var order = new TradeOrder(); order.setOrderSn("STAT-" + token); order.setMerchantId(merchant); order.setBuyerContact("fixture-contact");
+        order.setPeerPayToken("stat-" + token); order.setQueryToken("private-stat-" + token); order.setOrderStatus(state); order.setPeerStatus(peer);
+        order.setPayAmount(new java.math.BigDecimal(amount)); order.setTotalAmount(new java.math.BigDecimal(amount));
+        order.setCommissionAmount(new java.math.BigDecimal(commission)); order.setSharingStatus("FINISHED"); orders.save(order);
+    }
+
+    @Test
+    void merchantStatisticsEnforcesAuthenticationAndIgnoresClientTenantSelection() throws Exception {
+        mvc.perform(get("/api/v1/merchant/orders/statistics")).andExpect(status().isUnauthorized());
+        statisticsOrder("intent", 1L, "UNPAID", "INIT", "1000", "30");
+        statisticsOrder("paid", 1L, "PAID", "PAID", "10", "0.30");
+        statisticsOrder("refund", 1L, "REFUNDED", "PAID", "2", "0.06");
+        statisticsOrder("expired", 1L, "UNPAID", "EXPIRED", "500", "15");
+        statisticsOrder("foreign", 2L, "COMPLETED", "PAID", "9000", "270");
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        mvc.perform(get("/api/v1/merchant/orders/statistics").param("merchantId", "2").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store")).andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.totalOrders").value(4)).andExpect(jsonPath("$.data.paidOrders").value(2))
+                .andExpect(jsonPath("$.data.paidTurnover").value("12.00")).andExpect(jsonPath("$.data.pendingIntentAmount").value("1000.00"))
+                .andExpect(jsonPath("$.data.estimatedCommission").value("0.30")).andExpect(jsonPath("$.data.closedOrders").value(1))
+                .andExpect(jsonPath("$.data.actualRefundAmount").isEmpty()).andExpect(jsonPath("$.data.financialLedgerAvailable").value(false))
+                .andExpect(jsonPath("$.data.orders").doesNotExist()).andExpect(jsonPath("$.data.queryToken").doesNotExist());
+        mvc.perform(get("/api/v1/admin/orders").header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
+    }
+
+    @Test
+    void platformStatisticsKeepsCompatibleKeysButExcludesIntentAndMarksUnknownFinance() throws Exception {
+        statisticsOrder("intent", 1L, "UNPAID", "INIT", "1000", "30");
+        statisticsOrder("paid", 1L, "PAID", "PAID", "10", "0.30");
+        statisticsOrder("refund", 1L, "REFUNDED", "PAID", "2", "0.06");
+        statisticsOrder("foreign", 2L, "COMPLETED", "PAID", "9000", "270");
+        authUser("SUPERADMIN", null); String token = loginToken();
+        mvc.perform(get("/api/v1/admin/orders").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.data.totalOrders").value(4)).andExpect(jsonPath("$.data.orders.length()").value(4))
+                .andExpect(jsonPath("$.data.totalTurnover").value(9012.0)).andExpect(jsonPath("$.data.totalCommission").value(270.3))
+                .andExpect(jsonPath("$.data.statistics.paidOrders").value(3)).andExpect(jsonPath("$.data.statistics.paidTurnover").value("9012.00"))
+                .andExpect(jsonPath("$.data.statistics.estimatedCommission").value("270.30"))
+                .andExpect(jsonPath("$.data.statistics.settledCommission").isEmpty()).andExpect(jsonPath("$.data.statistics.netTurnover").isEmpty());
+    }
+
+    @Test
+    void emptyMerchantStatisticsReturnsKnownZeroRatherThanReadingOtherStore() throws Exception {
+        statisticsOrder("foreign-only", 2L, "PAID", "PAID", "500", "15");
+        authUser("MERCHANT_STAFF", 1L); String token = loginToken();
+        mvc.perform(get("/api/v1/merchant/orders/statistics").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.data.totalOrders").value(0)).andExpect(jsonPath("$.data.paidTurnover").value("0.00"))
+                .andExpect(jsonPath("$.data.settledCommission").isEmpty());
     }
 
     private String loginToken() throws Exception {

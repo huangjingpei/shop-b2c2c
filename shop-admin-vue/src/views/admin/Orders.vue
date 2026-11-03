@@ -1,14 +1,14 @@
 <!--
 文件：Orders.vue
 用途：平台订单监察列表和三方交易信息展示。
-维护注意：商品类型使用公共展示规则；前端角色或标签不是授权边界，权限由后台控制。历史GMV口径整改仍待完成。
+维护注意：统计取服务端统一状态口径，金额字符串不转Number；佣金是预计值，FINISHED不证明资金到账。角色标签不代替后端权限；列表保留订单快照而非财务流水。
 -->
 <template>
   <div class="orders-page">
     <div class="page-header">
       <div>
         <h2>全平台交易订单与代付监察大盘</h2>
-        <p>全平台订单穿透审计、代付三方角色对账、二级分账流水跟踪与资金安全监管</p>
+        <p>查看订单关联角色、金额快照与分账记录状态；真实资金结果待账本接入核对</p>
       </div>
       <el-button type="primary" plain @click="loadOrders">刷新订单流水</el-button>
     </div>
@@ -17,29 +17,32 @@
     <el-row :gutter="16" class="stats-row">
       <el-col :span="6">
         <el-card shadow="never" class="stat-card">
-          <div class="stat-label">平台全网总订单</div>
-          <div class="stat-val">{{ totalOrders }} <span class="stat-unit">笔</span></div>
+          <div class="stat-label">订单总数（含未付款）</div>
+          <div class="stat-val">{{ stats.totalOrders }} <span class="stat-unit">笔</span></div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card shadow="never" class="stat-card">
-          <div class="stat-label">全网成交 GMV 流水</div>
-          <div class="stat-val text-rose">￥{{ Number(totalTurnover).toFixed(2) }}</div>
+          <div class="stat-label">历史已支付订单金额（含退款状态）</div>
+          <div class="stat-val text-rose">￥{{ stats.paidTurnover }}</div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card shadow="never" class="stat-card">
-          <div class="stat-label">平台技术抽成收益</div>
-          <div class="stat-val text-green">+￥{{ Number(totalCommission).toFixed(2) }}</div>
+          <div class="stat-label">未退款订单预计佣金</div>
+          <div class="stat-val text-green">￥{{ stats.estimatedCommission }}</div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card shadow="never" class="stat-card">
-          <div class="stat-label">代付订单总数 (社交增长)</div>
+          <div class="stat-label">代付订单数（含未付款）</div>
           <div class="stat-val text-blue">{{ peerPayCount }} <span class="stat-unit">笔</span></div>
         </el-card>
       </el-col>
     </el-row>
+    <el-alert :title="STATISTICS_NOTICE" type="info" :closable="false" style="margin-bottom: 16px;" />
+    <p>待付款 {{ stats.pendingOrders }} 笔，意向金额 ￥{{ stats.pendingIntentAmount }}；退款状态 {{ stats.refundedOrders }} 笔。</p>
+    <el-alert v-if="stats.unknownOrders > 0 || stats.amountAnomalyOrders > 0" :title="`需核对：未知状态 ${stats.unknownOrders} 单，异常金额 ${stats.amountAnomalyOrders} 单；异常金额未计入汇总。`" type="warning" :closable="false" />
 
     <el-card shadow="never" class="table-card">
       <el-table :data="orders" stripe style="width: 100%" v-loading="loading">
@@ -80,7 +83,7 @@
           </template>
         </el-table-column>
 
-        <!-- 三方不可篡改对账关系：买家 vs 付款人 -->
+        <!-- 订单关联角色快照：不是不可篡改的渠道对账账本 -->
         <el-table-column label="三方穿透角色 (买家/付款人)" width="210">
           <template #default="{ row }">
             <div style="font-size: 12px;">
@@ -115,11 +118,11 @@
         <!-- 金额明细与分成监管 -->
         <el-table-column label="交易金额与分成" width="170">
           <template #default="{ row }">
-            <div>成交总额：<span style="font-weight: 700; color: #e11d48;">￥{{ row.payAmount }}</span></div>
+            <div>订单金额：<span style="font-weight: 700; color: #e11d48;">￥{{ row.payAmount }}</span></div>
             <div style="font-size: 11px; color: #16a34a; margin-top: 2px;">
-              平台抽成：+￥{{ row.commissionAmount }} ({{ row.commissionRate }}%)
+              预计抽成：￥{{ row.commissionAmount }} ({{ row.commissionRate }}%)
             </div>
-            <div style="font-size: 11px; color: #2563eb;">商户应结：￥{{ row.merchantSettleAmount }}</div>
+            <div style="font-size: 11px; color: #2563eb;">预计商家净额：￥{{ row.merchantSettleAmount }}</div>
           </template>
         </el-table-column>
 
@@ -131,10 +134,10 @@
         </el-table-column>
 
         <!-- 分账与合规流水 -->
-        <el-table-column label="二级分账结算" width="120">
+        <el-table-column label="分账记录状态" width="160">
           <template #default="{ row }">
             <el-tag :type="row.sharingStatus === 'FINISHED' ? 'success' : 'warning'">
-              {{ row.sharingStatus === 'FINISHED' ? '分账完毕' : '待分账' }}
+              {{ sharingRecordLabel(row.sharingStatus) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -147,12 +150,11 @@
 import { goodsTypeLabel } from '../../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
 import request from '../../api/request'
+import { statisticsView, STATISTICS_NOTICE, sharingRecordLabel } from '../../utils/orderStatistics.mjs'
 
 const loading = ref(false)
 const orders = ref([])
-const totalOrders = ref(0)
-const totalTurnover = ref(0)
-const totalCommission = ref(0)
+const stats = ref(statisticsView())
 const peerPayCount = ref(0)
 
 const getStatusTag = (status) => {
@@ -169,9 +171,7 @@ const loadOrders = async () => {
   try {
     const res = await request.get('/admin/orders')
     orders.value = res.data.orders || []
-    totalOrders.value = res.data.totalOrders || 0
-    totalTurnover.value = res.data.totalTurnover || 0
-    totalCommission.value = res.data.totalCommission || 0
+    stats.value = statisticsView(res.data.statistics)
 
     // 计算代付订单数
     peerPayCount.value = orders.value.filter(o => o.peerPayType > 0).length

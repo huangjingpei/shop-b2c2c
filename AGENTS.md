@@ -14,11 +14,12 @@
 ## 修改与验证
 
 - 每轮交付明确主台账D/F编号、实际子范围、代理自行细化的规则及验收状态，并更新docs/README.md导航。原清单外独立功能单列候选，不把技术实现细化冒充用户已确认的业务规则。
+- 修复前核对docs/问题依赖与修复边界.md，复用既有规则与接口；避免重复建设。实际Bug仍须修复并补根因/回归用例。验收由用户自行管理，不催验收、不默认通过，不阻塞后续独立修复。
 - 按2026-11-04协作约定：代码代理负责实现、测试用例、静态审阅、文件说明及交付文档；编译、测试执行和生产构建由用户手动运行。除非用户明确重新授权，代理不得主动运行这些命令。
 - 每个任务交付执行目录、准确验证命令、预期结果及未验证项；用户反馈通过前保留“待验证”说明，不宣称检查通过或将待验证问题标为“已修复”。Git提交须注明执行方与验证状态。此前已执行结果只作历史记录，不覆盖后续修改。
 - 每次行为修改都应补充或调整相应单元测试，必要时补数据库事务、并发和接口集成测试；修复既要覆盖拒绝非法操作，也要覆盖合法操作。
 - 注释、文档变更应检查格式和语法兼容；不得借补注释夹带业务行为变化。
-- 用户手动验证入口：后端`mvn -f shop-b2b2c-backend/pom.xml test`；前端规则`node --test shared/goodsType.test.mjs shared/idempotency.test.mjs shared/buyerReceipt.test.mjs shared/authSession.test.mjs shared/productEditing.test.mjs shared/inventoryAdjustment.test.mjs shared/cardAssets.test.mjs`。涉及Vue或前端模块时交付对应工程的生产构建命令。
+- 用户手动验证入口：后端`mvn -f shop-b2b2c-backend/pom.xml test`；前端规则`node --test shared/goodsType.test.mjs shared/idempotency.test.mjs shared/buyerReceipt.test.mjs shared/authSession.test.mjs shared/productEditing.test.mjs shared/inventoryAdjustment.test.mjs shared/cardAssets.test.mjs shared/orderStatistics.test.mjs`。涉及Vue或前端模块时交付对应工程的生产构建命令。
 - 同一工作区的Maven clean/compile/test必须串行执行，避免共享target被其他构建覆盖；不同前端工程的独立构建可并行。
 - 测试使用隔离环境，不连接业务数据库。H2通过不能替代真实MySQL或渠道联调，报告中应明确验证范围。
 - 问题台账位于`docs/B2B2C_项目缺陷与未实现功能清单_2026-11-03.md`。处理问题时同步状态；部分完成的项目保留“部分修复”，不要把整个业务域标为已完成。

@@ -1,7 +1,7 @@
 /*
  * 文件：OrderController.java
- * 用途：待付款建单、免登录查单、商家发货及平台订单查询入口。
- * 维护注意：HTTP建单强制Idempotency-Key，内部checkout仅在事务中使用；不得伪造到账或直接交付；实物发货必须验证店铺、类型和状态。查单店铺信息走PublicStoreView，领取内容须通过POST和独立queryToken验证，不能返回订单实体；统计口径仍待处理。
+ * 用途：待付款建单、免登录查单、商家发货、平台订单及统一状态统计入口。
+ * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。查单用独立凭证/白名单；统计用OrderStatistics，订单金额不是账本收入，退款和已结算指标当前不可用。旧总额键仅作修正口径兼容，查询分页/SQL聚合仍待D30处理。
  */
 package com.shop.b2b2c.controller;
 
@@ -181,6 +181,14 @@ public class OrderController {
         return R.ok(resList);
     }
 
+    @Operation(summary = "【商家】本店订单状态统计（非资金账本）")
+    @GetMapping("/api/v1/merchant/orders/statistics")
+    public R<com.shop.b2b2c.common.OrderStatistics> merchantStatistics(jakarta.servlet.http.HttpServletResponse response) {
+        response.setHeader("Cache-Control", "no-store");
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        return R.ok(com.shop.b2b2c.common.OrderStatistics.from(orderMapper.findByMerchantIdOrderByCreatedAtDesc(merchantId)));
+    }
+
     @Data
     public static class DeliverDTO {
         private String logisticsCompany;
@@ -246,23 +254,19 @@ public class OrderController {
     // 平台超级管理员视角 API (/api/v1/admin/orders)
     // ==========================================
 
-    @Operation(summary = "【超管】全平台交易大盘与分账监管流水")
+    @Operation(summary = "【超管】平台订单及状态统计（非资金账本）")
     @GetMapping("/api/v1/admin/orders")
     public R<Map<String, Object>> listAdminOrders() {
         List<TradeOrder> orders = orderMapper.findAllByOrderByCreatedAtDesc();
 
-        BigDecimal totalTurnover = BigDecimal.ZERO;
-        BigDecimal totalCommission = BigDecimal.ZERO;
-
-        for (TradeOrder o : orders) {
-            totalTurnover = totalTurnover.add(o.getPayAmount());
-            totalCommission = totalCommission.add(o.getCommissionAmount());
-        }
+        var statistics = com.shop.b2b2c.common.OrderStatistics.from(orders);
 
         Map<String, Object> res = new HashMap<>();
         res.put("totalOrders", orders.size());
-        res.put("totalTurnover", totalTurnover);
-        res.put("totalCommission", totalCommission);
+        // 保留旧字段类型供旧客户端使用；新页面使用statistics中的精确金额字符串。
+        res.put("totalTurnover", new BigDecimal(statistics.paidTurnover()));
+        res.put("totalCommission", new BigDecimal(statistics.estimatedCommission()));
+        res.put("statistics", statistics);
         res.put("orders", orders);
         return R.ok(res);
     }

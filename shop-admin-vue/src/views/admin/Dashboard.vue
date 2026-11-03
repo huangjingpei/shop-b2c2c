@@ -1,52 +1,55 @@
 <!--
 文件：Dashboard.vue
 用途：平台经营概览与订单类型展示。
-维护注意：商品标签来自可测试的类型工具；现有统计口径和渠道展示仍需与真实到账/结算区分，不应把演示状态解释为财务证明。
+维护注意：汇总取服务端statistics精确金额字符串，不回退意向总额；订单/分账状态不证明真实到账，未知退款及结算不得显示为零。列表金额是订单快照。
 -->
 <template>
   <div class="dashboard-page">
     <div class="page-title">
       <h2>平台全局监控大盘</h2>
-      <p>实时监控入驻商户经营状态、交易流水与官方二级分账提成</p>
+      <p>查看商户、订单状态、已支付订单金额与预计佣金</p>
     </div>
 
     <!-- 核心指标卡片 -->
     <el-row :gutter="20" class="stat-cards">
       <el-col :span="6">
         <el-card shadow="hover" class="card-item stat-blue">
-          <div class="stat-title">全平台累计交易额 (GMV)</div>
-          <div class="stat-value">￥{{ data.totalTurnover || '0.00' }}</div>
-          <div class="stat-tip">微信/支付宝专户存管，平台零碰钱</div>
+          <div class="stat-title">历史已支付订单金额</div>
+          <div class="stat-value">￥{{ stats.paidTurnover }}</div>
+          <div class="stat-tip">含退款状态订单，非退款净额</div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card shadow="hover" class="card-item stat-green">
-          <div class="stat-title">平台技术服务提成 (合规净收入)</div>
-          <div class="stat-value">￥{{ data.totalCommission || '0.00' }}</div>
-          <div class="stat-tip">按平均 3.00% 自动二级分账结算</div>
+          <div class="stat-title">未退款订单预计佣金</div>
+          <div class="stat-value">￥{{ stats.estimatedCommission }}</div>
+          <div class="stat-tip">订单快照估计，不是已结算收入</div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card shadow="hover" class="card-item stat-purple">
-          <div class="stat-title">总交易订单量</div>
-          <div class="stat-value">{{ data.totalOrders || 0 }} 笔</div>
-          <div class="stat-tip">单店独立结算履约闭环</div>
+          <div class="stat-title">历史已支付订单数</div>
+          <div class="stat-value">{{ stats.paidOrders }} 笔</div>
+          <div class="stat-tip">含退款状态，不含待付款/关闭订单</div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card shadow="hover" class="card-item stat-orange">
           <div class="stat-title">在册入驻商户数</div>
-          <div class="stat-value">{{ merchantCount }} 家</div>
+          <div class="stat-value">{{ merchantCount ?? '—' }} 家</div>
           <div class="stat-tip">个人自然人免工商营业执照开店</div>
         </el-card>
       </el-col>
     </el-row>
+    <el-alert :title="STATISTICS_NOTICE" type="info" :closable="false" style="margin-bottom: 16px;" />
+    <p>待付款 {{ stats.pendingOrders }} 笔，意向金额 ￥{{ stats.pendingIntentAmount }}；退款状态 {{ stats.refundedOrders }} 笔。</p>
+    <el-alert v-if="stats.unknownOrders > 0 || stats.amountAnomalyOrders > 0" :title="`需核对：未知状态 ${stats.unknownOrders} 单，异常金额 ${stats.amountAnomalyOrders} 单；异常金额未计入汇总。`" type="warning" :closable="false" />
 
     <!-- 最新交易与分账流水 -->
     <el-card shadow="never" class="table-card">
       <template #header>
         <div class="table-header">
-          <span class="header-text">全平台最新交易与分账流水</span>
+          <span class="header-text">全平台最新订单与分账记录</span>
           <el-button size="small" type="primary" plain @click="loadData">刷新数据</el-button>
         </div>
       </template>
@@ -61,17 +64,17 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="payAmount" label="实付总额" width="120">
+        <el-table-column prop="payAmount" label="订单金额快照" width="120">
           <template #default="{ row }">
             <span style="font-weight: 600; color: #0f172a;">￥{{ row.payAmount }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="commissionAmount" label="平台抽佣" width="120">
+        <el-table-column prop="commissionAmount" label="预计抽佣" width="120">
           <template #default="{ row }">
             <span style="color: #16a34a; font-weight: 600;">+￥{{ row.commissionAmount }}</span>
           </template>
         </el-table-column>
-        <el-table-column prop="merchantSettleAmount" label="商家应结净款" width="130">
+        <el-table-column prop="merchantSettleAmount" label="预计商家净额" width="130">
           <template #default="{ row }">
             <span style="color: #2563eb;">￥{{ row.merchantSettleAmount }}</span>
           </template>
@@ -81,10 +84,10 @@
             <el-tag :type="getStatusTag(row.orderStatus)">{{ row.orderStatus }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="sharingStatus" label="二级分账状态" width="140">
+        <el-table-column prop="sharingStatus" label="分账记录状态" width="160">
           <template #default="{ row }">
             <el-tag :type="row.sharingStatus === 'FINISHED' ? 'success' : 'warning'" effect="plain">
-              {{ row.sharingStatus === 'FINISHED' ? '已自动划拨' : '待结算' }}
+              {{ sharingRecordLabel(row.sharingStatus) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -96,17 +99,17 @@
 
 <script setup>
 import { goodsTypeLabel } from '../../utils/goodsType.mjs'
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import request from '../../api/request'
+import { statisticsView, STATISTICS_NOTICE, sharingRecordLabel } from '../../utils/orderStatistics.mjs'
 
 const loading = ref(false)
-const merchantCount = ref(1)
+const merchantCount = ref(null)
 const data = ref({
-  totalTurnover: '0.00',
-  totalCommission: '0.00',
-  totalOrders: 0,
+  statistics: null,
   orders: []
 })
+const stats = computed(() => statisticsView(data.value.statistics))
 
 const getStatusTag = (status) => {
   switch (status) {
@@ -125,8 +128,8 @@ const loadData = async () => {
 
     const mRes = await request.get('/admin/merchants')
     merchantCount.value = mRes.data.length
-  } catch (e) {
-    console.error(e)
+  } catch {
+    // 请求层提示错误，不记录包含认证配置的Axios异常。
   } finally {
     loading.value = false
   }
