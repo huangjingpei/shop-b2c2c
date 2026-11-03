@@ -1,7 +1,7 @@
 /*
  * 文件：AuthController.java
  * 用途：管理员和商家登录、退出、当前身份及存活探针接口。
- * 维护注意：密码用BCrypt验证，退出需撤销服务端会话；health仅为存活响应，不代表数据库和Redis就绪。登录节流等安全能力尚待完善。
+ * 维护注意：密码用BCrypt验证，退出撤销服务端会话；me校验账号状态和授权变化，不能仅返回缓存身份；health仅为存活响应，不代表数据库和Redis就绪。登录节流等安全能力尚待完善。
  */
 package com.shop.b2b2c.controller;
 
@@ -9,7 +9,6 @@ import cn.dev33.satoken.secure.BCrypt;
 import cn.dev33.satoken.stp.StpUtil;
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.R;
-import com.shop.b2b2c.common.SecurityUtils;
 import com.shop.b2b2c.entity.SysUser;
 import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import com.shop.b2b2c.mapper.SysUserMapper;
@@ -29,6 +28,7 @@ import java.util.Map;
 public class AuthController {
 
     private final SysUserMapper userMapper;
+    private final com.shop.b2b2c.service.AuthSessionService sessions;
     private final MerchantStoreMapper storeMapper;
 
     @Data
@@ -61,11 +61,14 @@ public class AuthController {
             throw new BusinessException("该账户已被禁用，请联系管理员");
         }
 
-        // Sa-Token 登录注水
+        if (user.getRoleCode() == null || !com.shop.b2b2c.service.AuthSessionService.ROLES.contains(user.getRoleCode())) {
+            throw new BusinessException(403, "账号角色不受支持");
+        }
+        // 每次登录独立令牌：角色和店铺快照不能被同账号后续登录覆盖。
         StpUtil.login(user.getId());
-        if (user.getUsername() != null) StpUtil.getSession().set("username", user.getUsername());
-        if (user.getRoleCode() != null) StpUtil.getSession().set("role", user.getRoleCode());
-        if (user.getMerchantId() != null) StpUtil.getSession().set("merchantId", user.getMerchantId());
+        if (user.getUsername() != null) StpUtil.getTokenSession().set("username", user.getUsername());
+        if (user.getRoleCode() != null) StpUtil.getTokenSession().set("role", user.getRoleCode());
+        if (user.getMerchantId() != null) StpUtil.getTokenSession().set("merchantId", user.getMerchantId());
 
         String token = StpUtil.getTokenValue();
 
@@ -101,13 +104,7 @@ public class AuthController {
     @Operation(summary = "获取当前登录人信息")
     @GetMapping("/me")
     public R<Map<String, Object>> getProfile() {
-        Map<String, Object> details = SecurityUtils.getCurrentDetails();
-        if (details == null) {
-            throw new BusinessException(401, "未登录");
-        }
-        Long userId = Long.valueOf(details.get("userId").toString());
-        SysUser user = userMapper.findById(userId)
-                .orElseThrow(() -> new BusinessException("用户不存在"));
+        SysUser user = sessions.requireCurrentUser();
 
         Map<String, Object> res = new HashMap<>();
         res.put("id", user.getId());

@@ -1,0 +1,94 @@
+/*
+ * 文件：authSession.mjs
+ * 用途：管理端会话清理、退出确认、服务端身份路由判断与API认证错误处理。
+ * 维护注意：本地角色仅供展示，不作为授权；网络失败不能假装服务端退出成功。仅移除本应用会话键，旧请求不得清除新登录；前端判断不替代后端角色及租户校验。
+ */
+const sessionKeys = ['token', 'userId', 'roleCode', 'merchantId', 'realName', 'storeName', 'currentPerspective']
+const roles = new Set(['SUPERADMIN', 'MERCHANT_ADMIN', 'MERCHANT_STAFF'])
+export function clearSession(storage) {
+  sessionKeys.forEach(key => storage.removeItem(key))
+}
+export function loginPath(base = '/') {
+  const prefix = '/' + String(base).split('/').filter(Boolean).join('/')
+  return prefix === '/' ? '/login' : prefix + '/login'
+}
+export function apiErrorCode(error) {
+  const body = Number(error?.businessCode ?? error?.response?.data?.code)
+  const status = Number(error?.response?.status)
+  return body === 401 || status === 401 ? 401 : (body || status || 0)
+}
+export function cacheProfile(storage, profile) {
+  storage.setItem('roleCode', profile.roleCode || '')
+  storage.setItem('userId', String(profile.id ?? profile.userId ?? ''))
+  storage.setItem('merchantId', String(profile.merchantId ?? ''))
+  storage.setItem('realName', profile.realName || profile.username || '')
+  storage.setItem('storeName', profile.store?.storeName || profile.storeName || '')
+}
+export function homeFor(profile) {
+  if (profile?.roleCode === 'SUPERADMIN') return '/admin/dashboard'
+  return roles.has(profile?.roleCode) && Number(profile.merchantId) > 0 ? '/merchant/dashboard' : '/forbidden'
+}
+export function canEnter(profile, route) {
+  if (!roles.has(profile?.roleCode)) return false
+  if (route.meta?.role && route.meta.role !== profile.roleCode) return false
+  if (route.meta?.requiresMerchant && !(Number(profile.merchantId) > 0)) return false
+  return Boolean(route.meta?.role || route.meta?.requiresMerchant)
+}
+export function createSessionGuard({ storage, loadProfile }) {
+  return async route => {
+    if (route.meta?.public) return true
+    const token = storage.getItem('token')
+    if (!token) return '/login'
+    try {
+      const profile = await loadProfile()
+      if (storage.getItem('token') !== token) return storage.getItem('token') ? '/' : '/login'
+      cacheProfile(storage, profile)
+      if (route.path === '/') return homeFor(profile)
+      return canEnter(profile, route) ? true : '/forbidden'
+    } catch (error) {
+      if (apiErrorCode(error) === 401) {
+        if (storage.getItem('token') === token) clearSession(storage)
+        return storage.getItem('token') ? '/' : '/login'
+      }
+      if (storage.getItem('token') !== token) return storage.getItem('token') ? '/' : '/login'
+      return '/session-error'
+    }
+  }
+}
+export async function logoutSession({ storage, postLogout }) {
+  const token = storage.getItem('token')
+  try {
+    const response = await postLogout()
+    if (response?.code !== 200) {
+      const error = new Error('退出未完成'); error.businessCode = response?.code; throw error
+    }
+  } catch (error) {
+    if (apiErrorCode(error) !== 401) throw error
+  }
+  if (storage.getItem('token') && storage.getItem('token') !== token) return false
+  clearSession(storage)
+  return true
+}
+export function createApiResponseHandlers({ storage, notify, redirect, base }) {
+  function reject(error, config = {}) {
+    const ownsSession = (config.sessionToken ?? null) === storage.getItem('token')
+    if (apiErrorCode(error) === 401 && ownsSession) {
+      clearSession(storage)
+      if (!config.skipAuthRedirect) redirect(loginPath(base))
+    }
+    if (!config.skipErrorToast && (apiErrorCode(error) !== 401 || ownsSession)) notify(error.response?.data?.message || error.message || '请求失败')
+    throw error
+  }
+  return {
+    fulfilled(response) {
+      if (response.data?.code === 200) return response.data
+      const error = new Error(response.data?.message || '请求失败')
+      error.businessCode = response.data?.code; error.response = response
+      return reject(error, response.config)
+    },
+    rejected(error) { return reject(error, error.config || error.response?.config) }
+  }
+}
+export function storageNavigation(event) {
+  return event.key === 'token' ? (event.newValue ? '/' : '/login') : null
+}

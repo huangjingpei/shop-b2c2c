@@ -1,7 +1,7 @@
 <!--
 文件：Login.vue
 用途：管理端登录表单和会话信息初始化。
-维护注意：本地存储的token/角色不可视为可信授权；不要在日志中输出密码或令牌，修改响应字段要同步身份接口。
+维护注意：本地存储的token/角色不可视为可信授权；登录后按服务端角色与店铺绑定选择首页，再由路由验证身份；不要在日志中输出密码或令牌，修改响应字段要同步身份接口。
 -->
 <template>
   <div class="login-container">
@@ -44,6 +44,7 @@ import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
+import { cacheProfile, homeFor } from '../../utils/authSession.mjs'
 
 const router = useRouter()
 const loading = ref(false)
@@ -66,26 +67,17 @@ const handleLogin = async () => {
   loading.value = true
   try {
     const res = await request.post('/auth/login', form.value)
-    const { token, roleCode, merchantId, realName, storeName } = res.data
+    const { token, roleCode, realName } = res.data
 
     localStorage.setItem('token', token)
-    localStorage.setItem('roleCode', roleCode)
-    localStorage.setItem('merchantId', merchantId || '')
-    localStorage.setItem('realName', realName)
-    localStorage.setItem('storeName', storeName || '')
+    cacheProfile(localStorage, res.data)
 
     ElMessage.success(`欢迎回来，${realName}！`)
 
-    // 根据角色初次跳转
-    if (roleCode === 'SUPERADMIN') {
-      localStorage.setItem('currentPerspective', 'ADMIN')
-      router.push('/admin/dashboard')
-    } else {
-      localStorage.setItem('currentPerspective', 'MERCHANT')
-      router.push('/merchant/dashboard')
-    }
+    localStorage.setItem('currentPerspective', roleCode === 'SUPERADMIN' ? 'ADMIN' : 'MERCHANT')
+    await router.replace(homeFor(res.data))
   } catch (e) {
-    console.error(e)
+    // 请求层已显示失败信息，不记录含密码或令牌的Axios配置。
   } finally {
     loading.value = false
   }

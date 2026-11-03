@@ -1,7 +1,7 @@
 /*
  * 文件：SaTokenConfigure.java
  * 用途：配置API角色拦截、公开路径与CORS。
- * 维护注意：公开路由不得加入可信支付落账；角色检查不替代对象归属校验。当前跨域策略较宽，生产治理仍待处理，不可把注释当成安全加固实现。
+ * 维护注意：公开路由不得加入可信支付落账；受保护请求先核验数据库中的账号和授权状态；角色检查不替代对象归属校验。当前跨域策略较宽，生产治理仍待处理，不可把注释当成安全加固实现。
  */
 package com.shop.b2b2c.config;
 
@@ -17,15 +17,17 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
  * Sa-Token 权限与多端路由拦截器及跨域配置 (Golden Architecture)
  */
 @Configuration
+@lombok.RequiredArgsConstructor
 public class SaTokenConfigure implements WebMvcConfigurer {
+    private final com.shop.b2b2c.service.AuthSessionService sessions;
 
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(new SaInterceptor(handle -> {
             // 超级管理员路由拦截
-            SaRouter.match("/api/v1/admin/**", r -> StpUtil.checkRole("SUPERADMIN"));
+            SaRouter.match("/api/v1/admin/**", r -> { sessions.requireCurrentUser(); StpUtil.checkRole("SUPERADMIN"); });
             // 商家工作台路由拦截 (超管与商家员工均可访问)
-            SaRouter.match("/api/v1/merchant/**", r -> StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN", "MERCHANT_STAFF"));
+            SaRouter.match("/api/v1/merchant/**", r -> { sessions.requireCurrentUser(); StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN", "MERCHANT_STAFF"); });
         })).addPathPatterns("/api/v1/**")
            .excludePathPatterns(
                "/api/v1/auth/login",

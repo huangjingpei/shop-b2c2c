@@ -1,6 +1,6 @@
 # 文件：application.yml
 # 用途：Spring Boot数据源、会话、SQL初始化及前台地址等运行配置。
-# 维护注意：生产应注入受控环境变量，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一入口；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；SQL错误容忍不是版本迁移机制；不得开启记录卡密/领取凭证的SQL参数日志。
+# 维护注意：升级至令牌级授权快照后旧登录需重新登录；生产应注入受控环境变量，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一入口；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；SQL错误容忍不是版本迁移机制；不得开启记录卡密/领取凭证的SQL参数日志。
 server:
   port: ${SERVER_PORT:8080}
   servlet:
@@ -58,7 +58,7 @@ sa-token:
   timeout: 2592000 # 30天 (秒)
   active-timeout: -1 # 临时有效期，-1代表不限制
   is-concurrent: true # 是否允许同一账号多端并存
-  is-share: true # 登录后共用同一 Token
+  is-share: false # 每次登录独立Token，退出仅撤销当前端；授权快照保存在TokenSession
   token-style: uuid # 采用 uuid 风格
   is-read-header: true # 从 Header 读取
   is-read-cookie: false # 不从 Cookie 强绑定

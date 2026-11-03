@@ -1,6 +1,6 @@
 /*
  * 文件：SecurityUtils.java
- * 用途：从Sa-Token会话读取身份、角色和店铺上下文。
+ * 用途：从Sa-Token当前令牌会话读取登录时的身份、角色和店铺上下文。
  * 维护注意：商家资产操作须用requireCurrentMerchantId并验证对象归属；未绑定店铺应拒绝，禁止回退店铺1或全平台。会话角色不能替代对象级租户校验。
  */
 package com.shop.b2b2c.common;
@@ -20,9 +20,9 @@ public class SecurityUtils {
         }
         Map<String, Object> map = new HashMap<>();
         map.put("userId", StpUtil.getLoginIdAsLong());
-        map.put("username", StpUtil.getSession().get("username"));
-        map.put("roleCode", StpUtil.getSession().get("role"));
-        map.put("merchantId", StpUtil.getSession().get("merchantId"));
+        map.put("username", StpUtil.getTokenSession().get("username"));
+        map.put("roleCode", StpUtil.getTokenSession().get("role"));
+        map.put("merchantId", StpUtil.getTokenSession().get("merchantId"));
         return map;
     }
 
@@ -37,7 +37,7 @@ public class SecurityUtils {
         if (!StpUtil.isLogin()) {
             return null;
         }
-        Object merchantId = StpUtil.getSession().get("merchantId");
+        Object merchantId = StpUtil.getTokenSession().get("merchantId");
         if (merchantId != null) {
             return Long.valueOf(merchantId.toString());
         }
@@ -56,7 +56,7 @@ public class SecurityUtils {
         if (!StpUtil.isLogin()) {
             return null;
         }
-        Object role = StpUtil.getSession().get("role");
+        Object role = StpUtil.getTokenSession().get("role");
         return role != null ? role.toString() : null;
     }
 

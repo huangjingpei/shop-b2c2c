@@ -1,7 +1,7 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
  * 用途：跨Sprint累计的建单幂等、Spring事务、Mapper SQL、公开响应及租户安全集成回归。
- * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
+ * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
 
@@ -49,7 +49,19 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "payment.mock=true", "inventory.expiry-delay-ms=3600000"
 })
 @AutoConfigureMockMvc
+@org.springframework.context.annotation.Import(Sprint1SecurityIntegrationTest.SessionTestConfig.class)
 class Sprint1SecurityIntegrationTest {
+    @org.springframework.boot.test.context.TestConfiguration
+    static class SessionTestConfig {
+        @org.springframework.context.annotation.Bean(destroyMethod = "destroy")
+        @org.springframework.context.annotation.Primary
+        cn.dev33.satoken.dao.SaTokenDao isolatedTokenDao() {
+            return new cn.dev33.satoken.dao.SaTokenDaoDefaultImpl();
+        }
+    }
+    private static final String AUTH_PASSWORD = "isolated-auth-test-password";
+    private static final String AUTH_HASH = cn.dev33.satoken.secure.BCrypt.hashpw(AUTH_PASSWORD);
+    @Autowired com.fasterxml.jackson.databind.ObjectMapper json;
     @Autowired JdbcTemplate jdbc;
     @Autowired MockMvc mvc;
     @Autowired PeerPayService payments;
@@ -67,7 +79,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
+        for (String table : List.of("sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -78,6 +90,106 @@ class Sprint1SecurityIntegrationTest {
                     id, id, id, "SKU" + id);
         }
         jdbc.update("INSERT INTO product_virtual_card(id,merchant_id,product_id,sku_id,card_content,status) VALUES(1,1,1,1,'secret',0)");
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void clearAuthSessions() {
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+    }
+
+    private void authUser(String role, Long merchantId) {
+        jdbc.update("INSERT INTO sys_user(id,username,password,role_code,merchant_id,is_active) VALUES(200,'auth-fixture',?,?,?,1)", AUTH_HASH, role, merchantId);
+    }
+
+    private String loginToken() throws Exception {
+        String response = mvc.perform(post("/api/v1/auth/login").contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("username", "auth-fixture", "password", AUTH_PASSWORD))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andReturn().getResponse().getContentAsString();
+        return json.readTree(response).path("data").path("token").asText();
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"unknownRole", "disabled", "wrongPassword", "missingUser"})
+    void invalidLoginNeverIssuesToken(String scenario) throws Exception {
+        authUser(scenario.equals("unknownRole") ? "UNKNOWN" : "MERCHANT_ADMIN", 1L);
+        if (scenario.equals("disabled")) jdbc.update("UPDATE sys_user SET is_active=0 WHERE id=200");
+        if (scenario.equals("missingUser")) jdbc.update("DELETE FROM sys_user WHERE id=200");
+        mvc.perform(post("/api/v1/auth/login").contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("username", "auth-fixture", "password",
+                        scenario.equals("wrongPassword") ? "wrong-fixture-password" : AUTH_PASSWORD))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(scenario.equals("unknownRole") ? 403 : 500))
+                .andExpect(jsonPath("$.data.token").doesNotExist());
+    }
+
+    @Test
+    void loginMeRoleBoundaryAndServerLogout() throws Exception {
+        mvc.perform(get("/api/v1/auth/me")).andExpect(status().isUnauthorized());
+        authUser("MERCHANT_ADMIN", 1L);
+        String token = loginToken();
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.roleCode").value("MERCHANT_ADMIN"))
+                .andExpect(jsonPath("$.data.password").doesNotExist());
+        mvc.perform(get("/api/v1/merchant/products").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200));
+        mvc.perform(get("/api/v1/admin/orders").header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(200));
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/merchant/products").header("Authorization", "Bearer " + token))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(200));
+        assertNotEquals(token, loginToken());
+    }
+
+    @Test
+    void logoutOnlyRevokesCurrentIndependentLogin() throws Exception {
+        authUser("SUPERADMIN", null);
+        String first = loginToken(), second = loginToken();
+        assertNotEquals(first, second);
+        mvc.perform(get("/api/v1/admin/orders").header("Authorization", "Bearer " + first))
+                .andExpect(jsonPath("$.code").value(200));
+        mvc.perform(post("/api/v1/auth/logout").header("Authorization", "Bearer " + first))
+                .andExpect(jsonPath("$.code").value(200));
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + first))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + second))
+                .andExpect(jsonPath("$.code").value(200));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"disabled", "deleted", "roleChanged", "merchantChanged", "unbound"})
+    void changedAccountRevokesOldTokenOnProtectedRequest(String scenario) throws Exception {
+        authUser("MERCHANT_ADMIN", 1L);
+        String token = loginToken();
+        switch (scenario) {
+            case "disabled" -> jdbc.update("UPDATE sys_user SET is_active=0 WHERE id=200");
+            case "deleted" -> jdbc.update("DELETE FROM sys_user WHERE id=200");
+            case "roleChanged" -> jdbc.update("UPDATE sys_user SET role_code='MERCHANT_STAFF' WHERE id=200");
+            case "merchantChanged" -> jdbc.update("UPDATE sys_user SET merchant_id=2 WHERE id=200");
+            case "unbound" -> jdbc.update("UPDATE sys_user SET merchant_id=NULL WHERE id=200");
+        }
+        mvc.perform(get("/api/v1/merchant/products").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(401));
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + token))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void freshLoginCannotReauthorizeOldTokenAfterTenantChange() throws Exception {
+        authUser("MERCHANT_ADMIN", 1L);
+        String old = loginToken();
+        jdbc.update("UPDATE sys_user SET merchant_id=2 WHERE id=200");
+        String fresh = loginToken();
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + fresh))
+                .andExpect(jsonPath("$.data.merchantId").value(2));
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + old))
+                .andExpect(jsonPath("$.code").value(401));
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + fresh))
+                .andExpect(jsonPath("$.code").value(200));
     }
 
     private TradeOrder unpaid(String token, int quantity) {

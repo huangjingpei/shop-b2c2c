@@ -1,7 +1,7 @@
 <!--
 文件：AdminLayout.vue
 用途：管理端布局、角色视角切换与菜单框架。
-维护注意：本地角色与视角只控制展示，不授予店铺操作权；未绑定店铺的超管不能默认写店铺1。当前退出行为仍有待与服务端注销联动的问题。
+维护注意：本地角色与视角只控制展示，不授予店铺操作权；未绑定店铺的超管不能默认写店铺1。退出须等服务端确认，网络失败不假装退出；页面身份由路由服务端校验后同步。
 -->
 <template>
   <el-container class="layout-container">
@@ -22,7 +22,7 @@
           <el-radio-button label="ADMIN">
             <el-icon><Platform /></el-icon> 平台超管全局视角
           </el-radio-button>
-          <el-radio-button label="MERCHANT">
+          <el-radio-button label="MERCHANT" :disabled="!merchantId" title="商家视角需要绑定店铺">
             <el-icon><Shop /></el-icon> 商家工作台视角
           </el-radio-button>
         </el-radio-group>
@@ -41,7 +41,7 @@
           </span>
           <template #dropdown>
             <el-dropdown-menu>
-              <el-dropdown-item command="logout">退出登录</el-dropdown-item>
+              <el-dropdown-item command="logout" :disabled="loggingOut">退出登录</el-dropdown-item>
             </el-dropdown-menu>
           </template>
         </el-dropdown>
@@ -116,17 +116,21 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
+import request from '../../api/request'
+import { logoutSession } from '../../utils/authSession.mjs'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
 
 const router = useRouter()
 const route = useRoute()
 
-const roleCode = ref(localStorage.getItem('roleCode') || 'SUPERADMIN')
+const roleCode = ref(localStorage.getItem('roleCode') || '')
 const realName = ref(localStorage.getItem('realName') || '管理员')
 const storeName = ref(localStorage.getItem('storeName') || '平台总店')
-const perspective = ref(localStorage.getItem('currentPerspective') || (roleCode.value === 'SUPERADMIN' ? 'ADMIN' : 'MERCHANT'))
+const merchantId = ref(localStorage.getItem('merchantId') || '')
+const loggingOut = ref(false)
+const perspective = ref(roleCode.value === 'SUPERADMIN' ? (localStorage.getItem('currentPerspective') || 'ADMIN') : 'MERCHANT')
 
 const handlePerspectiveChange = (val) => {
   localStorage.setItem('currentPerspective', val)
@@ -139,23 +143,32 @@ const handlePerspectiveChange = (val) => {
   }
 }
 
-const handleCommand = (cmd) => {
-  if (cmd === 'logout') {
-    ElMessageBox.confirm('确定要退出当前管理控制台吗？', '提示', {
-      type: 'warning'
-    }).then(() => {
-      localStorage.clear()
-      router.push('/login')
-      ElMessage.success('已安全退出')
+const handleCommand = async (cmd) => {
+  if (cmd !== 'logout' || loggingOut.value) return
+  try { await ElMessageBox.confirm('确定要退出当前管理控制台吗？', '提示', { type: 'warning' }) }
+  catch { return }
+  loggingOut.value = true
+  try {
+    const cleared = await logoutSession({
+      storage: localStorage,
+      postLogout: () => request.post('/auth/logout', undefined, { skipErrorToast: true, skipAuthRedirect: true })
     })
-  }
+    if (cleared) { await router.replace('/login'); ElMessage.success('已退出登录') }
+  } catch {
+    ElMessage.error('退出未完成，请检查网络后重试')
+  } finally { loggingOut.value = false }
 }
 
-onMounted(() => {
-  if (roleCode.value !== 'SUPERADMIN') {
-    perspective.value = 'MERCHANT'
-  }
-})
+const syncDisplayProfile = () => {
+  roleCode.value = localStorage.getItem('roleCode') || ''
+  realName.value = localStorage.getItem('realName') || '用户'
+  storeName.value = localStorage.getItem('storeName') || '平台总部'
+  merchantId.value = localStorage.getItem('merchantId') || ''
+  if (roleCode.value !== 'SUPERADMIN') perspective.value = 'MERCHANT'
+  else perspective.value = route.path.startsWith('/admin/') ? 'ADMIN' : 'MERCHANT'
+}
+onMounted(syncDisplayProfile)
+watch(() => route.fullPath, syncDisplayProfile)
 </script>
 
 <style scoped>

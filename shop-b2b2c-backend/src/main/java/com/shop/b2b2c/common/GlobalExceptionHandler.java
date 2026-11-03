@@ -1,7 +1,7 @@
 /*
  * 文件：GlobalExceptionHandler.java
  * 用途：统一异常响应，无效请求头/JSON返回400、未知资源返回404，通用错误不回显内部文本。
- * 维护注意：业务错误码与HTTP状态目前并非完全一致；内部异常堆栈仍须日志治理；新增处理须检查客户端兼容和敏感信息，不能把不存在接口包装成成功。
+ * 维护注意：业务错误码与HTTP状态目前并非完全一致；认证异常文本可能含完整令牌，禁止记录原文；内部异常堆栈仍须日志治理；新增处理须检查客户端兼容和敏感信息，不能把不存在接口包装成成功。
  */
 package com.shop.b2b2c.common;
 
@@ -50,7 +50,7 @@ public class GlobalExceptionHandler {
     @ExceptionHandler(NotLoginException.class)
     @ResponseStatus(HttpStatus.UNAUTHORIZED)
     public R<Void> handleNotLoginException(NotLoginException e) {
-        log.warn("未登录或会话失效: {}", e.getMessage());
+        log.warn("未登录或会话失效");
         return R.fail(401, "登录状态已失效，请重新登录");
     }
 
