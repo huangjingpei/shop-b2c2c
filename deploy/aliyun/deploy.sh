@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 文件：deploy.sh
-# 用途：组织源码打包、远程上传及分阶段部署。
+# 用途：组织源码打包、远程上传及分阶段部署；源码布局由package-source.sh统一为当前三个工程。
 # 维护注意：执行会连接远端并可能覆盖源码/重启服务；核对主机、环境和打包清单，不要把bash语法检查变成真实发布。 阿里云目录仍含GMall/PDK等历史工程路径，使用前必须对照当前项目核对，详见D34/D35。
 # ============================================================================
 # GMall 阿里云一键部署脚本
@@ -96,15 +96,7 @@ ssh "${SSH_OPTS[@]}" "${REMOTE_HOST}" \
 upload_source() {
   local tar_file="/tmp/gmall-src-$(date +%Y%m%d-%H%M%S).tar.gz"
   log "打包工程源码（排除 node_modules / target / dist / 日志）..."
-  tar -czf "${tar_file}" \
-    --exclude='node_modules' \
-    --exclude='target' \
-    --exclude='.git' \
-    --exclude='.workbuddy' \
-    --exclude='.idea' \
-    --exclude='dist' \
-    --exclude='*.log' \
-    -C "${LOCAL_ROOT}" backend apps
+  bash "${SCRIPT_DIR}/package-source.sh" "${LOCAL_ROOT}" "${tar_file}"
   local size; size=$(du -h "${tar_file}" | cut -f1)
   log "源码包大小: ${size}"
 
