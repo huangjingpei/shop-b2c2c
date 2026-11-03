@@ -1,6 +1,6 @@
 # 文件：application.yml
 # 用途：Spring Boot数据源、会话、SQL初始化及前台地址等运行配置。
-# 维护注意：生产应注入受控环境变量，审查默认凭据及演示种子；关闭SQL初始化时须手动迁移。payment.mock不能恢复已删除的Mock路由；SQL错误容忍不是版本迁移机制。
+# 维护注意：生产应注入受控环境变量，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一入口；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；SQL错误容忍不是版本迁移机制。
 server:
   port: ${SERVER_PORT:8080}
   servlet:
@@ -27,13 +27,13 @@ spring:
       max-lifetime: 1800000
       connection-timeout: 30000
 
-  # 开发期数据库一键启动自动自愈与初始化配置 (单一权威源: classpath:db/schema.sql)
+  # 开发期完整基线初始化（不会升级已有表结构） (单一权威源: classpath:db/schema.sql)
   sql:
     init:
       mode: always # 每次应用启动自动执行 schema.sql 初始化建表与种子数据
       schema-locations: classpath:db/schema.sql
       encoding: UTF-8
-      continue-on-error: true # 容错模式：遇表或记录已存在不抛异常阻断启动
+      continue-on-error: false # SQL执行失败立即阻断启动，防止缺表/缺索引却报告就绪
 
   data:
     redis:

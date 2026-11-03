@@ -1,14 +1,13 @@
 -- 文件：schema.sql
--- 用途：新安装环境的表结构和演示种子数据基线，包含库存预占与建单幂等表。
--- 维护注意：CREATE TABLE IF NOT EXISTS不会升级已有列，存量变更须增量迁移；生产不得依赖演示账号。脚本包含建库/USE和种子语句，执行前确认目标库；不要将容错初始化视为完整自愈。
+-- 用途：开发期唯一运行时SQL入口，完整创建14张业务表、必要索引和演示数据。
+-- 维护注意：只操作当前连接库，不包含删库/删表语句。CREATE TABLE IF NOT EXISTS不升级旧结构；开发重建会丢失旧数据，保留数据的环境须另做版本迁移；生产不得依赖演示账号。
 -- ========================================================
 -- Shop B2B2C 全局全量初始化数据库脚本 (Single Source of Truth)
 -- 适用: 开发期启动自愈 / 删库一键重建 (Drop & Re-create)
--- 位置: src/main/resources/schema.sql
+-- 位置: src/main/resources/db/schema.sql
 -- ========================================================
 
-CREATE DATABASE IF NOT EXISTS `shop_b2b2c` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-USE `shop_b2b2c`;
+-- 连接库由数据源URL或mysql命令指定；本脚本不创建或切换数据库。
 
 SET FOREIGN_KEY_CHECKS = 0;
 
@@ -84,7 +83,7 @@ CREATE TABLE IF NOT EXISTS `product` (
   `category_id` BIGINT UNSIGNED NOT NULL COMMENT '所属分类ID',
   `title` VARCHAR(255) NOT NULL COMMENT '商品标题',
   `sub_title` VARCHAR(255) DEFAULT NULL COMMENT '副标题/卖点',
-  `goods_type` TINYINT NOT NULL DEFAULT 1 COMMENT '类型: 1-实物物流发货, 2-线上服务/虚拟免物流',
+  `goods_type` TINYINT NOT NULL DEFAULT 1 COMMENT '类型: 1-实物物流发货, 2-自动卡密, 3-定制服务',
   `main_image` VARCHAR(255) NOT NULL COMMENT '主图封面URL',
   `detail_images` JSON DEFAULT NULL COMMENT '轮播与富文本内容',
   `service_desc` TEXT NULL COMMENT '线上服务交付说明及不可逆防退款强警示',
@@ -133,7 +132,7 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `order_sn` VARCHAR(64) NOT NULL COMMENT '全局订单号',
   `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '所属店铺ID',
   `buyer_contact` VARCHAR(64) NOT NULL COMMENT '买家手机号或邮箱',
-  `goods_type` TINYINT NOT NULL DEFAULT 1 COMMENT '商品类型: 1-实物, 2-线上服务/虚拟',
+  `goods_type` TINYINT NOT NULL DEFAULT 1 COMMENT '商品类型: 1-实物, 2-自动卡密, 3-定制服务',
   `total_amount` DECIMAL(10,2) NOT NULL COMMENT '订单总金额',
   `pay_amount` DECIMAL(10,2) NOT NULL COMMENT '实付金额',
   `commission_rate` DECIMAL(5,2) NOT NULL DEFAULT 3.00 COMMENT '抽佣比率(%)',
@@ -241,6 +240,27 @@ CREATE TABLE IF NOT EXISTS `complaint` (
   KEY `idx_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='买家维权投诉与平台官方仲裁表';
 
+-- 13. 库存预占流水；索引随建表创建，避免启动时重复CREATE INDEX
+CREATE TABLE IF NOT EXISTS inventory_reservation (
+  order_id BIGINT NOT NULL PRIMARY KEY,
+  sku_id BIGINT NOT NULL,
+  product_id BIGINT NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  quantity INT NOT NULL,
+  owner_token VARCHAR(64) NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  expires_at DATETIME NOT NULL,
+  KEY idx_reservation_expiry (status, expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 14. 建单幂等摘要及原响应快照
+CREATE TABLE IF NOT EXISTS order_idempotency (
+  request_key VARCHAR(64) NOT NULL PRIMARY KEY,
+  request_hash VARCHAR(64) NOT NULL,
+  response_json LONGTEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
 SET FOREIGN_KEY_CHECKS = 1;
 
 -- ========================================================
@@ -335,7 +355,7 @@ INSERT IGNORE INTO `product_sku` (`id`, `product_id`, `merchant_id`, `sku_code`,
 
 -- 初始演示商品 6 (线上定制服务: 专家一对一咨询服务与技术定制)
 INSERT IGNORE INTO `product` (`id`, `merchant_id`, `category_id`, `title`, `sub_title`, `goods_type`, `main_image`, `service_desc`, `min_price`, `status`, `sort_order`)
-VALUES (6, 1, 2, '【专家一对一】全域私域代付商城系统架构设计与搭建辅导', '资深架构师在线指导，包含源码部署、收付通道调通与上线验收报告', 2, 'https://images.unsplash.com/photo-1551836022-d5d88e9218df?w=500', '线上定制服务一经卖家录入交付报告与源码凭据，非平台超管仲裁不可极速退款。', 499.00, 1, 6);
+VALUES (6, 1, 2, '【专家一对一】全域私域代付商城系统架构设计与搭建辅导', '资深架构师在线指导，包含源码部署、收付通道调通与上线验收报告', 3, 'https://images.unsplash.com/photo-1551836022-d5d88e9218df?w=500', '线上定制服务一经卖家录入交付报告与源码凭据，非平台超管仲裁不可极速退款。', 499.00, 1, 6);
 
 INSERT IGNORE INTO `product_sku` (`id`, `product_id`, `merchant_id`, `sku_code`, `spec_data`, `price`, `stock_quantity`) VALUES
 (11, 6, 1, 'CONSULT-BASIC', '{"规格": "基础咨询版 (远程部署+操作手册)", "交付": "技术文档+远程调试"}', 499.00, 50),
@@ -353,26 +373,4 @@ VALUES (
   '/merchant/register',
   1,
   10
-);
-
-CREATE TABLE IF NOT EXISTS inventory_reservation (
-  order_id BIGINT NOT NULL PRIMARY KEY,
-  sku_id BIGINT NOT NULL,
-  product_id BIGINT NOT NULL,
-  merchant_id BIGINT NOT NULL,
-  quantity INT NOT NULL,
-  owner_token VARCHAR(64) NOT NULL,
-  status VARCHAR(16) NOT NULL,
-  expires_at DATETIME NOT NULL,
-  KEY idx_reservation_expiry (status, expires_at)
-);
-
--- 文件：003_order_idempotency.sql
--- 用途：为建单幂等提供唯一摘要占位及响应快照表。
--- 维护注意：在目标连接库执行；响应含交易凭证，限制数据库访问。不要单独清理记录后重用旧键；不创建/切换数据库。
-CREATE TABLE IF NOT EXISTS order_idempotency (
-  request_key VARCHAR(64) NOT NULL PRIMARY KEY,
-  request_hash VARCHAR(64) NOT NULL,
-  response_json LONGTEXT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
