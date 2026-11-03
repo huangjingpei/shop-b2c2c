@@ -1,7 +1,7 @@
 /*
  * 文件：PeerPayController.java
  * 用途：买家代付账单、预占、授权取消、海报与成功页广告接口。
- * 维护注意：不提供Mock支付或未经验证的公开到账入口；取消必须提交X-Reservation-Token。分享token仅定位账单，不能替代预占所有者凭证。
+ * 维护注意：建单强制Idempotency-Key；不提供Mock支付或未经验证的公开到账入口；取消必须提交X-Reservation-Token。分享token仅定位账单，不能替代预占所有者凭证。
  */
 package com.shop.b2b2c.controller;
 
@@ -26,11 +26,13 @@ import java.util.Map;
 public class PeerPayController {
 
     private final PeerPayService peerPayService;
+    private final com.shop.b2b2c.service.OrderIdempotencyService idempotency;
 
     @Operation(summary = "【买家端】发起求助代付 (生成代付短链与微信裂变海报)")
     @PostMapping("/buyer/create")
-    public R<Map<String, Object>> createBuyerPeerPay(@RequestBody PeerPayDTOs.BuyerCreateRequest req) {
-        Map<String, Object> res = peerPayService.createBuyerPeerPay(req);
+    public R<Map<String, Object>> createBuyerPeerPay(@RequestBody PeerPayDTOs.BuyerCreateRequest req,
+            @RequestHeader("Idempotency-Key") String key) {
+        Map<String, Object> res = idempotency.execute("buyer:guest", key, req, () -> peerPayService.createBuyerPeerPay(req));
         return R.ok("求助代付发起成功", res);
     }
 

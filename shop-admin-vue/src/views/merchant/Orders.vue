@@ -1,7 +1,7 @@
 <!--
 文件：Orders.vue
 用途：商家订单查询、推单、实物发货和定制服务履约页面。
-维护注意：人工履约仅对类型3且PAID展示，类型2缺卡不能用人工交付替代；按钮可见性不替代服务端租户/状态验证。修改规则同步工具单元测试。
+维护注意：推单重试须保留幂等键，成功才重置；人工履约仅对类型3且PAID展示，类型2缺卡不能用人工交付替代；按钮可见性不替代服务端租户/状态验证。修改规则同步工具单元测试。
 -->
 <template>
   <div class="merchant-orders">
@@ -332,6 +332,8 @@
 </template>
 
 <script setup>
+import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
+const pushSubmission = createIdempotentSubmission()
 import { canFulfillService } from '../../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -495,7 +497,9 @@ const handleCreatePushPay = async () => {
   }
   pushing.value = true
   try {
-    const res = await request.post('/merchant/orders/push-pay', pushForm.value)
+    const prepared = pushSubmission.prepare(pushForm.value)
+    const res = await request.post('/merchant/orders/push-pay', prepared.body, { headers: prepared.headers })
+    pushSubmission.complete()
     pushPayResult.value = res.data
     ElMessage.success('代客推单账单生成成功！')
     loadOrders()

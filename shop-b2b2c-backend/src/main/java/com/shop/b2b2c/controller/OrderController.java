@@ -1,7 +1,7 @@
 /*
  * 文件：OrderController.java
  * 用途：待付款建单、免登录查单、商家发货及平台订单查询入口。
- * 维护注意：checkout不得伪造到账或直接交付；实物发货必须验证店铺、类型和状态。查单店铺信息走PublicStoreView，查单身份校验和统计口径仍有待处理问题。
+ * 维护注意：HTTP建单强制Idempotency-Key，内部checkout仅在事务中使用；不得伪造到账或直接交付；实物发货必须验证店铺、类型和状态。查单店铺信息走PublicStoreView，查单身份校验和统计口径仍有待处理问题。
  */
 package com.shop.b2b2c.controller;
 
@@ -42,6 +42,7 @@ public class OrderController {
     private final ProductVirtualCardMapper cardMapper;
     private final StringRedisTemplate redisTemplate;
     private final PeerPayService peerPayService;
+    private final com.shop.b2b2c.service.OrderIdempotencyService idempotency;
 
     @Data
     public static class CheckoutDTO {
@@ -55,8 +56,14 @@ public class OrderController {
 
     @Operation(summary = "【公开】创建单店待付款订单（不扣库存、不履约）")
     @PostMapping("/api/v1/public/orders/checkout")
+    public R<Map<String, Object>> checkoutRequest(@RequestBody CheckoutDTO dto,
+            @RequestHeader("Idempotency-Key") String key) {
+        return R.ok("订单已创建，等待付款；支付通道暂未开放",
+                idempotency.execute("checkout:guest", key, dto, () -> checkout(dto).getData()));
+    }
+
     @Transactional(rollbackFor = Exception.class)
-    public R<Map<String, Object>> checkout(@RequestBody CheckoutDTO dto) {
+    public R<Map<String, Object>> checkout(CheckoutDTO dto) {
         TradeGuards.requireQuantity(dto.getQuantity());
         if (dto.getQuantity() == null || dto.getQuantity() <= 0) {
             throw new BusinessException("购买数量必须大于0");
@@ -229,12 +236,14 @@ public class OrderController {
 
     @Operation(summary = "【商家】★ 代客推单：一键生成定制代付账单短链与海报")
     @PostMapping("/api/v1/merchant/orders/push-pay")
-    public R<Map<String, Object>> createPushPayOrder(@RequestBody PeerPayDTOs.PushPayCreateRequest req) {
+    public R<Map<String, Object>> createPushPayOrder(@RequestBody PeerPayDTOs.PushPayCreateRequest req,
+            @RequestHeader("Idempotency-Key") String key) {
         Long merchantId = SecurityUtils.getCurrentMerchantId();
         if (merchantId == null) {
             throw new BusinessException("仅限商家账号操作推单");
         }
-        Map<String, Object> res = peerPayService.createPushPayOrder(req, merchantId);
+        Map<String, Object> res = idempotency.execute("push:" + merchantId + ":" + SecurityUtils.getCurrentUserId(), key, req,
+                () -> peerPayService.createPushPayOrder(req, merchantId));
         return R.ok("代客推单生成成功", res);
     }
 

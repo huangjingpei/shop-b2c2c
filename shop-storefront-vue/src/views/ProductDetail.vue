@@ -1,7 +1,7 @@
 <!--
 文件：ProductDetail.vue
 用途：商品/SKU选择、待付款建单及买家代付分享。
-维护注意：checkout只建UNPAID单，真实支付未开放；不得根据HTTP成功显示已到账或发卡。类型3为人工服务，参数和金额最终由服务端校验。
+维护注意：建单重试保留幂等键，业务成功才重置；checkout只建UNPAID单，真实支付未开放；不得根据HTTP成功显示已到账或发卡。类型3为人工服务，参数和金额最终由服务端校验。
 -->
 <template>
   <div v-if="loading" class="text-center py-16 text-slate-400 text-sm">
@@ -400,6 +400,9 @@
 </template>
 
 <script setup>
+import { createIdempotentSubmission } from '../utils/idempotency.mjs'
+const checkoutSubmission = createIdempotentSubmission()
+const peerSubmission = createIdempotentSubmission()
 import { ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
@@ -463,18 +466,21 @@ const handleCheckout = async () => {
   }
   submitting.value = true
   try {
-    const res = await axios.post('/api/v1/public/orders/checkout', {
+    const payload = {
       merchantId: product.value.merchantId,
       productId: product.value.id,
       skuId: currentSku.value.id,
       quantity: quantity.value,
       buyerContact: buyerContact.value.trim(),
       paymentChannel: 'WECHAT'
-    })
+    }
+    const prepared = checkoutSubmission.prepare(payload)
+    const res = await axios.post('/api/v1/public/orders/checkout', prepared.body, { headers: prepared.headers })
     if (res.data.code !== 200) {
       alert(res.data.message || '下单失败')
       return
     }
+    checkoutSubmission.complete()
     successResult.value = res.data.data
   } catch (e) {
     alert(e.response?.data?.message || '下单失败')
@@ -520,15 +526,18 @@ const handleCreatePeerPay = async () => {
   }
   generatingPeerPay.value = true
   try {
-    const res = await axios.post('/api/v1/peer-pay/buyer/create', {
+    const payload = {
       merchantId: product.value.merchantId,
       productId: product.value.id,
       skuId: currentSku.value.id,
       quantity: quantity.value,
       buyerContact: buyerContact.value.trim(),
       peerMessage: peerMessage.value.trim()
-    })
+    }
+    const prepared = peerSubmission.prepare(payload)
+    const res = await axios.post('/api/v1/peer-pay/buyer/create', prepared.body, { headers: prepared.headers })
     if (res.data.code === 200) {
+      peerSubmission.complete()
       peerPayResult.value = res.data.data
     } else {
       alert(res.data.message || '生成代付失败')

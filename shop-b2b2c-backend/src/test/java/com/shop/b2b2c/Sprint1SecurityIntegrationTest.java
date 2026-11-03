@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的Spring事务、Mapper SQL、公开响应及租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、Spring事务、Mapper SQL、公开响应及租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -53,6 +53,8 @@ class Sprint1SecurityIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired MockMvc mvc;
     @Autowired PeerPayService payments;
+    @Autowired com.shop.b2b2c.service.OrderIdempotencyService idempotency;
+    @Autowired org.springframework.transaction.PlatformTransactionManager transactionManager;
     @Autowired com.shop.b2b2c.config.ReservationExpiryJob expiryJob;
     @Autowired TradeOrderMapper orders;
     @Autowired TradeOrderItemMapper items;
@@ -64,7 +66,7 @@ class Sprint1SecurityIntegrationTest {
 
     @BeforeEach
     void fixtures() {
-        for (String table : List.of("inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
+        for (String table : List.of("order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -191,7 +193,7 @@ class Sprint1SecurityIntegrationTest {
 
     @Test
     void checkoutOnlyCreatesUnpaidOrderAndDoesNotDeliver() throws Exception {
-        mvc.perform(post("/api/v1/public/orders/checkout").contentType("application/json")
+        mvc.perform(post("/api/v1/public/orders/checkout").header("Idempotency-Key", java.util.UUID.randomUUID().toString()).contentType("application/json")
                         .content("{\"merchantId\":1,\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"buyer@example.com\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.orderStatus").value("UNPAID"))
                 .andExpect(jsonPath("$.data.cards").isEmpty()).andExpect(jsonPath("$.data.paymentAvailable").value(false));
@@ -202,13 +204,13 @@ class Sprint1SecurityIntegrationTest {
 
     @Test
     void publicMockRouteIsAbsentEvenWhenLegacyFlagIsTrue() throws Exception {
-        mvc.perform(post("/api/v1/peer-pay/mock-pay/anything").contentType("application/json").content("{}"))
+        mvc.perform(post("/api/v1/peer-pay/mock-pay/anything").header("Idempotency-Key", java.util.UUID.randomUUID().toString()).contentType("application/json").content("{}"))
                 .andExpect(status().isNotFound());
     }
 
     @Test
     void checkoutRejectsCrossProductSkuWithoutSideEffects() throws Exception {
-        mvc.perform(post("/api/v1/public/orders/checkout").contentType("application/json")
+        mvc.perform(post("/api/v1/public/orders/checkout").header("Idempotency-Key", java.util.UUID.randomUUID().toString()).contentType("application/json")
                         .content("{\"productId\":1,\"skuId\":2,\"quantity\":1,\"buyerContact\":\"buyer\"}"))
                 .andExpect(jsonPath("$.code").value(400));
         assertEquals(0, orders.selectCount(null));
@@ -481,6 +483,138 @@ class Sprint1SecurityIntegrationTest {
                     .andExpect(jsonPath("$.data.store.commissionRate").doesNotExist())
                     .andExpect(jsonPath("$.data.store.feeStatus").doesNotExist());
         }
+    }
+
+    private OrderController.CheckoutDTO checkoutRequest() {
+        var dto = new OrderController.CheckoutDTO();
+        dto.setProductId(1L); dto.setSkuId(1L); dto.setQuantity(1); dto.setBuyerContact("buyer@example.com");
+        return dto;
+    }
+
+    @Test
+    void concurrentIdempotentRequestsCreateOneOrderAndReturnSameResult() throws Exception {
+        var dto = checkoutRequest();
+        var responses = new java.util.concurrent.ConcurrentLinkedQueue<String>();
+        race(8, i -> responses.add((String) idempotency.execute("checkout:guest", "concurrent-key-1234", dto,
+                () -> orderController.checkout(dto).getData()).get("orderSn")));
+        assertEquals(1, new java.util.HashSet<>(responses).size());
+        assertEquals(1, orders.selectCount(null));
+        assertEquals(1, items.selectCount(null));
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM order_idempotency", Integer.class));
+    }
+
+    @Test
+    void sameKeyWithChangedParametersIsRejectedButReplaySurvivesCatalogChanges() {
+        var dto = checkoutRequest();
+        var first = idempotency.execute("checkout:guest", "parameter-key-1234", dto, () -> orderController.checkout(dto).getData());
+        jdbc.update("UPDATE product SET status=0 WHERE id=1");
+        assertEquals(first, idempotency.execute("checkout:guest", "parameter-key-1234", dto,
+                () -> { throw new AssertionError("重放不能再执行业务"); }));
+        dto.setQuantity(2);
+        BusinessException error = assertThrows(BusinessException.class, () -> idempotency.execute("checkout:guest", "parameter-key-1234", dto,
+                () -> { throw new AssertionError("冲突不能执行业务"); }));
+        assertEquals(409, error.getCode());
+        assertEquals(1, orders.selectCount(null));
+    }
+
+    @Test
+    void failedOrderAndIdempotencyClaimRollBackTogetherAndSameKeyCanRetry() {
+        var dto = checkoutRequest();
+        assertThrows(BusinessException.class, () -> idempotency.execute("checkout:guest", "rollback-key-12345", dto, () -> {
+            orderController.checkout(dto); throw new BusinessException("injected failure");
+        }));
+        assertEquals(0, orders.selectCount(null));
+        assertEquals(0, items.selectCount(null));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM order_idempotency", Integer.class));
+        idempotency.execute("checkout:guest", "rollback-key-12345", dto, () -> orderController.checkout(dto).getData());
+        assertEquals(1, orders.selectCount(null));
+    }
+
+    @Test
+    void uniqueOrderCollisionRetriesWholeTransactionWithoutLeavingExtraOrders() {
+        var dto = checkoutRequest(); var attempts = new AtomicInteger();
+        idempotency.execute("checkout:guest", "collision-key-1234", dto, () -> {
+            var result = orderController.checkout(dto).getData();
+            if (attempts.incrementAndGet() < 3) throw new org.springframework.dao.DuplicateKeyException("injected order number collision");
+            return result;
+        });
+        assertEquals(3, attempts.get());
+        assertEquals(1, orders.selectCount(null));
+        assertEquals(1, items.selectCount(null));
+    }
+
+    @Test
+    void scopesKeepGuestCheckoutAndBuyerRequestsSeparate() {
+        var dto = checkoutRequest();
+        var checkout = idempotency.execute("checkout:guest", "scope-key-12345678", dto, () -> java.util.Map.of("marker", "checkout"));
+        var buyer = idempotency.execute("buyer:guest", "scope-key-12345678", dto, () -> java.util.Map.of("marker", "buyer"));
+        assertNotEquals(checkout, buyer);
+        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM order_idempotency", Integer.class));
+    }
+
+    @Test
+    void checkoutHttpRequiresKeyAndReturnsOriginalOrderOnRetry() throws Exception {
+        String body = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"buyer\"}";
+        mvc.perform(post("/api/v1/public/orders/checkout").contentType("application/json").content(body))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        String first = mvc.perform(post("/api/v1/public/orders/checkout").header("Idempotency-Key", "http-key-123456789")
+                .contentType("application/json").content(body)).andExpect(jsonPath("$.code").value(200)).andReturn().getResponse().getContentAsString();
+        String second = mvc.perform(post("/api/v1/public/orders/checkout").header("Idempotency-Key", "http-key-123456789")
+                .contentType("application/json").content(body)).andExpect(jsonPath("$.code").value(200)).andReturn().getResponse().getContentAsString();
+        assertEquals(first, second); assertEquals(1, orders.selectCount(null));
+    }
+
+    @Test
+    void buyerHttpReplayReturnsOriginalShareAndQueryCredentials() throws Exception {
+        String body = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"buyer\"}";
+        String first = mvc.perform(post("/api/v1/peer-pay/buyer/create").header("Idempotency-Key", "buyer-key-12345678")
+                .contentType("application/json").content(body)).andExpect(jsonPath("$.code").value(200)).andReturn().getResponse().getContentAsString();
+        String second = mvc.perform(post("/api/v1/peer-pay/buyer/create").header("Idempotency-Key", "buyer-key-12345678")
+                .contentType("application/json").content(body)).andExpect(jsonPath("$.code").value(200)).andReturn().getResponse().getContentAsString();
+        assertEquals(first, second); assertEquals(1, orders.selectCount(null));
+    }
+
+    @Test
+    void merchantPushReplayIsScopedToSessionMerchantAndOperator() {
+        var push = new PeerPayDTOs.PushPayCreateRequest(); push.setProductId(1L); push.setSkuId(1L); push.setQuantity(1);
+        try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
+            security.when(SecurityUtils::getCurrentMerchantId).thenReturn(1L);
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(11L);
+            var first = orderController.createPushPayOrder(push, "merchant-key-12345").getData();
+            assertEquals(first, orderController.createPushPayOrder(push, "merchant-key-12345").getData());
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(12L);
+            assertNotEquals(first.get("orderSn"), orderController.createPushPayOrder(push, "merchant-key-12345").getData().get("orderSn"));
+            security.when(SecurityUtils::getCurrentMerchantId).thenReturn(2L);
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(22L);
+            push.setProductId(2L); push.setSkuId(2L);
+            assertNotEquals(first.get("orderSn"), orderController.createPushPayOrder(push, "merchant-key-12345").getData().get("orderSn"));
+        }
+        assertEquals(3, orders.selectCount(null));
+    }
+
+    @Test
+    void fingerprintIgnoresMapPropertyOrderAndRejectsOuterTransactionUsage() {
+        var first = new java.util.LinkedHashMap<String,Object>(); first.put("a", 1); first.put("b", 2);
+        var second = new java.util.LinkedHashMap<String,Object>(); second.put("b", 2); second.put("a", 1);
+        var response = idempotency.execute("canonical", "canonical-key-1234", first, () -> java.util.Map.of("value", "original"));
+        assertEquals(response, idempotency.execute("canonical", "canonical-key-1234", second,
+                () -> { throw new AssertionError("字段顺序不应触发重复业务"); }));
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        transaction.execute(status -> {
+            assertThrows(IllegalStateException.class, () -> idempotency.execute("outer", "outer-key-12345678", first,
+                    () -> { throw new AssertionError("外部事务中不应执行业务"); }));
+            return null;
+        });
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM order_idempotency", Integer.class));
+    }
+
+    @Test
+    void missingReservationOwnershipHeaderReturns400WithoutReleasingInventory() throws Exception {
+        intent("missing-owner-header"); payments.preLockInventory("missing-owner-header");
+        mvc.perform(post("/api/v1/peer-pay/cancel-lock/missing-owner-header"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        assertEquals(0, skus.selectById(1).getStockQuantity());
     }
 
     private void race(int count, java.util.function.IntConsumer action) throws Exception {

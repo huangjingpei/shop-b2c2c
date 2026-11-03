@@ -1,5 +1,5 @@
 -- 文件：schema.sql
--- 用途：新安装环境的表结构和演示种子数据基线，包含库存预占表。
+-- 用途：新安装环境的表结构和演示种子数据基线，包含库存预占与建单幂等表。
 -- 维护注意：CREATE TABLE IF NOT EXISTS不会升级已有列，存量变更须增量迁移；生产不得依赖演示账号。脚本包含建库/USE和种子语句，执行前确认目标库；不要将容错初始化视为完整自愈。
 -- ========================================================
 -- Shop B2B2C 全局全量初始化数据库脚本 (Single Source of Truth)
@@ -365,4 +365,14 @@ CREATE TABLE IF NOT EXISTS inventory_reservation (
   status VARCHAR(16) NOT NULL,
   expires_at DATETIME NOT NULL,
   KEY idx_reservation_expiry (status, expires_at)
+);
+
+-- 文件：003_order_idempotency.sql
+-- 用途：为建单幂等提供唯一摘要占位及响应快照表。
+-- 维护注意：在目标连接库执行；响应含交易凭证，限制数据库访问。不要单独清理记录后重用旧键；不创建/切换数据库。
+CREATE TABLE IF NOT EXISTS order_idempotency (
+  request_key VARCHAR(64) NOT NULL PRIMARY KEY,
+  request_hash VARCHAR(64) NOT NULL,
+  response_json LONGTEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
