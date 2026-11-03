@@ -1,7 +1,7 @@
 <!--
 文件：Products.vue
-用途：商家商品发布、资料与SKU售价编辑及上下架操作。
-维护注意：1实物、2自动卡密、3定制服务；编辑从私有快照加载revision，冲突后需重载，库存只展示不回写。违规下架不可自行恢复；表单校验不能替代后端输入/归属和事务校验。
+用途：商家商品发布、资料/SKU售价编辑、上下架及独立库存调整记录入口。
+维护注意：资料保存不回写库存；实物/服务库存由店长或超管单独调整并留痕，自动卡密禁止手调。网络失败保留幂等键，刷新只更新库存不覆盖未保存资料；违规下架不可自行恢复，前端权限不能替代服务端。
 -->
 <template>
   <div class="merchant-products">
@@ -76,12 +76,40 @@
             <el-input-number v-model="row.price" :min="0.01" :max="99999999.99" :precision="2" style="width: 170px;" />
           </template></el-table-column>
           <el-table-column prop="stockQuantity" label="可售库存" width="90" />
+          <el-table-column label="库存记录" width="100"><template #default="{ row }">
+            <el-button v-if="editingType !== 2" link type="primary" @click="openStock(row)">查看/调整</el-button>
+            <span v-else>卡密业务</span>
+          </template></el-table-column>
         </el-table>
       </el-form>
       <template #footer>
         <el-button :disabled="editSaving || editorLoading" @click="reloadEditor">重新载入</el-button>
         <el-button :disabled="editSaving" @click="editVisible = false">取消</el-button>
         <el-button type="primary" :loading="editSaving" :disabled="editorLoading" @click="saveEditor">保存资料与售价</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="stockVisible" title="库存调整与记录" width="850px" append-to-body :close-on-click-modal="false"
+      :close-on-press-escape="!stockSaving" :show-close="!stockSaving">
+      <el-alert title="仅调整可售数量，不改变已预占数量。结果未确认时请先核对记录，避免刷新后重复调整。" type="info" :closable="false" />
+      <p>SKU：{{ stockSkuCode }}　当前可售：{{ stockForm.expectedStock }}</p>
+      <el-form v-if="canAdjustInventory(currentRole, editingType)" label-width="110px" :disabled="stockSaving || stockLoading">
+        <el-form-item label="调整数量"><el-input-number v-model="stockForm.delta" :min="-1000000" :max="1000000" :precision="0" /><span style="margin-left: 12px">正数补货，负数扣减</span></el-form-item>
+        <el-form-item label="调整原因"><el-input v-model="stockForm.reason" maxlength="255" placeholder="请勿填写卡密或个人信息" /></el-form-item>
+        <el-form-item><el-button type="primary" :loading="stockSaving" @click="submitStock">确认调整并记录</el-button></el-form-item>
+      </el-form>
+      <el-table :data="stockRecords" v-loading="stockLoading">
+        <el-table-column prop="createdAt" label="时间" min-width="170" />
+        <el-table-column prop="actorId" label="操作人ID" width="95" />
+        <el-table-column prop="beforeStock" label="调整前" width="85" />
+        <el-table-column prop="delta" label="增减量" width="85" />
+        <el-table-column prop="afterStock" label="调整后" width="85" />
+        <el-table-column prop="reason" label="原因" min-width="180" />
+      </el-table>
+      <template #footer>
+        <el-button :disabled="stockSaving || stockLoading" @click="refreshStock">核对库存与最新记录</el-button>
+        <el-button v-if="stockNext" :disabled="stockSaving || stockLoading" @click="loadStockRecords(true)">加载更多记录</el-button>
+        <el-button :disabled="stockSaving" @click="stockVisible = false">关闭</el-button>
       </template>
     </el-dialog>
 
@@ -135,6 +163,8 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
 import { editorForm, updatePayload, statusAction, productStatusLabel } from '../../utils/productEditing.mjs'
+import { inventoryPayload, canAdjustInventory } from '../../utils/inventoryAdjustment.mjs'
+import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 
 const loading = ref(false)
 const submitLoading = ref(false)
@@ -143,6 +173,55 @@ const products = ref([])
 const categories = ref([])
 const editVisible = ref(false), editorLoading = ref(false), editSaving = ref(false), statusLoading = ref(null)
 const editForm = ref(null), editingId = ref(null), editingType = ref(null)
+const currentRole = localStorage.getItem('roleCode') || ''
+const stockVisible = ref(false), stockSaving = ref(false), stockLoading = ref(false), stockNext = ref(null)
+const stockSkuCode = ref(''), stockRecords = ref([]), stockForm = ref({})
+const stockSubmission = createIdempotentSubmission()
+
+const loadStockRecords = async (more = false) => {
+  stockLoading.value = true
+  try {
+    const { data } = await request.get('/merchant/inventory-adjustments', { params: { skuId: stockForm.value.skuId, beforeId: more ? stockNext.value : undefined, limit: 20 } })
+    stockRecords.value = more ? [...stockRecords.value, ...data.items] : data.items
+    stockNext.value = data.nextBeforeId
+  } catch { /* 请求层统一提示，不把失败当成空记录。 */ }
+  finally { stockLoading.value = false }
+}
+const refreshStock = async () => {
+  stockLoading.value = true
+  try {
+    const { data } = await request.get(`/merchant/products/${stockForm.value.productId}/editor`)
+    const sku = data.skus.find(s => s.id === stockForm.value.skuId)
+    if (!sku) { ElMessage.warning('SKU已变化，请重新打开商品'); return }
+    stockForm.value.expectedStock = sku.stockQuantity
+    // 仅刷新库存，不用服务端资料覆盖尚未保存的标题和售价。
+    for (const row of editForm.value?.skus || []) {
+      const latest = data.skus.find(s => s.id === row.id)
+      if (latest) row.stockQuantity = latest.stockQuantity
+    }
+    await loadStockRecords()
+  } catch { /* 保留旧快照，提交时仍由服务端核验预期数量。 */ }
+  finally { stockLoading.value = false }
+}
+const openStock = async row => {
+  if (stockSaving.value || stockLoading.value) return
+  stockForm.value = { productId: editingId.value, skuId: row.id, delta: 0, expectedStock: row.stockQuantity, reason: '' }
+  stockSkuCode.value = row.skuCode; stockRecords.value = []; stockNext.value = null; stockVisible.value = true
+  await refreshStock()
+}
+const submitStock = async () => {
+  if (stockSaving.value || stockLoading.value) return
+  let submission
+  try { submission = stockSubmission.prepare(inventoryPayload(stockForm.value)) }
+  catch (error) { ElMessage.warning(error.message); return }
+  stockSaving.value = true
+  try {
+    await request.post('/merchant/inventory-adjustments', submission.body, { headers: submission.headers })
+    stockSubmission.complete(); ElMessage.success('库存调整已记录')
+    stockForm.value.delta = 0; stockForm.value.reason = ''; await refreshStock()
+  } catch { /* 未确认成功时保留表单和重试键。 */ }
+  finally { stockSaving.value = false }
+}
 
 const openEditor = async row => {
   if (editorLoading.value || editSaving.value) return

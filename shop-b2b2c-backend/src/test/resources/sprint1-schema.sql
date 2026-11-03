@@ -1,6 +1,6 @@
 -- 文件：sprint1-schema.sql
 -- 用途：H2 MySQL兼容模式的隔离集成测试数据库结构。
--- 维护注意：源自业务表列定义但去除了MySQL建库、引擎和部分索引语法；不含业务种子，含建单幂等表。仅用于测试，不能部署到生产；表结构变化须同步生产结构和迁移，H2通过不等于MySQL验证。
+-- 维护注意：源自业务表列定义但去除了MySQL建库、引擎和部分索引语法；不含业务种子，含业务幂等及人工库存调整表。仅用于测试，不能部署到生产；表结构变化须同步生产结构和迁移，H2通过不等于MySQL验证。
 -- ========================================================
 -- Shop B2B2C 全局全量初始化数据库脚本 (Single Source of Truth)
 -- 适用: 开发期启动自愈 / 删库一键重建 (Drop & Re-create)
@@ -239,11 +239,29 @@ CREATE TABLE IF NOT EXISTS inventory_reservation (
 );
 
 -- 文件：003_order_idempotency.sql
--- 用途：为建单幂等提供唯一摘要占位及响应快照表。
+-- 用途：为建单及人工库存调整幂等提供唯一摘要占位及响应快照表，保留原表名。
 -- 维护注意：在目标连接库执行；响应含交易凭证，限制数据库访问。不要单独清理记录后重用旧键；不创建/切换数据库。
 CREATE TABLE IF NOT EXISTS order_idempotency (
   request_key VARCHAR(64) NOT NULL PRIMARY KEY,
   request_hash VARCHAR(64) NOT NULL,
   response_json LONGTEXT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 15. 人工库存调整记录：与SKU增减、业务幂等结果同事务，只追加，不保存原始重试键。
+CREATE TABLE IF NOT EXISTS inventory_adjustment (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT NOT NULL,
+  product_id BIGINT NOT NULL,
+  sku_id BIGINT NOT NULL,
+  actor_id BIGINT NOT NULL,
+  request_key VARCHAR(64) NOT NULL,
+  delta INT NOT NULL,
+  before_stock INT NOT NULL,
+  after_stock INT NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_inventory_adjustment_request UNIQUE (request_key),
+  CONSTRAINT chk_adjustment_delta CHECK (delta <> 0),
+  CONSTRAINT chk_adjustment_stock CHECK (before_stock >= 0 AND after_stock >= 0 AND after_stock = before_stock + delta)
 );

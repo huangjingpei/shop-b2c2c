@@ -1,7 +1,7 @@
 /*
  * 文件：IdempotencyMapper.java
- * 用途：通过唯一键占位及行锁串行化同一建单请求。
- * 维护注意：MySQL兼容upsert只做无副作用更新以等待并发提交；不能覆盖原参数摘要。所有方法须在同一事务内调用，不依赖影响行数判定首次请求。
+ * 用途：通过唯一键占位及行锁串行化建单或人工库存调整请求。
+ * 维护注意：沿用order_idempotency表名，调用方必须使用不同业务/身份作用域；MySQL兼容upsert只做无副作用更新以等待并发提交，不能覆盖原参数摘要。所有方法须在同一事务内调用，不依赖影响行数判定首次请求。
  */
 package com.shop.b2b2c.mapper;
 import com.shop.b2b2c.entity.IdempotencyRecord;

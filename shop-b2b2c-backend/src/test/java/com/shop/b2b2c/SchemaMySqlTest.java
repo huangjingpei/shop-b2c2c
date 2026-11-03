@@ -1,6 +1,6 @@
 /*
  * 文件：SchemaMySqlTest.java
- * 用途：在独立临时MySQL8实例上验证完整schema初始化、重复执行保留数据及商品维护Mapper白名单SQL和回滚。
+ * 用途：在独立临时MySQL8实例上验证schema初始化/记录保留、商品维护及人工库存调整Mapper、约束和回滚。
  * 维护注意：仅显式提供schema.mysql.bin时运行；--no-defaults、随机空闲端口和target下独立数据目录隔离现有服务，校验@@datadir后才写入。不能改为连接开发/生产服务，测试实例停止后保留日志和临时数据供检查。
  */
 package com.shop.b2b2c;
@@ -69,7 +69,7 @@ class SchemaMySqlTest {
                 try (ResultSet result = statement.executeQuery("SHOW TABLES")) {
                     while (result.next()) tables.add(result.getString(1));
                 }
-                assertEquals(14, tables.size());
+                assertEquals(15, tables.size());
                 try (ResultSet indexes = statement.executeQuery("SHOW INDEX FROM inventory_reservation WHERE Key_name='idx_reservation_expiry'")) {
                     List<String> columns = new ArrayList<>();
                     while (indexes.next()) columns.add(indexes.getString("Column_name"));
@@ -85,6 +85,9 @@ class SchemaMySqlTest {
                 try (PreparedStatement insert = connection.prepareStatement(
                         "INSERT INTO order_idempotency(request_key,request_hash,response_json) VALUES(?,?,'{}')")) {
                     insert.setString(1, "a".repeat(64)); insert.setString(2, "b".repeat(64)); insert.executeUpdate();
+                }
+                try (PreparedStatement audit = connection.prepareStatement("INSERT INTO inventory_adjustment(merchant_id,product_id,sku_id,actor_id,request_key,delta,before_stock,after_stock,reason) VALUES(1,1,1,1,?,1,776,777,'retention-fixture')")) {
+                    audit.setString(1, "c".repeat(64)); audit.executeUpdate();
                 }
                 Map<String,Long> counts = counts(connection, tables);
                 ScriptUtils.executeSqlScript(connection, resource);
@@ -116,8 +119,12 @@ class SchemaMySqlTest {
                 new org.apache.ibatis.datasource.unpooled.UnpooledDataSource("com.mysql.cj.jdbc.Driver",
                         baseUrl.replace("/?", "/bootstrap_contract_test?") + "&useAffectedRows=true", "root", "")));
         configuration.addMapper(com.shop.b2b2c.mapper.ProductEditingMapper.class);
+        configuration.addMapper(com.shop.b2b2c.mapper.InventoryAdjustmentMapper.class);
+        configuration.addMapper(com.shop.b2b2c.mapper.IdempotencyMapper.class);
         var factory = new org.apache.ibatis.session.SqlSessionFactoryBuilder().build(configuration);
         try (var session = factory.openSession(false)) {
+            try { session.getConnection().setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED); }
+            catch (SQLException e) { throw new IllegalStateException(e); }
             var mapper = session.getMapper(com.shop.b2b2c.mapper.ProductEditingMapper.class);
             var original = mapper.lockProduct(1L, 1L);
             var sku = mapper.lockSkus(1L, 1L).get(0);
@@ -131,10 +138,31 @@ class SchemaMySqlTest {
             assertEquals("mysql-edited", mapper.lockProduct(1L, 1L).getTitle());
             assertNull(mapper.lockProduct(1L, 2L));
             assertEquals(0, mapper.updatePrice(1L, 2L, sku.getId(), java.math.BigDecimal.ONE));
+            var inventory = session.getMapper(com.shop.b2b2c.mapper.InventoryAdjustmentMapper.class);
+            assertNotNull(inventory.lockSku(1L, 1L, sku.getId()));
+            assertNull(inventory.lockSku(2L, 1L, sku.getId()));
+            assertEquals(0L, inventory.heldQuantity(1L, sku.getId()));
+            assertEquals(1, inventory.adjust(1L, 1L, sku.getId(), stock, 1));
+            assertEquals(0, inventory.adjust(1L, 1L, sku.getId(), stock, 1));
+            var audit = new com.shop.b2b2c.entity.InventoryAdjustment();
+            audit.setMerchantId(1L); audit.setProductId(1L); audit.setSkuId(sku.getId()); audit.setActorId(1L);
+            audit.setRequestKey("d".repeat(64)); audit.setDelta(1); audit.setBeforeStock(stock); audit.setAfterStock(stock + 1); audit.setReason("native-sql");
+            assertEquals(1, inventory.insert(audit)); assertNotNull(audit.getId());
+            assertEquals(stock + 1, inventory.find(1L, audit.getId()).getAfterStock());
+            assertNull(inventory.find(2L, audit.getId()));
+            assertEquals(audit.getId(), inventory.list(1L, sku.getId(), null, 1).get(0).getId());
+            assertEquals(1, inventory.list(1L, sku.getId(), audit.getId(), 10).size());
+            assertTrue(inventory.list(2L, sku.getId(), null, 10).isEmpty());
+            var idempotency = session.getMapper(com.shop.b2b2c.mapper.IdempotencyMapper.class);
+            idempotency.claim("e".repeat(64), "f".repeat(64));
+            assertEquals(1, idempotency.complete("e".repeat(64), "{}"));
+            assertEquals("{}", idempotency.lock("e".repeat(64)).getResponseJson());
             session.rollback();
             assertEquals(original.getTitle(), mapper.lockProduct(1L, 1L).getTitle());
             assertEquals(0, sku.getPrice().compareTo(mapper.lockSkus(1L, 1L).get(0).getPrice()));
             assertEquals(original.getStatus(), mapper.lockProduct(1L, 1L).getStatus());
+            assertEquals(stock, inventory.lockSku(1L, 1L, sku.getId()).getStockQuantity());
+            assertNull(inventory.find(1L, audit.getId()));
             session.rollback();
         }
     }

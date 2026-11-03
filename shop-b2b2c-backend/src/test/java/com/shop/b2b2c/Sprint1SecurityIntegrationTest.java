@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品维护、Spring事务、Mapper SQL、公开响应及租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存维护、Spring事务、Mapper SQL、公开响应及租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -78,12 +78,14 @@ class Sprint1SecurityIntegrationTest {
     @SpyBean ProductVirtualCardMapper cards;
     @SpyBean ProductEditingMapper editingMapper;
     @Autowired com.shop.b2b2c.service.ProductEditingService editing;
+    @SpyBean InventoryAdjustmentMapper adjustmentsMapper;
+    @Autowired com.shop.b2b2c.service.InventoryAdjustmentService adjustments;
     @MockBean StringRedisTemplate redis;
 
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
+        for (String table : List.of("inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -219,6 +221,152 @@ class Sprint1SecurityIntegrationTest {
         editing.changeStatus(1L, 1L, new com.shop.b2b2c.dto.ProductEditingDTOs.Status(updated.revision(), 0));
         assertThrows(BusinessException.class, () -> orderController.checkout(checkoutRequest()));
         assertEquals(1, orders.selectCount(null));
+    }
+
+    private com.shop.b2b2c.dto.InventoryAdjustmentDTOs.Adjust adjustment(int delta, int expected) {
+        return new com.shop.b2b2c.dto.InventoryAdjustmentDTOs.Adjust(1L, 1L, delta, expected, "stock-taking");
+    }
+    private void physicalProduct() { jdbc.update("UPDATE product SET goods_type=1 WHERE id=1"); }
+
+    @Test
+    void inventoryHttpUsesSessionActorAndRequiresIdempotencyKey() throws Exception {
+        physicalProduct(); authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        var body = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(adjustment(2, 1));
+        body.put("actorId", 999); body.put("merchantId", 2);
+        mvc.perform(post("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content(json.writeValueAsString(body))).andExpect(status().isBadRequest());
+        mvc.perform(post("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token)
+                .header("Idempotency-Key", "stock-http-key-1234").contentType("application/json").content(json.writeValueAsString(body)))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.actorId").value(200))
+                .andExpect(jsonPath("$.data.beforeStock").value(1)).andExpect(jsonPath("$.data.afterStock").value(3))
+                .andExpect(jsonPath("$.data.requestKey").doesNotExist());
+        mvc.perform(get("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.data.items.length()").value(1)).andExpect(jsonPath("$.data.items[0].requestKey").doesNotExist());
+        assertEquals(3, skus.selectById(1).getStockQuantity());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_adjustment", Integer.class));
+    }
+
+    @Test
+    void inventoryStaffMayReadButCannotWrite() throws Exception {
+        physicalProduct(); authUser("MERCHANT_STAFF", 1L); String token = loginToken();
+        mvc.perform(post("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token)
+                .header("Idempotency-Key", "stock-staff-key-1234").contentType("application/json").content(json.writeValueAsString(adjustment(1, 1))))
+                .andExpect(status().isForbidden());
+        mvc.perform(get("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(200));
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_adjustment", Integer.class));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"productId", "skuId", "delta", "expectedStock"})
+    void inventoryNeverTruncatesDecimalJsonToWholeUnits(String field) throws Exception {
+        physicalProduct(); authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        var body = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(adjustment(1, 1)); body.put(field, 1.5);
+        mvc.perform(post("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token)
+                .header("Idempotency-Key", "stock-decimal-key-123").contentType("application/json").content(json.writeValueAsString(body)))
+                .andExpect(status().isBadRequest());
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_adjustment", Integer.class));
+    }
+
+    @Test
+    void inventoryReplayRemainsOriginalAfterLaterAdjustmentAndConflictDoesNotWrite() {
+        physicalProduct();
+        var first = adjustments.adjust(1L, 200L, "stock-replay-key-1234", adjustment(2, 1));
+        adjustments.adjust(1L, 200L, "stock-later-key-12345", adjustment(1, 3));
+        assertEquals(first, adjustments.adjust(1L, 200L, "stock-replay-key-1234", adjustment(2, 1)));
+        assertEquals(409, assertThrows(BusinessException.class,
+                () -> adjustments.adjust(1L, 200L, "stock-replay-key-1234", adjustment(3, 1))).getCode());
+        assertEquals(4, skus.selectById(1).getStockQuantity());
+        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_adjustment", Integer.class));
+    }
+
+    @Test
+    void inventoryRejectsVirtualForeignProductAndForeignSkuWithoutPersistingClaims() {
+        assertEquals(400, assertThrows(BusinessException.class, () -> adjustments.adjust(1L, 200L, "stock-virtual-key-123", adjustment(1, 1))).getCode());
+        physicalProduct();
+        var foreignProduct = new com.shop.b2b2c.dto.InventoryAdjustmentDTOs.Adjust(2L, 2L, 1, 1, "wrong-owner");
+        var foreignSku = new com.shop.b2b2c.dto.InventoryAdjustmentDTOs.Adjust(1L, 2L, 1, 1, "wrong-sku");
+        assertEquals(404, assertThrows(BusinessException.class, () -> adjustments.adjust(1L, 200L, "stock-foreign-key-123", foreignProduct)).getCode());
+        assertEquals(404, assertThrows(BusinessException.class, () -> adjustments.adjust(1L, 200L, "stock-foreign-sku-123", foreignSku)).getCode());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM order_idempotency", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_adjustment", Integer.class));
+    }
+
+    @Test
+    void concurrentInventoryRetriesProduceOneAdjustmentAndOneRecord() throws Exception {
+        physicalProduct(); var results = new java.util.concurrent.ConcurrentLinkedQueue<Long>();
+        race(6, i -> results.add(adjustments.adjust(1L, 200L, "stock-concurrent-key-123", adjustment(2, 1)).id()));
+        assertEquals(1, new java.util.HashSet<>(results).size()); assertEquals(3, skus.selectById(1).getStockQuantity());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_adjustment", Integer.class));
+    }
+
+    @Test
+    void concurrentDifferentInventoryKeysCannotBothUseStaleExpectedStock() throws Exception {
+        physicalProduct(); AtomicInteger success = new AtomicInteger(), conflict = new AtomicInteger();
+        race(2, i -> {
+            try { adjustments.adjust(1L, 200L, "stock-different-key-123-" + i, adjustment(1, 1)); success.incrementAndGet(); }
+            catch (BusinessException e) { assertEquals(409, e.getCode()); conflict.incrementAndGet(); }
+        });
+        assertEquals(1, success.get()); assertEquals(1, conflict.get()); assertEquals(2, skus.selectById(1).getStockQuantity());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_adjustment", Integer.class));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM order_idempotency", Integer.class));
+    }
+
+    private com.shop.b2b2c.dto.PeerPayDTOs.PreLockResult reservePhysicalForAdjustment(String token) {
+        physicalProduct(); var order = intent(token); order.setGoodsType(1); orders.save(order);
+        return payments.preLockInventory(token);
+    }
+
+    @Test
+    void manualAdjustmentPreservesHeldUnitsAndReleaseAddsOnlyHeldQuantity() {
+        var lock = reservePhysicalForAdjustment("stock-held");
+        var result = adjustments.adjust(1L, 200L, "stock-held-key-12345", adjustment(2, 0));
+        assertEquals(0, result.beforeStock()); assertEquals(2, result.afterStock());
+        payments.cancelPreLock("stock-held", lock.getOwnerToken());
+        assertEquals(3, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void manualAdjustmentReservesIntCapacityForFutureHeldRelease() {
+        var lock = reservePhysicalForAdjustment("stock-capacity");
+        jdbc.update("UPDATE product_sku SET stock_quantity=? WHERE id=1", Integer.MAX_VALUE - 1);
+        assertEquals(400, assertThrows(BusinessException.class, () -> adjustments.adjust(1L, 200L,
+                "stock-capacity-key-123", adjustment(1, Integer.MAX_VALUE - 1))).getCode());
+        payments.cancelPreLock("stock-capacity", lock.getOwnerToken());
+        assertEquals(Integer.MAX_VALUE, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void inventoryAuditInsertFailureRollsBackStockAndIdempotency() {
+        physicalProduct();
+        doThrow(new IllegalStateException("isolated-audit-failure")).when(adjustmentsMapper).insert(any());
+        assertThrows(IllegalStateException.class, () -> adjustments.adjust(1L, 200L, "stock-rollback-key-123", adjustment(2, 1)));
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_adjustment", Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM order_idempotency", Integer.class));
+    }
+
+    @Test
+    void inventoryCursorPagesAreStableAndTenantScoped() {
+        physicalProduct();
+        for (int i = 0; i < 3; i++) adjustments.adjust(1L, 200L, "stock-page-key-1234-" + i, adjustment(1, i + 1));
+        var first = adjustments.list(1L, 1L, null, 2);
+        assertEquals(2, first.items().size()); assertNotNull(first.nextBeforeId());
+        var last = adjustments.list(1L, 1L, first.nextBeforeId(), 2);
+        assertEquals(1, last.items().size()); assertNull(last.nextBeforeId());
+        assertTrue(last.items().get(0).id() < first.nextBeforeId());
+        assertTrue(adjustments.list(2L, 1L, null, 2).items().isEmpty());
+        assertTrue(adjustments.list(1L, 2L, null, 2).items().isEmpty());
+    }
+
+    @Test
+    void inventoryEntryRejectsOuterTransactionRatherThanUsingWrongIsolation() {
+        physicalProduct(); var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        assertThrows(IllegalStateException.class, () -> transaction.execute(status -> adjustments.adjust(1L, 200L,
+                "stock-outer-key-12345", adjustment(1, 1))));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_adjustment", Integer.class));
     }
 
     private void authUser(String role, Long merchantId) {
