@@ -1,7 +1,7 @@
 /*
  * 文件：ProductController.java
- * 用途：商品浏览、商家发布以及本店卡密库存导入和查询。
- * 维护注意：先验证商品/SKU/会话租户归属再读写卡密；导入库存使用原子增量。公开详情必须验证交易资格并使用店铺字段白名单，类型3不走卡密导入。
+ * 用途：商品浏览、商家发布以及本店卡密去重导入和查询。
+ * 维护注意：自动卡密发布初始库存为0；导入委托独立READ_COMMITTED资产事务，禁止在入口加外层事务。先验证租户再去重增库存，公开详情验证交易资格和店铺白名单，类型3不走卡密导入。
  */
 package com.shop.b2b2c.controller;
 
@@ -36,6 +36,7 @@ public class ProductController {
     private final ProductSkuMapper skuMapper;
     private final ProductVirtualCardMapper cardMapper;
     private final MerchantStoreMapper storeMapper;
+    private final com.shop.b2b2c.service.CardAssetService cardAssets;
 
     // ==========================================
     // 16688 买家端公开货源流 API
@@ -151,10 +152,11 @@ public class ProductController {
         Set<String> codes = new HashSet<>();
         for (SkuDTO sku : dto.getSkus()) {
             if (sku == null || sku.getSkuCode() == null || sku.getSkuCode().isBlank() || sku.getSkuCode().length() > 64
-                    || !codes.add(sku.getSkuCode()) || sku.getStockQuantity() == null || sku.getStockQuantity() < 0) {
+                    || !codes.add(sku.getSkuCode())) {
                 throw new BusinessException(400, "SKU编码或库存不合法");
             }
             TradeGuards.requireMoney(sku.getPrice());
+            TradeGuards.requireInitialStock(dto.getGoodsType(), sku.getStockQuantity());
             try {
                 if (sku.getSpecData() == null || !new com.fasterxml.jackson.databind.ObjectMapper().readTree(sku.getSpecData()).isObject()) {
                     throw new IllegalArgumentException();
@@ -190,55 +192,19 @@ public class ProductController {
 
     @Data
     public static class BatchImportCardDTO {
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long productId;
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long skuId;
         private List<String> cardContents; // 每行一个卡密
     }
 
-    @Operation(summary = "【商家】16688虚拟卡密库批量录入")
+    @Operation(summary = "【商家】本店卡密去重导入")
     @PostMapping("/api/v1/merchant/cards/import")
-    @Transactional(rollbackFor = Exception.class)
     public R<Map<String, Object>> importCards(@RequestBody BatchImportCardDTO dto) {
-        Long merchantId = SecurityUtils.requireCurrentMerchantId();
-
-        ProductSku sku = skuMapper.findById(dto.getSkuId())
-                .orElseThrow(() -> new BusinessException("指定SKU不存在"));
-        Product product = productMapper.findById(dto.getProductId())
-                .orElseThrow(() -> new BusinessException("商品不存在"));
-        TradeGuards.requireSkuOwnership(product, sku);
-        if (!merchantId.equals(product.getMerchantId()) || !Integer.valueOf(2).equals(product.getGoodsType())) {
-            throw new BusinessException(403, "仅允许向本店虚拟商品导入卡密");
-        }
-        if (dto.getCardContents() == null || dto.getCardContents().isEmpty()) {
-            throw new BusinessException("请输入卡密内容");
-        }
-
-
-        List<ProductVirtualCard> cards = new ArrayList<>();
-        for (String content : dto.getCardContents()) {
-            if (content != null && !content.trim().isEmpty()) {
-                ProductVirtualCard card = new ProductVirtualCard();
-                card.setProductId(dto.getProductId());
-                card.setSkuId(dto.getSkuId());
-                card.setMerchantId(merchantId);
-                card.setCardContent(content.trim());
-                card.setStatus(0); // 未售出
-                cards.add(card);
-            }
-        }
-        for (ProductVirtualCard card : cards) {
-            cardMapper.insert(card);
-        }
-
-        // 更新 SKU 库存
-        if (cards.isEmpty() || skuMapper.addStock(sku.getId(), merchantId, cards.size()) != 1) {
-            throw new BusinessException("卡密内容为空或库存更新失败");
-        }
-
-        Map<String, Object> res = new HashMap<>();
-        res.put("importedCount", cards.size());
-        res.put("newStock", skuMapper.findById(sku.getId()).orElseThrow().getStockQuantity());
-        return R.ok("卡密批量导入成功", res);
+        if (dto == null) throw new BusinessException(400, "请输入卡密导入资料");
+        return R.ok("卡密批量导入成功", cardAssets.importCards(SecurityUtils.requireCurrentMerchantId(),
+                dto.getProductId(), dto.getSkuId(), dto.getCardContents()));
     }
 
     @Operation(summary = "【商家】查询虚拟卡密库存")

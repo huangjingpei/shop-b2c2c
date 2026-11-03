@@ -1,7 +1,7 @@
 <!--
 文件：Products.vue
 用途：商家商品发布、资料/SKU售价编辑、上下架及独立库存调整记录入口。
-维护注意：资料保存不回写库存；实物/服务库存由店长或超管单独调整并留痕，自动卡密禁止手调。网络失败保留幂等键，刷新只更新库存不覆盖未保存资料；违规下架不可自行恢复，前端权限不能替代服务端。
+维护注意：卡密发布数量为0，由导入生成；资料保存不回写库存。实物/服务库存由店长或超管单独调整并留痕；网络失败保留幂等键，刷新不覆盖未保存资料。违规下架不可自行恢复，前端权限不替代服务端。
 -->
 <template>
   <div class="merchant-products">
@@ -122,7 +122,7 @@
           </el-select>
         </el-form-item>
         <el-form-item label="商品交付类型" required>
-          <el-radio-group v-model="form.goodsType">
+          <el-radio-group v-model="form.goodsType" @change="resetInitialCardStock">
             <el-radio :label="2">⚡ 虚拟商品 (卡密自动秒发，16688 模式)</el-radio>
             <el-radio :label="3">定制服务 (人工录入交付凭证)</el-radio>
             <el-radio :label="1">📦 实物商品 (卖家填运单发货)</el-radio>
@@ -142,11 +142,12 @@
         </el-form-item>
 
         <div style="font-weight: 600; margin: 16px 0 8px; font-size: 13px;">规格变体 SKU (至少1个)：</div>
+        <el-alert v-if="form.goodsType === 2" title="自动卡密初始库存为0，导入卡密后生成可售数量。" type="info" :closable="false" />
         <div v-for="(sku, idx) in form.skus" :key="idx" class="sku-item">
           <el-input v-model="sku.skuCode" placeholder="SKU编码" style="width: 140px;" />
           <el-input v-model="sku.specData" placeholder='规格JSON，如 {"规格":"月卡"}' style="flex: 1;" />
           <el-input-number v-model="sku.price" placeholder="单价" :precision="2" style="width: 120px;" />
-          <el-input-number v-model="sku.stockQuantity" placeholder="物理库存" :min="0" style="width: 100px;" />
+          <el-input-number v-model="sku.stockQuantity" placeholder="初始库存" :disabled="form.goodsType === 2" :min="0" style="width: 100px;" />
         </div>
       </el-form>
       <template #footer>
@@ -162,7 +163,7 @@ import { goodsTypeLabel } from '../../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
-import { editorForm, updatePayload, statusAction, productStatusLabel } from '../../utils/productEditing.mjs'
+import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload } from '../../utils/productEditing.mjs'
 import { inventoryPayload, canAdjustInventory } from '../../utils/inventoryAdjustment.mjs'
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 
@@ -276,7 +277,7 @@ const form = ref({
       skuCode: 'SKU' + Math.floor(1000 + Math.random() * 9000),
       specData: '{"规格": "标准版", "有效时长": "1个月"}',
       price: 19.90,
-      stockQuantity: 10
+      stockQuantity: 0
     }
   ]
 })
@@ -296,6 +297,9 @@ const loadProducts = async () => {
 const openDialog = () => {
   dialogVisible.value = true
 }
+const resetInitialCardStock = () => {
+  if (form.value.goodsType === 2) form.value.skus.forEach(sku => { sku.stockQuantity = 0 })
+}
 
 const handleCreate = async () => {
   if (!form.value.title || !form.value.mainImage) {
@@ -304,7 +308,7 @@ const handleCreate = async () => {
   }
   submitLoading.value = true
   try {
-    await request.post('/merchant/products', form.value)
+    await request.post('/merchant/products', productCreationPayload(form.value))
     ElMessage.success('商品发布成功')
     dialogVisible.value = false
     loadProducts()

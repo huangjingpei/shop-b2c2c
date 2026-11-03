@@ -1,6 +1,6 @@
 -- 文件：sprint1-schema.sql
 -- 用途：H2 MySQL兼容模式的隔离集成测试数据库结构。
--- 维护注意：源自业务表列定义但去除了MySQL建库、引擎和部分索引语法；不含业务种子，含业务幂等及人工库存调整表。仅用于测试，不能部署到生产；表结构变化须同步生产结构和迁移，H2通过不等于MySQL验证。
+-- 维护注意：源自业务表列定义但去除了MySQL建库、引擎和部分索引语法；不含业务种子，含业务幂等、人工库存调整及卡密作废表。仅用于测试，不能部署到生产；表结构变化须同步生产结构和迁移，H2通过不等于MySQL验证。
 -- ========================================================
 -- Shop B2B2C 全局全量初始化数据库脚本 (Single Source of Truth)
 -- 适用: 开发期启动自愈 / 删库一键重建 (Drop & Re-create)
@@ -264,4 +264,18 @@ CREATE TABLE IF NOT EXISTS inventory_adjustment (
   CONSTRAINT uk_inventory_adjustment_request UNIQUE (request_key),
   CONSTRAINT chk_adjustment_delta CHECK (delta <> 0),
   CONSTRAINT chk_adjustment_stock CHECK (before_stock >= 0 AND after_stock >= 0 AND after_stock = before_stock + delta)
+);
+
+-- 16. 卡密安全作废记录：以卡ID自然幂等，与状态迁移和扣减库存同事务。
+CREATE TABLE IF NOT EXISTS virtual_card_void (
+  card_id BIGINT NOT NULL PRIMARY KEY,
+  merchant_id BIGINT NOT NULL,
+  product_id BIGINT NOT NULL,
+  sku_id BIGINT NOT NULL,
+  actor_id BIGINT NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  before_stock INT NOT NULL,
+  after_stock INT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_card_void_stock CHECK (before_stock >= 1 AND after_stock = before_stock - 1)
 );

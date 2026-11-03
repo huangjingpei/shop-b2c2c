@@ -1,5 +1,5 @@
 -- 文件：schema.sql
--- 用途：开发期唯一运行时SQL入口，完整创建15张业务表、必要索引和演示数据。
+-- 用途：开发期唯一运行时SQL入口，完整创建16张业务表、必要索引和演示数据。
 -- 维护注意：只操作当前连接库，不包含删库/删表语句。CREATE TABLE IF NOT EXISTS不升级旧结构；开发重建会丢失旧数据，保留数据的环境须另做版本迁移；生产不得依赖演示账号。
 -- ========================================================
 -- Shop B2B2C 全局全量初始化数据库脚本 (Single Source of Truth)
@@ -394,3 +394,18 @@ CREATE TABLE IF NOT EXISTS inventory_adjustment (
   CONSTRAINT chk_adjustment_delta CHECK (delta <> 0),
   CONSTRAINT chk_adjustment_stock CHECK (before_stock >= 0 AND after_stock >= 0 AND after_stock = before_stock + delta)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='人工可售库存调整记录，不含全部库存事件';
+
+-- 16. 卡密安全作废记录：以卡ID自然幂等，与状态迁移和扣减库存同事务。
+CREATE TABLE IF NOT EXISTS virtual_card_void (
+  card_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  merchant_id BIGINT UNSIGNED NOT NULL,
+  product_id BIGINT UNSIGNED NOT NULL,
+  sku_id BIGINT UNSIGNED NOT NULL,
+  actor_id BIGINT UNSIGNED NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  before_stock INT NOT NULL,
+  after_stock INT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_card_void_merchant (merchant_id,sku_id,card_id),
+  CONSTRAINT chk_card_void_stock CHECK (before_stock >= 1 AND after_stock = before_stock - 1)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='卡密作废操作记录，不含卡密内容';

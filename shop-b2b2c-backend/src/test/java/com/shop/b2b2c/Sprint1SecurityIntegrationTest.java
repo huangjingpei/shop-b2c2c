@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存维护、Spring事务、Mapper SQL、公开响应及租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密维护、Spring事务、SQL、公开响应及租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -72,7 +72,7 @@ class Sprint1SecurityIntegrationTest {
     @Autowired com.shop.b2b2c.config.ReservationExpiryJob expiryJob;
     @Autowired TradeOrderMapper orders;
     @Autowired TradeOrderItemMapper items;
-    @Autowired ProductSkuMapper skus;
+    @SpyBean ProductSkuMapper skus;
     @Autowired ProductController products;
     @Autowired OrderController orderController;
     @SpyBean ProductVirtualCardMapper cards;
@@ -80,12 +80,14 @@ class Sprint1SecurityIntegrationTest {
     @Autowired com.shop.b2b2c.service.ProductEditingService editing;
     @SpyBean InventoryAdjustmentMapper adjustmentsMapper;
     @Autowired com.shop.b2b2c.service.InventoryAdjustmentService adjustments;
+    @SpyBean CardAssetMapper cardAssetsMapper;
+    @Autowired com.shop.b2b2c.service.CardAssetService cardAssets;
     @MockBean StringRedisTemplate redis;
 
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
+        for (String table : List.of("virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -367,6 +369,160 @@ class Sprint1SecurityIntegrationTest {
         assertThrows(IllegalStateException.class, () -> transaction.execute(status -> adjustments.adjust(1L, 200L,
                 "stock-outer-key-12345", adjustment(1, 1))));
         assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM inventory_adjustment", Integer.class));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(ints = {0, 1, 2})
+    void cardImportRejectsDuplicatesFromAllHistoricalStates(int state) {
+        jdbc.update("UPDATE product_virtual_card SET status=? WHERE id=1", state);
+        assertEquals(409, assertThrows(BusinessException.class,
+                () -> cardAssets.importCards(1L, 1L, 1L, List.of("fresh-fixture", " secret "))).getCode());
+        assertEquals(1, cards.selectCount(null)); assertEquals(1, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void concurrentCardImportsAcrossOwnProductsHaveOneWinner() throws Exception {
+        jdbc.update("INSERT INTO product(id,merchant_id,category_id,title,goods_type,main_image,min_price) VALUES(3,1,1,'goods3',2,'image',10)");
+        jdbc.update("INSERT INTO product_sku(id,merchant_id,product_id,sku_code,spec_data,price,stock_quantity) VALUES(3,1,3,'SKU3','{}',10,0)");
+        AtomicInteger success = new AtomicInteger(), duplicates = new AtomicInteger();
+        race(2, i -> {
+            try { cardAssets.importCards(1L, i == 0 ? 1L : 3L, i == 0 ? 1L : 3L, List.of("shared-new-fixture")); success.incrementAndGet(); }
+            catch (BusinessException e) { assertEquals(409, e.getCode()); duplicates.incrementAndGet(); }
+        });
+        assertEquals(1, success.get()); assertEquals(1, duplicates.get());
+        assertEquals(2, cards.selectCount(null)); assertEquals(2, skus.selectById(1).getStockQuantity() + skus.selectById(3).getStockQuantity());
+    }
+
+    @Test
+    void cardImportScopesHistoryToMerchantAndRollsBackStockFailure() {
+        assertEquals(1, cardAssets.importCards(2L, 2L, 2L, List.of("secret")).get("importedCount"));
+        doReturn(0).when(skus).addStock(1L, 1L, 2);
+        assertThrows(IllegalStateException.class, () -> cardAssets.importCards(1L, 1L, 1L, List.of("new-a", "new-b")));
+        assertEquals(1, skus.selectById(1).getStockQuantity()); assertEquals(2, cards.selectCount(null));
+        assertEquals(1, cards.findByMerchantId(1L).size());
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"productId", "skuId"})
+    void cardImportRejectsDecimalIdsButAcceptsLegacyIntegerStrings(String field) throws Exception {
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        var body = json.createObjectNode().put("productId", "1").put("skuId", "1"); body.putArray("cardContents").add("http-card-fixture");
+        mvc.perform(post("/api/v1/merchant/cards/import").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content(json.writeValueAsString(body))).andExpect(jsonPath("$.code").value(200));
+        body.put(field, 1.5);
+        mvc.perform(post("/api/v1/merchant/cards/import").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content(json.writeValueAsString(body))).andExpect(status().isBadRequest());
+        assertEquals(2, cards.selectCount(null));
+    }
+
+    @Test
+    void cardVoidHttpUsesSessionActorAndReturnsNoCardContent() throws Exception {
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        mvc.perform(post("/api/v1/merchant/cards/1/void").header("Authorization", "Bearer " + token).contentType("application/json")
+                .content("{\"reason\":\"expired-fixture\",\"actorId\":999}"))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.actorId").value(200))
+                .andExpect(jsonPath("$.data.beforeStock").value(1)).andExpect(jsonPath("$.data.afterStock").value(0))
+                .andExpect(jsonPath("$.data.cardContent").doesNotExist());
+        mvc.perform(get("/api/v1/merchant/cards/1/void-record").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.data.reason").value("expired-fixture")).andExpect(jsonPath("$.data.cardContent").doesNotExist());
+        assertEquals(2, cards.selectById(1).getStatus()); assertEquals(0, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void cardVoidCannotStealHeldCardAndWorksAfterOwnerReleases() {
+        intent("card-void-held"); var lock = payments.preLockInventory("card-void-held");
+        assertEquals(409, assertThrows(BusinessException.class, () -> cardAssets.voidCard(1L, 200L, 1L, "expired")).getCode());
+        assertEquals(0, cards.selectById(1).getStatus());
+        payments.cancelPreLock("card-void-held", lock.getOwnerToken());
+        cardAssets.voidCard(1L, 200L, 1L, "expired");
+        assertEquals(0, skus.selectById(1).getStockQuantity()); assertEquals(2, cards.selectById(1).getStatus());
+    }
+
+    @Test
+    void cardVoidIsIdempotentButCannotRewriteReasonOrReimportVoidedContent() {
+        var original = cardAssets.voidCard(1L, 200L, 1L, "expired");
+        assertEquals(original, cardAssets.voidCard(1L, 200L, 1L, " expired "));
+        assertEquals(409, assertThrows(BusinessException.class, () -> cardAssets.voidCard(1L, 200L, 1L, "new-reason")).getCode());
+        assertEquals(409, assertThrows(BusinessException.class, () -> cardAssets.importCards(1L, 1L, 1L, List.of("secret"))).getCode());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM virtual_card_void", Integer.class));
+    }
+
+    @Test
+    void cardVoidRejectsInventoryDriftForeignTenantAndEmployeeWrite() throws Exception {
+        jdbc.update("UPDATE product_sku SET stock_quantity=2 WHERE id=1");
+        assertEquals(409, assertThrows(BusinessException.class, () -> cardAssets.voidCard(1L, 200L, 1L, "reason")).getCode());
+        assertEquals(404, assertThrows(BusinessException.class, () -> cardAssets.voidCard(2L, 200L, 1L, "reason")).getCode());
+        assertEquals(404, assertThrows(BusinessException.class, () -> cardAssets.readRecord(2L, 1L)).getCode());
+        authUser("MERCHANT_STAFF", 1L); String token = loginToken();
+        mvc.perform(post("/api/v1/merchant/cards/1/void").header("Authorization", "Bearer " + token).contentType("application/json")
+                .content("{\"reason\":\"staff\"}")).andExpect(status().isForbidden());
+        assertEquals(0, cards.selectById(1).getStatus()); assertEquals(2, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void cardVoidAuditFailureRollsBackStateAndStock() {
+        doThrow(new IllegalStateException("isolated-void-record-failure")).when(cardAssetsMapper).insertVoid(any());
+        assertThrows(IllegalStateException.class, () -> cardAssets.voidCard(1L, 200L, 1L, "expired"));
+        assertEquals(0, cards.selectById(1).getStatus()); assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM virtual_card_void", Integer.class));
+    }
+    @Test
+    void cardVoidStockFailureRollsBackAlreadyChangedCardState() {
+        doReturn(0).when(skus).deductStock(1L, 1L, 1L, 1);
+        assertEquals(409, assertThrows(BusinessException.class, () -> cardAssets.voidCard(1L, 200L, 1L, "expired")).getCode());
+        assertEquals(0, cards.selectById(1).getStatus()); assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM virtual_card_void", Integer.class));
+    }
+
+    @Test
+    void concurrentCardVoidRetriesDeductExactlyOnce() throws Exception {
+        race(5, i -> assertEquals(0, cardAssets.voidCard(1L, 200L, 1L, "expired").getAfterStock()));
+        assertEquals(0, skus.selectById(1).getStockQuantity()); assertEquals(2, cards.selectById(1).getStatus());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM virtual_card_void", Integer.class));
+    }
+
+    @Test
+    void cardVoidAndPaymentCannotBothConsumeLastCard() throws Exception {
+        TradeOrder order = unpaid("card-void-payment", 1); AtomicInteger success = new AtomicInteger();
+        race(2, i -> {
+            try { if (i == 0) cardAssets.voidCard(1L, 200L, 1L, "expired"); else pay("card-void-payment"); success.incrementAndGet(); }
+            catch (BusinessException expected) { /* 另一方占用最后一份资产后必须拒绝。 */ }
+        });
+        assertEquals(1, success.get()); assertEquals(0, skus.selectById(1).getStockQuantity());
+        int state = cards.selectById(1).getStatus(); assertTrue(state == 1 || state == 2);
+        assertEquals(state == 2 ? 1 : 0, jdbc.queryForObject("SELECT COUNT(*) FROM virtual_card_void", Integer.class));
+        assertEquals(state == 1 ? "COMPLETED" : "UNPAID", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
+    void cardAssetEntryRejectsOuterTransaction() {
+        var transaction = new org.springframework.transaction.support.TransactionTemplate(transactionManager);
+        assertThrows(IllegalStateException.class, () -> transaction.execute(status -> cardAssets.importCards(1L, 1L, 1L, List.of("fixture"))));
+        assertThrows(IllegalStateException.class, () -> transaction.execute(status -> cardAssets.voidCard(1L, 200L, 1L, "reason")));
+    }
+
+    @Test
+    void newCardProductStartsEmptyThenImportAndVoidMaintainExactInventory() {
+        var dto = new ProductController.CreateProductDTO(); dto.setTitle("new-virtual"); dto.setMainImage("image");
+        dto.setCategoryId(1L); dto.setGoodsType(2); dto.setMinPrice(java.math.BigDecimal.TEN);
+        var initial = new ProductController.SkuDTO(); initial.setSkuCode("NEW-VIRTUAL"); initial.setSpecData("{}");
+        initial.setPrice(java.math.BigDecimal.TEN); initial.setStockQuantity(5); dto.setSkus(List.of(initial));
+        Long productId;
+        try (var security = mockStatic(SecurityUtils.class)) {
+            security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
+            assertEquals(400, assertThrows(BusinessException.class, () -> products.createProduct(dto)).getCode());
+            assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM product", Integer.class));
+            initial.setStockQuantity(0); productId = products.createProduct(dto).getData().getId();
+        }
+        Long skuId = skus.findByProductId(productId).get(0).getId();
+        assertEquals(0, skus.selectById(skuId).getStockQuantity());
+        cardAssets.importCards(1L, productId, skuId, List.of("new-product-card-a", "new-product-card-b"));
+        assertEquals(2, skus.selectById(skuId).getStockQuantity());
+        var imported = cards.findAvailableForMerchant(skuId, 1L);
+        cardAssets.voidCard(1L, 200L, imported.get(0).getId(), "expired");
+        assertEquals(1, skus.selectById(skuId).getStockQuantity());
+        assertEquals(1, cards.findAvailableForMerchant(skuId, 1L).size());
     }
 
     private void authUser(String role, Long merchantId) {

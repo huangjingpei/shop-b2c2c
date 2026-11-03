@@ -1,6 +1,6 @@
 /*
  * 文件：TradeGuards.java
- * 用途：统一商品/SKU归属、可交易资格、交付类型及交易金额/数量校验。
+ * 用途：统一商品/SKU归属、可交易资格、交付类型及交易金额/数量和初始库存校验。
  * 维护注意：类型1实物、2自动卡密、3定制服务；金额校验与管理端零费用规则不同。该类不访问数据库，调用方仍须维护事务和读取可信实体。
  */
 package com.shop.b2b2c.common;
@@ -31,6 +31,13 @@ public final class TradeGuards {
 
     public static void requireGoodsType(Integer type) {
         if (type == null || type < 1 || type > 3) throw new BusinessException(400, "不支持的商品类型");
+    }
+
+    public static void requireInitialStock(Integer type, Integer quantity) {
+        requireGoodsType(type);
+        if (quantity == null || quantity < 0 || (type == 2 && quantity != 0)) {
+            throw new BusinessException(400, "初始库存须非负；自动卡密初始库存必须为0，由导入生成");
+        }
     }
 
     public static void requireMoney(BigDecimal money) {

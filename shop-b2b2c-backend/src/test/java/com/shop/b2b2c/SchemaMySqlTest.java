@@ -1,6 +1,6 @@
 /*
  * 文件：SchemaMySqlTest.java
- * 用途：在独立临时MySQL8实例上验证schema初始化/记录保留、商品维护及人工库存调整Mapper、约束和回滚。
+ * 用途：在临时MySQL8验证schema/记录保留、商品/库存/卡密作废Mapper、约束和回滚。
  * 维护注意：仅显式提供schema.mysql.bin时运行；--no-defaults、随机空闲端口和target下独立数据目录隔离现有服务，校验@@datadir后才写入。不能改为连接开发/生产服务，测试实例停止后保留日志和临时数据供检查。
  */
 package com.shop.b2b2c;
@@ -69,7 +69,7 @@ class SchemaMySqlTest {
                 try (ResultSet result = statement.executeQuery("SHOW TABLES")) {
                     while (result.next()) tables.add(result.getString(1));
                 }
-                assertEquals(15, tables.size());
+                assertEquals(16, tables.size());
                 try (ResultSet indexes = statement.executeQuery("SHOW INDEX FROM inventory_reservation WHERE Key_name='idx_reservation_expiry'")) {
                     List<String> columns = new ArrayList<>();
                     while (indexes.next()) columns.add(indexes.getString("Column_name"));
@@ -89,6 +89,7 @@ class SchemaMySqlTest {
                 try (PreparedStatement audit = connection.prepareStatement("INSERT INTO inventory_adjustment(merchant_id,product_id,sku_id,actor_id,request_key,delta,before_stock,after_stock,reason) VALUES(1,1,1,1,?,1,776,777,'retention-fixture')")) {
                     audit.setString(1, "c".repeat(64)); audit.executeUpdate();
                 }
+                statement.executeUpdate("INSERT INTO virtual_card_void(card_id,merchant_id,product_id,sku_id,actor_id,reason,before_stock,after_stock) VALUES(999999999,1,1,1,1,'retention-fixture',1,0)");
                 Map<String,Long> counts = counts(connection, tables);
                 ScriptUtils.executeSqlScript(connection, resource);
                 assertEquals(counts, counts(connection, tables), "重复初始化不能增加演示数据或清空已有记录");
@@ -121,10 +122,13 @@ class SchemaMySqlTest {
         configuration.addMapper(com.shop.b2b2c.mapper.ProductEditingMapper.class);
         configuration.addMapper(com.shop.b2b2c.mapper.InventoryAdjustmentMapper.class);
         configuration.addMapper(com.shop.b2b2c.mapper.IdempotencyMapper.class);
+        configuration.addMapper(com.shop.b2b2c.mapper.CardAssetMapper.class);
         var factory = new org.apache.ibatis.session.SqlSessionFactoryBuilder().build(configuration);
         try (var session = factory.openSession(false)) {
             try { session.getConnection().setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED); }
             catch (SQLException e) { throw new IllegalStateException(e); }
+            var cardAssets = session.getMapper(com.shop.b2b2c.mapper.CardAssetMapper.class);
+            assertEquals(1L, cardAssets.lockMerchant(1L));
             var mapper = session.getMapper(com.shop.b2b2c.mapper.ProductEditingMapper.class);
             var original = mapper.lockProduct(1L, 1L);
             var sku = mapper.lockSkus(1L, 1L).get(0);
@@ -157,12 +161,30 @@ class SchemaMySqlTest {
             idempotency.claim("e".repeat(64), "f".repeat(64));
             assertEquals(1, idempotency.complete("e".repeat(64), "{}"));
             assertEquals("{}", idempotency.lock("e".repeat(64)).getResponseJson());
+            long cardId;
+            try (var insert = session.getConnection().prepareStatement("INSERT INTO product_virtual_card(product_id,sku_id,merchant_id,card_content,status) VALUES(1,?,1,'native-card-fixture',0)", Statement.RETURN_GENERATED_KEYS)) {
+                insert.setLong(1, sku.getId()); insert.executeUpdate();
+                try (var generated = insert.getGeneratedKeys()) { assertTrue(generated.next()); cardId = generated.getLong(1); }
+            } catch (SQLException e) { throw new IllegalStateException(e); }
+            assertNotNull(cardAssets.findCard(1L, cardId)); assertNull(cardAssets.findCard(2L, cardId));
+            assertNotNull(cardAssets.lockCard(1L, cardId));
+            assertTrue(cardAssets.historyContents(1L).contains("native-card-fixture"));
+            assertTrue(cardAssets.availableCount(1L, 1L, sku.getId()) >= 1);
+            assertEquals(1, cardAssets.markVoid(1L, cardId)); assertEquals(0, cardAssets.markVoid(1L, cardId));
+            assertEquals(1, inventory.adjust(1L, 1L, sku.getId(), stock + 1, -1));
+            var voidRecord = new com.shop.b2b2c.entity.CardVoidRecord();
+            voidRecord.setCardId(cardId); voidRecord.setMerchantId(1L); voidRecord.setProductId(1L); voidRecord.setSkuId(sku.getId());
+            voidRecord.setActorId(1L); voidRecord.setReason("native-void"); voidRecord.setBeforeStock(stock + 1); voidRecord.setAfterStock(stock);
+            assertEquals(1, cardAssets.insertVoid(voidRecord));
+            assertEquals("native-void", cardAssets.voidRecord(1L, cardId).getReason());
+            assertNull(cardAssets.voidRecord(2L, cardId));
             session.rollback();
             assertEquals(original.getTitle(), mapper.lockProduct(1L, 1L).getTitle());
             assertEquals(0, sku.getPrice().compareTo(mapper.lockSkus(1L, 1L).get(0).getPrice()));
             assertEquals(original.getStatus(), mapper.lockProduct(1L, 1L).getStatus());
             assertEquals(stock, inventory.lockSku(1L, 1L, sku.getId()).getStockQuantity());
             assertNull(inventory.find(1L, audit.getId()));
+            assertNull(cardAssets.findCard(1L, cardId)); assertNull(cardAssets.voidRecord(1L, cardId));
             session.rollback();
         }
     }

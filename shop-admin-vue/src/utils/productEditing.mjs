@@ -1,13 +1,16 @@
 /*
  * 文件：productEditing.mjs
- * 用途：商品编辑表单快照、提交白名单和上下架展示规则。
- * 维护注意：库存/类型/归属/规格编码只用于展示，不进入更新请求；revision必须来自服务端快照，不能从列表伪造。前端校验不替代后端事务、租户和价格校验。
+ * 用途：商品发布初始库存、编辑表单快照、提交白名单和上下架规则。
+ * 维护注意：自动卡密发布数量为0，由导入生成；库存/类型/归属/规格编码不进入编辑请求。revision必须来自服务端快照；前端规则不替代后端事务、租户和价格校验。
  */
 export function editorForm(snapshot) {
   const p = snapshot.product
   return { revision: snapshot.revision, categoryId: p.categoryId, title: p.title, subTitle: p.subTitle ?? '',
     mainImage: p.mainImage, serviceDesc: p.serviceDesc ?? '',
     skus: snapshot.skus.map(s => ({ id: s.id, skuCode: s.skuCode, specData: s.specData, price: Number(s.price), stockQuantity: s.stockQuantity })) }
+}
+export function productCreationPayload(form) {
+  return { ...form, skus: form.skus.map(s => ({ ...s, stockQuantity: form.goodsType === 2 ? 0 : s.stockQuantity })) }
 }
 export function updatePayload(form) {
   if (!form.title?.trim() || !form.mainImage?.trim() || !(Number(form.categoryId) > 0) || !form.revision || !form.skus?.length) {

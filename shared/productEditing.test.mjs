@@ -1,15 +1,24 @@
 /*
  * 文件：productEditing.test.mjs
- * 用途：商品编辑表单独立性、请求字段白名单、售价边界及商家上下架规则测试。
+ * 用途：商品发布初始库存、编辑表单独立性、字段白名单、售价及上下架规则测试。
  * 维护注意：纯Node测试，不模拟服务端授权；后端另测事务回滚、并发冲突与租户归属。库存不能因浏览器快照陈旧而被写回。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { editorForm, updatePayload, statusAction, productStatusLabel } from '../shop-admin-vue/src/utils/productEditing.mjs'
+import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload } from '../shop-admin-vue/src/utils/productEditing.mjs'
 function snapshot() {
   return { revision: 'revision', product: { id: 1, merchantId: 2, categoryId: 1, title: '商品', mainImage: 'image', goodsType: 2, status: 1 },
     skus: [{ id: 1, skuCode: 'code', specData: '{}', price: 10, stockQuantity: 9 }] }
 }
+test('自动卡密发布库存为0，保留原表单且请求SKU快照独立', () => {
+  const form = { goodsType: 2, skus: [{ stockQuantity: 10 }] }
+  const payload = productCreationPayload(form)
+  assert.equal(payload.skus[0].stockQuantity, 0); assert.equal(form.skus[0].stockQuantity, 10)
+  payload.skus[0].stockQuantity = 99; assert.equal(form.skus[0].stockQuantity, 10)
+})
+test('实物和定制服务发布保留初始可售数量', () => {
+  for (const goodsType of [1, 3]) assert.equal(productCreationPayload({ goodsType, skus: [{ stockQuantity: 10 }] }).skus[0].stockQuantity, 10)
+})
 test('编辑表单与服务端快照互不覆盖，空可选字段可编辑', () => {
   const source = snapshot(), form = editorForm(source)
   form.skus[0].price = 20; form.title = '新标题'
