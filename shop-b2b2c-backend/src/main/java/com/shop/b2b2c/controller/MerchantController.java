@@ -237,6 +237,12 @@ public class MerchantController {
         ManagementGuards.text(updateDTO.getLogoUrl(), 255, false);
         ManagementGuards.text(updateDTO.getContactPhone(), 32, false);
         ManagementGuards.text(updateDTO.getCustomPayQrcode(), 512, false);
+        try {
+            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
+                cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
+            }
+        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
+        }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));

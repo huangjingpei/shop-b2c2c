@@ -18,7 +18,8 @@
             <span class="card-header">店铺前台展示资料</span>
           </template>
 
-          <el-form :model="store" label-width="110px">
+          <el-alert v-if="!isManager" title="当前为员工账号（只读权限），仅店长或管理员有权修改店铺资料与收款设置" type="warning" :closable="false" style="margin-bottom: 16px;" />
+          <el-form :model="store" :disabled="!isManager" label-width="110px">
             <el-form-item label="店铺名称">
               <el-input v-model="store.storeName" disabled />
             </el-form-item>
@@ -34,7 +35,7 @@
             <el-form-item label="客服联系电话">
               <el-input v-model="store.contactPhone" placeholder="用于买家售后沟通" />
             </el-form-item>
-            <el-form-item>
+            <el-form-item v-if="isManager">
               <el-button type="primary" :loading="saving" @click="saveProfile">保存修改</el-button>
             </el-form-item>
           </el-form>
@@ -91,6 +92,7 @@ import request from '../../api/request'
 const saving = ref(false)
 const store = ref({})
 const paymentAccount = ref({})
+const isManager = ref(localStorage.getItem('roleCode') === 'MERCHANT_ADMIN' || localStorage.getItem('roleCode') === 'SUPERADMIN')
 
 const maskBankCard = (num) => {
   if (!num || num.length < 10) return num

@@ -312,6 +312,12 @@ public class OrderController {
     @Operation(summary = "【商家】★ 线上服务录入交付凭证 (一经交付锁定退款仲裁)")
     @PostMapping("/api/v1/merchant/orders/{id}/fulfill-virtual")
     public R<Void> fulfillVirtualOrder(@PathVariable Long id, @RequestBody PeerPayDTOs.VirtualFulfillRequest req) {
+        try {
+            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
+                cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
+            }
+        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
+        }
         Long merchantId = SecurityUtils.getCurrentMerchantId();
         if (merchantId == null) {
             throw new BusinessException("仅限商家账号履约交付");
@@ -334,8 +340,11 @@ public class OrderController {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
         }
-        if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
-            cn.dev33.satoken.stp.StpUtil.checkRole("SUPERADMIN");
+        try {
+            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
+                cn.dev33.satoken.stp.StpUtil.checkRole("SUPERADMIN");
+            }
+        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
         }
         List<TradeOrder> orders = orderMapper.findAllByOrderByCreatedAtDesc();
 
@@ -370,8 +379,11 @@ public class OrderController {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
         }
-        if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
-            cn.dev33.satoken.stp.StpUtil.checkRole("SUPERADMIN");
+        try {
+            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
+                cn.dev33.satoken.stp.StpUtil.checkRole("SUPERADMIN");
+            }
+        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
         }
         TradeOrder order = orderMapper.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "订单不存在"));

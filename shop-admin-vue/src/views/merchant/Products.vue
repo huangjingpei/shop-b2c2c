@@ -10,7 +10,7 @@
         <h2>商品发布与规格变体 SKU 管理</h2>
         <p>发布实物、自动卡密或定制服务，维护商品资料与SKU售价</p>
       </div>
-      <el-button type="primary" icon="Plus" @click="openDialog">发布新商品</el-button>
+      <el-button v-if="isManager" type="primary" icon="Plus" @click="openDialog">发布新商品</el-button>
     </div>
 
     <el-card shadow="never" class="table-card">
@@ -48,8 +48,8 @@
         </el-table-column>
         <el-table-column label="操作" width="250" fixed="right">
           <template #default="{ row }">
-            <el-button size="small" link type="primary" :disabled="editorLoading || editSaving" @click="openEditor(row)">编辑</el-button>
-            <el-button v-if="statusAction(row)" size="small" link :type="row.status === 1 ? 'warning' : 'success'"
+            <el-button v-if="isManager" size="small" link type="primary" :disabled="editorLoading || editSaving" @click="openEditor(row)">编辑</el-button>
+            <el-button v-if="isManager && statusAction(row)" size="small" link :type="row.status === 1 ? 'warning' : 'success'"
               :loading="statusLoading === row.id" :disabled="statusLoading !== null || editSaving" @click="changeStatus(row)">{{ statusAction(row).label }}</el-button>
             <router-link v-if="row.goodsType === 2" to="/merchant/cards">
               <el-button size="small" type="primary" link>卡密库管理</el-button>
@@ -167,6 +167,7 @@ import { editorForm, updatePayload, statusAction, productStatusLabel, productCre
 import { inventoryPayload, canAdjustInventory } from '../../utils/inventoryAdjustment.mjs'
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 
+const isManager = ref(localStorage.getItem('roleCode') === 'MERCHANT_ADMIN' || localStorage.getItem('roleCode') === 'SUPERADMIN')
 const loading = ref(false)
 const submitLoading = ref(false)
 const dialogVisible = ref(false)

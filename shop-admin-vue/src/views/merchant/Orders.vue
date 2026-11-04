@@ -127,15 +127,18 @@
               录入快递发货
             </el-button>
 
-            <!-- 线上定制服务录入交付凭证 -->
+            <!-- 线上定制服务录入交付凭证 (仅店长与超管可操作 R02) -->
             <el-button
-              v-else-if="canFulfillService(row.order.goodsType, row.order.orderStatus)"
+              v-else-if="isManager && canFulfillService(row.order.goodsType, row.order.orderStatus)"
               type="success"
               size="small"
               @click="openVirtualFulfillDialog(row.order)"
             >
               录入交付凭证
             </el-button>
+            <span v-else-if="!isManager && canFulfillService(row.order.goodsType, row.order.orderStatus)" style="font-size: 12px; color: #d97706;">
+              待店长交付凭证
+            </span>
 
             <!-- 已完结状态 -->
             <span v-else-if="row.order.orderStatus === 'COMPLETED'" style="font-size: 12px; color: #16a34a; font-weight: 600;">
@@ -377,6 +380,7 @@ const currentOrder = ref(null)
 const posterView = reactive({ visible: false, loading: false, url: '', error: '' })
 const posterPreview = createStoredPosterPreview({ get: (...args) => request.get(...args), render: state => Object.assign(posterView, state) })
 
+const isManager = ref(localStorage.getItem('roleCode') === 'MERCHANT_ADMIN' || localStorage.getItem('roleCode') === 'SUPERADMIN')
 const deliverForm = ref({
   logisticsCompany: '顺丰速运',
   trackingNumber: ''

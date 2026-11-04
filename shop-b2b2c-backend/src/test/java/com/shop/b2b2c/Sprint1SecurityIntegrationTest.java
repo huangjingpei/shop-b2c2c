@@ -34,9 +34,12 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import com.shop.b2b2c.entity.MerchantStore;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /** Real mapper SQL and Spring transactions; no external MySQL/Redis needed. */
@@ -2303,6 +2306,155 @@ class Sprint1SecurityIntegrationTest {
         mvc.perform(get("/api/v1/merchant/cards/1002")
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(jsonPath("$.code").value(404));
+    }
+
+    @Test
+    void r02MerchantStaffRoleCannotPerformPrivilegedOperations() throws Exception {
+        physicalProduct();
+
+        authUser("MERCHANT_STAFF", 1L);
+        String staffToken = loginToken();
+
+        // 1. Staff cannot update store profile or custom pay QR code
+        MerchantStore storeUpdate = new MerchantStore();
+        storeUpdate.setNotice("Staff malicious notice");
+        storeUpdate.setCustomPayQrcode("https://evil.test/pay.png");
+        mvc.perform(put("/api/v1/merchant/profile")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(storeUpdate)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        assertNotEquals("Staff malicious notice", jdbc.queryForObject("SELECT notice FROM merchant_store WHERE id=1", String.class));
+
+        // 2. Staff cannot import virtual cards
+        ProductController.BatchImportCardDTO cardDto = new ProductController.BatchImportCardDTO();
+        cardDto.setProductId(1L);
+        cardDto.setSkuId(1L);
+        cardDto.setCardContents(List.of("STAFF-UNAUTHORIZED-CARD-1"));
+        mvc.perform(post("/api/v1/merchant/cards/import")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(cardDto)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM product_virtual_card WHERE card_content='STAFF-UNAUTHORIZED-CARD-1'", Integer.class));
+
+        // 3. Staff cannot create new products
+        ProductController.CreateProductDTO createDto = new ProductController.CreateProductDTO();
+        createDto.setTitle("Staff Created Product");
+        createDto.setMainImage("https://example.test/img.png");
+        createDto.setCategoryId(1L);
+        createDto.setGoodsType(1);
+        ProductController.SkuDTO skuDto = new ProductController.SkuDTO();
+        skuDto.setSkuCode("SKU-STAFF-NEW");
+        skuDto.setPrice(new java.math.BigDecimal("99.00"));
+        skuDto.setStockQuantity(10);
+        skuDto.setSpecData("{\"color\":\"red\"}");
+        createDto.setSkus(List.of(skuDto));
+        mvc.perform(post("/api/v1/merchant/products")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(createDto)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM product WHERE title='Staff Created Product'", Integer.class));
+
+        // 4. Staff cannot edit product prices or status
+        var editRequest = productEdit(editing.get(1L, 1L).revision(), "staff-tampered", "1.00");
+        mvc.perform(put("/api/v1/merchant/products/1")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(editRequest)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        assertNotEquals("staff-tampered", jdbc.queryForObject("SELECT title FROM product WHERE id=1", String.class));
+
+        mvc.perform(patch("/api/v1/merchant/products/1/status")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(new com.shop.b2b2c.dto.ProductEditingDTOs.Status(editRequest.revision(), 0))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        assertEquals(1, jdbc.queryForObject("SELECT status FROM product WHERE id=1", Integer.class));
+
+        // 5. Staff cannot manually fulfill virtual order
+        TradeOrder vOrder = new TradeOrder();
+        vOrder.setOrderSn("ORD-R02-VIRTUAL");
+        vOrder.setMerchantId(1L);
+        vOrder.setBuyerContact("vbuyer@example.com");
+        vOrder.setGoodsType(3);
+        vOrder.setTotalAmount(new java.math.BigDecimal("30.00"));
+        vOrder.setPayAmount(new java.math.BigDecimal("30.00"));
+        vOrder.setOrderStatus("PAID");
+        vOrder.setQueryToken("vquerytoken12345");
+        orders.save(vOrder);
+
+        mvc.perform(post("/api/v1/merchant/orders/" + vOrder.getId() + "/fulfill-virtual")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content("{\"serviceVoucher\":\"staff-delivered\"}"))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        assertNull(orders.selectById(vOrder.getId()).getServiceVoucher());
+
+        // 6. Switch to MERCHANT_ADMIN -> authorized operations succeed
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_ADMIN", 1L);
+        String adminToken = loginToken();
+
+        mvc.perform(put("/api/v1/merchant/profile")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(storeUpdate)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        assertEquals("Staff malicious notice", jdbc.queryForObject("SELECT notice FROM merchant_store WHERE id=1", String.class));
+    }
+
+    @Test
+    void r03CorsPreflightAllowsReservationTokenForAllowedOrigins() throws Exception {
+        String allowedHeaders = mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options("/api/v1/peer-pay/cancel-lock/some-token")
+                        .header("Origin", "https://admin.example.test")
+                        .header("Access-Control-Request-Method", "POST")
+                        .header("Access-Control-Request-Headers", "X-Reservation-Token"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Access-Control-Allow-Origin", "https://admin.example.test"))
+                .andReturn().getResponse().getHeader("Access-Control-Allow-Headers");
+        assertNotNull(allowedHeaders);
+        assertTrue(allowedHeaders.contains("X-Reservation-Token"));
+
+        // Untrusted origin does not receive Access-Control-Allow-Origin
+        mvc.perform(org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options("/api/v1/peer-pay/cancel-lock/some-token")
+                        .header("Origin", "https://evil-untrusted-origin.test")
+                        .header("Access-Control-Request-Method", "POST")
+                        .header("Access-Control-Request-Headers", "X-Reservation-Token"))
+                .andExpect(header().doesNotExist("Access-Control-Allow-Origin"));
+    }
+
+    @Test
+    void r03ReservationReleaseWithCorrectTokenSucceedsAndIncorrectFails() throws Exception {
+        TradeOrder order = intent("r03-release");
+        var lock = payments.preLockInventory("r03-release", "r03-key-1");
+        assertNotNull(lock.getOwnerToken());
+
+        // 1. Release with wrong token fails with 403
+        mvc.perform(post("/api/v1/peer-pay/cancel-lock/r03-release")
+                        .header("X-Reservation-Token", "wrong-owner-token"))
+                .andExpect(jsonPath("$.code").value(403));
+
+        // 2. Release with correct X-Reservation-Token succeeds
+        mvc.perform(post("/api/v1/peer-pay/cancel-lock/r03-release")
+                        .header("X-Reservation-Token", lock.getOwnerToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 3. Releasing again with same token is idempotent
+        mvc.perform(post("/api/v1/peer-pay/cancel-lock/r03-release")
+                        .header("X-Reservation-Token", lock.getOwnerToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
     }
 
     private void race(int count, java.util.function.IntConsumer action) throws Exception {

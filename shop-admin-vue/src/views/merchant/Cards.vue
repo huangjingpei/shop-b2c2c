@@ -10,7 +10,7 @@
         <h2>16688 虚拟卡密库管理 (自动秒发)</h2>
         <p>按商品与SKU批量入库；重复卡密整批拒绝，到账确认后按订单自动发卡</p>
       </div>
-      <div><el-button :disabled="loading" @click="loadCards">刷新列表</el-button><el-button type="primary" icon="Upload" @click="dialogVisible = true">批量录入卡密</el-button></div>
+      <div><el-button :disabled="loading" @click="loadCards">刷新列表</el-button><el-button v-if="currentRole === 'MERCHANT_ADMIN' || currentRole === 'SUPERADMIN'" type="primary" icon="Upload" @click="dialogVisible = true">批量录入卡密</el-button></div>
     </div>
 
     <!-- 卡密列表 -->

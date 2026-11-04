@@ -21,10 +21,22 @@ public class ProductEditingController {
     public R<Editor> get(@PathVariable Long id) { return R.ok(editing.get(SecurityUtils.requireCurrentMerchantId(), id)); }
     @PutMapping("/{id}")
     public R<Editor> update(@PathVariable Long id, @RequestBody Update edit) {
+        try {
+            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
+                cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
+            }
+        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
+        }
         return R.ok("商品资料已保存", editing.update(SecurityUtils.requireCurrentMerchantId(), id, edit));
     }
     @PatchMapping("/{id}/status")
     public R<Editor> status(@PathVariable Long id, @RequestBody Status change) {
+        try {
+            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
+                cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
+            }
+        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
+        }
         return R.ok("商品状态已更新", editing.changeStatus(SecurityUtils.requireCurrentMerchantId(), id, change));
     }
 }
