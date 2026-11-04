@@ -2114,6 +2114,197 @@ class Sprint1SecurityIntegrationTest {
         assertFalse(body.contains("JsonParseException"));
     }
 
+    @Test
+    void r04MerchantAndAdminOrderListsDoNotLeakQueryTokenOrCardSecrets() throws Exception {
+        TradeOrder order = new TradeOrder();
+        order.setOrderSn("ORD-R04-LIST-01");
+        order.setMerchantId(1L);
+        order.setBuyerContact("r04buyer@example.com");
+        order.setGoodsType(2);
+        order.setOrderStatus("COMPLETED");
+        order.setPeerStatus("PAID");
+        order.setPayAmount(new java.math.BigDecimal("50.00"));
+        order.setTotalAmount(new java.math.BigDecimal("50.00"));
+        order.setQueryToken("secretquerytoken1234567890abcdef");
+        order.setServiceVoucher("PLAIN-CARD-SERIAL-9999");
+        order.setPosterUrl("data:image/png;base64,largeposterdata");
+        orders.save(order);
+
+        jdbc.update("INSERT INTO trade_order_item(order_id, order_sn, product_id, sku_id, sku_code, product_title, spec_info, price, quantity, subtotal, card_details) " +
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                order.getId(), order.getOrderSn(), 1L, 1L, "SKU-01", "Virtual Card Product", "100元面值",
+                new java.math.BigDecimal("50.00"), 2, new java.math.BigDecimal("100.00"),
+                "CARD-SECRET-AAA-111\nCARD-SECRET-BBB-222");
+
+        // 1. Merchant order list check
+        authUser("MERCHANT_ADMIN", 1L);
+        String merchantToken = loginToken();
+        String merchantListResp = mvc.perform(get("/api/v1/merchant/orders")
+                        .header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data[0].order.queryToken").doesNotExist())
+                .andExpect(jsonPath("$.data[0].order.posterUrl").doesNotExist())
+                .andExpect(jsonPath("$.data[0].order.serviceVoucher").value("系统卡密已自动交付"))
+                .andExpect(jsonPath("$.data[0].items[0].cardDetails").value("已自动发放 (共2张)"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertFalse(merchantListResp.contains("secretquerytoken1234567890abcdef"));
+        assertFalse(merchantListResp.contains("CARD-SECRET-AAA-111"));
+        assertFalse(merchantListResp.contains("CARD-SECRET-BBB-222"));
+        assertFalse(merchantListResp.contains("PLAIN-CARD-SERIAL-9999"));
+
+        // 2. Admin order list check
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("SUPERADMIN", null);
+        String adminToken = loginToken();
+
+        String adminListResp = mvc.perform(get("/api/v1/admin/orders")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orders[0].queryToken").doesNotExist())
+                .andExpect(jsonPath("$.data.orders[0].posterUrl").doesNotExist())
+                .andExpect(jsonPath("$.data.orders[0].serviceVoucher").value("系统卡密已自动交付"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertFalse(adminListResp.contains("secretquerytoken1234567890abcdef"));
+        assertFalse(adminListResp.contains("PLAIN-CARD-SERIAL-9999"));
+    }
+
+    @Test
+    void r04SingleOrderDetailEndpointAllowsAuthorizedMerchantToViewCardDetails() throws Exception {
+        TradeOrder order = new TradeOrder();
+        order.setOrderSn("ORD-R04-DETAIL-01");
+        order.setMerchantId(1L);
+        order.setBuyerContact("r04buyer@example.com");
+        order.setGoodsType(2);
+        order.setOrderStatus("COMPLETED");
+        order.setPeerStatus("PAID");
+        order.setPayAmount(new java.math.BigDecimal("50.00"));
+        order.setTotalAmount(new java.math.BigDecimal("50.00"));
+        order.setQueryToken("secretquerytoken-detail-123456");
+        order.setServiceVoucher("CARD-VOUCHER-SECRET");
+        orders.save(order);
+
+        jdbc.update("INSERT INTO trade_order_item(order_id, order_sn, product_id, sku_id, sku_code, product_title, spec_info, price, quantity, subtotal, card_details) " +
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                order.getId(), order.getOrderSn(), 1L, 1L, "SKU-01", "Virtual Card Product", "100元面值",
+                new java.math.BigDecimal("50.00"), 1, new java.math.BigDecimal("50.00"),
+                "CARD-SECRET-UNMASKED-XYZ");
+
+        authUser("MERCHANT_ADMIN", 1L);
+        String token = loginToken();
+
+        mvc.perform(get("/api/v1/merchant/orders/" + order.getId())
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.order.queryToken").doesNotExist())
+                .andExpect(jsonPath("$.data.order.posterUrl").doesNotExist())
+                .andExpect(jsonPath("$.data.items[0].cardDetails").value("CARD-SECRET-UNMASKED-XYZ"));
+    }
+
+    @Test
+    void r04SingleOrderDetailRejectsCrossTenantAccess() throws Exception {
+        TradeOrder order = new TradeOrder();
+        order.setOrderSn("ORD-R04-TENANT-01");
+        order.setMerchantId(1L);
+        order.setBuyerContact("cross-buyer@example.com");
+        order.setQueryToken("cross-query-token-12345");
+        order.setGoodsType(2);
+        order.setTotalAmount(new java.math.BigDecimal("50.00"));
+        order.setPayAmount(new java.math.BigDecimal("50.00"));
+        order.setOrderStatus("COMPLETED");
+        orders.save(order);
+
+        authUser("MERCHANT_ADMIN", 2L);
+        String token = loginToken();
+
+        mvc.perform(get("/api/v1/merchant/orders/" + order.getId())
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(403));
+    }
+
+    @Test
+    void r04MerchantStaffRoleInSingleOrderDetailMasksCardSecrets() throws Exception {
+        TradeOrder order = new TradeOrder();
+        order.setOrderSn("ORD-R04-STAFF-01");
+        order.setMerchantId(1L);
+        order.setBuyerContact("staffview@example.com");
+        order.setQueryToken("staff-query-token-12345");
+        order.setGoodsType(2);
+        order.setTotalAmount(new java.math.BigDecimal("50.00"));
+        order.setPayAmount(new java.math.BigDecimal("50.00"));
+        order.setOrderStatus("COMPLETED");
+        orders.save(order);
+
+        jdbc.update("INSERT INTO trade_order_item(order_id, order_sn, product_id, sku_id, sku_code, product_title, spec_info, price, quantity, subtotal, card_details) " +
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                order.getId(), order.getOrderSn(), 1L, 1L, "SKU-01", "Virtual Card Product", "100元面值",
+                new java.math.BigDecimal("50.00"), 2, new java.math.BigDecimal("100.00"),
+                "STAFF-SECRET-111\nSTAFF-SECRET-222");
+
+        authUser("MERCHANT_STAFF", 1L);
+        String token = loginToken();
+
+        String resp = mvc.perform(get("/api/v1/merchant/orders/" + order.getId())
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.items[0].cardDetails").value("已自动发放 (员工账号无权查阅明文)"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertFalse(resp.contains("STAFF-SECRET-111"));
+        assertFalse(resp.contains("STAFF-SECRET-222"));
+    }
+
+    @Test
+    void r04MerchantCardsListRestrictedToStoreManagerAndSetsNoStore() throws Exception {
+        jdbc.update("INSERT INTO product_virtual_card(id, product_id, sku_id, merchant_id, card_content, status) " +
+                "VALUES(1001, 1, 1, 1, 'RAW-CARD-1001-PASS', 0)");
+        jdbc.update("INSERT INTO product_virtual_card(id, product_id, sku_id, merchant_id, card_content, status) " +
+                "VALUES(1002, 1, 1, 2, 'RAW-CARD-1002-PASS', 0)");
+
+        // 1. Staff is rejected with 403
+        authUser("MERCHANT_STAFF", 1L);
+        String staffToken = loginToken();
+
+        mvc.perform(get("/api/v1/merchant/cards")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+
+        // 2. Merchant Admin can access, Cache-Control: no-store
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_ADMIN", 1L);
+        String adminToken = loginToken();
+
+        mvc.perform(get("/api/v1/merchant/cards")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").isArray());
+
+        // 3. Single card detail: own store works, other store returns 404
+        mvc.perform(get("/api/v1/merchant/cards/1001")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.data.cardContent").value("RAW-CARD-1001-PASS"));
+
+        mvc.perform(get("/api/v1/merchant/cards/1002")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(jsonPath("$.code").value(404));
+    }
+
     private void race(int count, java.util.function.IntConsumer action) throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(count);
         CountDownLatch start = new CountDownLatch(1);

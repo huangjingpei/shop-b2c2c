@@ -166,26 +166,95 @@ public class OrderController {
     // 商家工作台视角 API (/api/v1/merchant/orders)
     // ==========================================
 
-    @Operation(summary = "【商家】查询属于本店的全部订单")
-    @GetMapping("/api/v1/merchant/orders")
     public R<List<Map<String, Object>>> listMerchantOrders() {
+        return listMerchantOrders(null);
+    }
+
+    @Operation(summary = "【商家】查询属于本店的全部订单 (R04: 敏感凭证与卡密脱敏)")
+    @GetMapping("/api/v1/merchant/orders")
+    public R<List<Map<String, Object>>> listMerchantOrders(jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         List<TradeOrder> orders = orderMapper.findByMerchantIdOrderByCreatedAtDesc(merchantId);
 
         List<Map<String, Object>> resList = new ArrayList<>();
         for (TradeOrder o : orders) {
+            // R04: 严格剥离买家私密提取凭证与海报
+            o.setQueryToken(null);
+            o.setPosterUrl(null);
+            if (Integer.valueOf(2).equals(o.getGoodsType()) && o.getServiceVoucher() != null) {
+                o.setServiceVoucher("系统卡密已自动交付");
+            }
+
             Map<String, Object> map = new HashMap<>();
             map.put("order", o);
-            map.put("items", itemMapper.findByOrderSn(o.getOrderSn()));
+
+            List<TradeOrderItem> items = itemMapper.findByOrderSn(o.getOrderSn());
+            for (TradeOrderItem item : items) {
+                if (item.getCardDetails() != null && !item.getCardDetails().isBlank()) {
+                    item.setCardDetails("已自动发放 (共" + (item.getQuantity() != null ? item.getQuantity() : 1) + "张)");
+                }
+            }
+            map.put("items", items);
             resList.add(map);
         }
         return R.ok(resList);
     }
 
+    public R<Map<String, Object>> getMerchantOrderDetail(Long id) {
+        return getMerchantOrderDetail(id, null);
+    }
+
+    @Operation(summary = "【商家】查询单个订单详情与授权凭据 (R04: 单单授权与员工脱敏)")
+    @GetMapping("/api/v1/merchant/orders/{id}")
+    public R<Map<String, Object>> getMerchantOrderDetail(@PathVariable Long id,
+            jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        TradeOrder order = orderMapper.findById(id)
+                .orElseThrow(() -> new BusinessException(404, "订单不存在"));
+        if (!merchantId.equals(order.getMerchantId())) {
+            throw new BusinessException(403, "无权访问其他商户订单");
+        }
+        // 买家专属提取凭证 queryToken 绝不向商家端暴露
+        order.setQueryToken(null);
+        order.setPosterUrl(null);
+
+        List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
+        // 细粒度权限：仅限店长(MERCHANT_ADMIN)或超管(SUPERADMIN)有权查阅卡密明文快照；普通员工(MERCHANT_STAFF)脱敏遮蔽
+        boolean hasCardSecretPermission = cn.dev33.satoken.stp.StpUtil.isLogin()
+                && (cn.dev33.satoken.stp.StpUtil.hasRole("SUPERADMIN") || cn.dev33.satoken.stp.StpUtil.hasRole("MERCHANT_ADMIN"));
+        if (!hasCardSecretPermission) {
+            if (Integer.valueOf(2).equals(order.getGoodsType()) && order.getServiceVoucher() != null) {
+                order.setServiceVoucher("系统卡密已自动交付 (员工账号无权查阅明文)");
+            }
+            for (TradeOrderItem item : items) {
+                if (item.getCardDetails() != null && !item.getCardDetails().isBlank()) {
+                    item.setCardDetails("已自动发放 (员工账号无权查阅明文)");
+                }
+            }
+        }
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("order", order);
+        map.put("items", items);
+        return R.ok(map);
+    }
+
+    public R<com.shop.b2b2c.common.OrderStatistics> merchantStatistics() {
+        return merchantStatistics(null);
+    }
+
     @Operation(summary = "【商家】本店订单状态统计（非资金账本）")
     @GetMapping("/api/v1/merchant/orders/statistics")
     public R<com.shop.b2b2c.common.OrderStatistics> merchantStatistics(jakarta.servlet.http.HttpServletResponse response) {
-        response.setHeader("Cache-Control", "no-store");
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         return R.ok(com.shop.b2b2c.common.OrderStatistics.from(orderMapper.findByMerchantIdOrderByCreatedAtDesc(merchantId)));
     }
@@ -255,10 +324,28 @@ public class OrderController {
     // 平台超级管理员视角 API (/api/v1/admin/orders)
     // ==========================================
 
-    @Operation(summary = "【超管】平台订单及状态统计（非资金账本）")
-    @GetMapping("/api/v1/admin/orders")
     public R<Map<String, Object>> listAdminOrders() {
+        return listAdminOrders(null);
+    }
+
+    @Operation(summary = "【超管】平台订单及状态统计（非资金账本，R04: 敏感凭证脱敏与no-store）")
+    @GetMapping("/api/v1/admin/orders")
+    public R<Map<String, Object>> listAdminOrders(jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
+        if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
+            cn.dev33.satoken.stp.StpUtil.checkRole("SUPERADMIN");
+        }
         List<TradeOrder> orders = orderMapper.findAllByOrderByCreatedAtDesc();
+
+        for (TradeOrder o : orders) {
+            o.setQueryToken(null);
+            o.setPosterUrl(null);
+            if (Integer.valueOf(2).equals(o.getGoodsType()) && o.getServiceVoucher() != null) {
+                o.setServiceVoucher("系统卡密已自动交付");
+            }
+        }
 
         var statistics = com.shop.b2b2c.common.OrderStatistics.from(orders);
 
@@ -270,5 +357,30 @@ public class OrderController {
         res.put("statistics", statistics);
         res.put("orders", orders);
         return R.ok(res);
+    }
+
+    public R<Map<String, Object>> getAdminOrderDetail(Long id) {
+        return getAdminOrderDetail(id, null);
+    }
+
+    @Operation(summary = "【超管】平台单个订单详情监管审计")
+    @GetMapping("/api/v1/admin/orders/{id}")
+    public R<Map<String, Object>> getAdminOrderDetail(@PathVariable Long id,
+            jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
+        if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
+            cn.dev33.satoken.stp.StpUtil.checkRole("SUPERADMIN");
+        }
+        TradeOrder order = orderMapper.findById(id)
+                .orElseThrow(() -> new BusinessException(404, "订单不存在"));
+        order.setQueryToken(null);
+        order.setPosterUrl(null);
+
+        Map<String, Object> map = new HashMap<>();
+        map.put("order", order);
+        map.put("items", itemMapper.findByOrderSn(order.getOrderSn()));
+        return R.ok(map);
     }
 }

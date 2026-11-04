@@ -21,6 +21,14 @@ public class CardAssetController {
         StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
         return R.ok("卡密已作废", assets.voidCard(SecurityUtils.requireCurrentMerchantId(), SecurityUtils.getCurrentUserId(), id, request.reason()));
     }
+    public R<CardVoidRecord> record(Long id) {
+        return record(id, null);
+    }
     @GetMapping("/{id}/void-record")
-    public R<CardVoidRecord> record(@PathVariable Long id) { return R.ok(assets.readRecord(SecurityUtils.requireCurrentMerchantId(), id)); }
+    public R<CardVoidRecord> record(@PathVariable Long id, jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
+        return R.ok(assets.readRecord(SecurityUtils.requireCurrentMerchantId(), id));
+    }
 }

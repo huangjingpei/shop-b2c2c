@@ -44,7 +44,7 @@
 | 待处理 | [R01](2026-11-04-project-diagnostic-report.md#r01) / A0 | D21/D31 | 固定凭据回退及生产种子隔离未完成 | 生产种子策略；凭据轮换由环境负责人执行 |
 | 待处理 | [R02](2026-11-04-project-diagnostic-report.md#r02) / A1 | D23/F13 | 员工与店长共用敏感操作权限 | 先确认员工操作矩阵，复用AuthSessionService |
 | 待处理 | [R03](2026-11-04-project-diagnostic-report.md#r03) / A1 | D09/D23/D27 | CORS遗漏预占所有者请求头 | 复用现有精确CORS；独立修复不等支付上线 |
-| 待处理 | [R04](2026-11-04-project-diagnostic-report.md#r04) / A1 | D18/D23/D30/F12/F13 | 管理列表批量返回领取凭证及卡密正文 | R02权限矩阵；前后端同时适配DTO |
+| 已修复 | [R04](2026-11-04-project-diagnostic-report.md#r04) / A1 | D18/D23/D30/F12/F13 | 管理列表批量返回领取凭证及卡密正文 | R02权限矩阵；前后端同时适配DTO |
 | 待处理 | [R05](2026-11-04-project-diagnostic-report.md#r05) / B2 | D21/F12/F13 | 卡密多份明文与身份结算资料缺分级保护 | 密钥管理/历史迁移；联动R25，不使用密码哈希存卡密 |
 | 待专项验证 | [R06](2026-11-04-project-diagnostic-report.md#r06) / A2 | D20/D23/D35 | 代理部署下限流可能共享回环IP桶 | 可信代理拓扑及后端访问限制，联动R30 |
 | 待处理 | [R07](2026-11-04-project-diagnostic-report.md#r07) / A2 | D38/D30/F01 | 公开建单、预占和海报无应用成本预算 | 限额/匿名体验规则；复用幂等与库存服务 |

@@ -185,10 +185,22 @@ public class ProductController {
                 SecurityUtils.getCurrentUserId(), dto.getProductId(), dto.getSkuId(), dto.getCardContents()));
     }
 
-    @Operation(summary = "【商家】查询虚拟卡密库存")
+    public R<List<ProductVirtualCard>> listCards(Long skuId) {
+        return listCards(skuId, null);
+    }
+
+    @Operation(summary = "【商家】查询虚拟卡密库存 (R04: 权限隔离与no-store)")
     @GetMapping("/api/v1/merchant/cards")
-    public R<List<ProductVirtualCard>> listCards(@RequestParam(required = false) Long skuId) {
+    public R<List<ProductVirtualCard>> listCards(@RequestParam(required = false) Long skuId,
+            jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        // R04: 敏感资产严格授权，仅店长与超管可批量查阅卡密库存；员工账号无权全量导出
+        if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
+            cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
+        }
         if (skuId != null) {
             ProductSku sku = skuMapper.findById(skuId)
                     .orElseThrow(() -> new BusinessException("SKU不存在"));
@@ -198,5 +210,27 @@ public class ProductController {
             return R.ok(cardMapper.findAvailableForMerchant(skuId, merchantId));
         }
         return R.ok(cardMapper.findByMerchantId(merchantId));
+    }
+
+    public R<ProductVirtualCard> getCardDetail(Long id) {
+        return getCardDetail(id, null);
+    }
+
+    @Operation(summary = "【商家】查询单个卡密资产详情 (R04: 单单授权与跨店隔离)")
+    @GetMapping("/api/v1/merchant/cards/{id}")
+    public R<ProductVirtualCard> getCardDetail(@PathVariable Long id,
+            jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
+            cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
+        }
+        ProductVirtualCard card = cardMapper.selectById(id);
+        if (card == null || !merchantId.equals(card.getMerchantId())) {
+            throw new BusinessException(404, "卡密不存在或无权访问");
+        }
+        return R.ok(card);
     }
 }

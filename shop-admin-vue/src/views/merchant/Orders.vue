@@ -48,10 +48,11 @@
               <span style="font-weight: 600; color: #0f172a;">{{ item.productTitle }}</span>
               <span style="color: #64748b; font-size: 12px; margin-left: 6px;">{{ item.specInfo }} × {{ item.quantity }}</span>
               
-              <!-- 自动发放的卡密 -->
+              <!-- 自动发放的卡密 (R04: 列表仅显示脱敏摘要，点击查看卡密调用单单授权详情) -->
               <div v-if="item.cardDetails" class="card-tag">
                 <el-tag type="warning" size="small">已自动发卡</el-tag>
                 <span class="card-text">{{ item.cardDetails }}</span>
+                <el-button v-if="row.order.goodsType === 2 && row.order.orderStatus === 'COMPLETED'" link type="primary" size="small" style="margin-left: 6px;" @click="viewOrderCards(row.order)">查看卡密</el-button>
               </div>
             </div>
 
@@ -336,6 +337,25 @@
       </div>
     </el-dialog>
 
+    <!-- 5. 查看订单履约详情与卡密明文弹窗 (R04: 单单授权查询) -->
+    <el-dialog v-model="cardDetailVisible" title="订单卡密交付详情" width="500px">
+      <div v-loading="cardDetailLoading">
+        <div v-if="cardDetailOrder">
+          <p><strong>订单号：</strong>{{ cardDetailOrder.orderSn }}</p>
+          <div v-for="item in cardDetailItems" :key="item.id" style="margin-top: 10px;">
+            <p><strong>商品：</strong>{{ item.productTitle }} <span v-if="item.specInfo">({{ item.specInfo }})</span></p>
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px; margin-top: 6px;">
+              <div style="font-size: 12px; color: #64748b; margin-bottom: 4px;">交付内容快照：</div>
+              <pre style="margin: 0; font-family: monospace; white-space: pre-wrap; word-break: break-all; color: #0f172a;">{{ item.cardDetails || '暂无内容' }}</pre>
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <el-button @click="cardDetailVisible = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
@@ -450,6 +470,30 @@ const handleVirtualFulfill = async () => {
     ElMessage.error(e.response?.data?.message || '凭证录入失败')
   } finally {
     fulfilling.value = false
+  }
+}
+
+// 单单卡密明文详情授权查询 (R04)
+const cardDetailVisible = ref(false)
+const cardDetailLoading = ref(false)
+const cardDetailOrder = ref(null)
+const cardDetailItems = ref([])
+
+const viewOrderCards = async (order) => {
+  cardDetailOrder.value = order
+  cardDetailItems.value = []
+  cardDetailVisible.value = true
+  cardDetailLoading.value = true
+  try {
+    const res = await request.get(`/merchant/orders/${order.id}`)
+    if (res && res.data) {
+      cardDetailOrder.value = res.data.order || order
+      cardDetailItems.value = res.data.items || []
+    }
+  } catch (err) {
+    ElMessage.error(err.response?.data?.message || err.message || '获取订单卡密详情失败')
+  } finally {
+    cardDetailLoading.value = false
   }
 }
 
