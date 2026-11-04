@@ -266,7 +266,8 @@ CREATE TABLE IF NOT EXISTS order_idempotency (
   request_key VARCHAR(64) NOT NULL PRIMARY KEY,
   request_hash VARCHAR(64) NOT NULL,
   response_json LONGTEXT NULL,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY idx_idempotency_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 SET FOREIGN_KEY_CHECKS = 1;

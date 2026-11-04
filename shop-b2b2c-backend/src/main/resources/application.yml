@@ -95,3 +95,9 @@ springdoc:
     path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+
+# R27: 幂等快照保留与定时清理
+idempotency:
+  retention-hours: ${IDEMPOTENCY_RETENTION_HOURS:72}
+  purge-batch-size: ${IDEMPOTENCY_PURGE_BATCH_SIZE:500}
+  purge-delay-ms: ${IDEMPOTENCY_PURGE_DELAY_MS:3600000}
