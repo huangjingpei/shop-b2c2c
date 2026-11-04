@@ -13,9 +13,9 @@ set -euo pipefail
 
 GMALL_ROOT="${GMALL_ROOT:-/opt/gmall}"
 ENV_FILE="${GMALL_ROOT}/.env"
-SCHEMA_SQL="${GMALL_ROOT}/src/backend/src/main/resources/schema-mysql.sql"
-DB_NAME="${DB_NAME:-shop_chain_db}"
-DB_APP_USER="${DB_USER:-gmall}"
+SCHEMA_SQL="${GMALL_ROOT}/src/shop-b2b2c-backend/src/main/resources/db/schema.sql"
+DB_NAME="${DB_NAME:-shop_b2b2c}"
+DB_APP_USER="${DB_USER:-shop_b2b2c}"
 
 log()  { printf '\033[0;32m[infra]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[infra]\033[0m %s\n' "$*"; }
@@ -36,7 +36,7 @@ else
 # GMall 生产环境变量
 # ============================================================================
 TZ=Asia/Shanghai
-SERVER_PORT=${SERVER_PORT:-8081}
+SERVER_PORT=${SERVER_PORT:-8080}
 SERVER_ADDRESS=127.0.0.1
 SPRING_PROFILES_ACTIVE=prod
 
@@ -93,11 +93,11 @@ log "执行表结构初始化/更新: ${SCHEMA_SQL} ..."
 if [[ -f "${SCHEMA_SQL}" ]]; then
   mysql -u"${DB_USER}" -p"${DB_PASS}" -h127.0.0.1 "${DB_NAME}" < "${SCHEMA_SQL}"
   log "表结构初始化完成"
-elif [[ -f "${GMALL_ROOT}/releases/latest/schema-mysql.sql" ]]; then
-  mysql -u"${DB_USER}" -p"${DB_PASS}" -h127.0.0.1 "${DB_NAME}" < "${GMALL_ROOT}/releases/latest/schema-mysql.sql"
+elif [[ -f "${GMALL_ROOT}/releases/latest/schema.sql" ]]; then
+  mysql -u"${DB_USER}" -p"${DB_PASS}" -h127.0.0.1 "${DB_NAME}" < "${GMALL_ROOT}/releases/latest/schema.sql"
   log "表结构已从 releases/latest 导入完成"
 else
-  warn "未找到 schema-mysql.sql，将在首次部署或构建时导入"
+  warn "未找到 schema.sql，将在首次部署或构建时导入"
 fi
 
 # ================================================================ 3. Redis 检查

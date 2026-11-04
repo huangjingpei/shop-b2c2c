@@ -69,7 +69,7 @@
 | 已修复 | [R26](2026-11-04-project-diagnostic-report.md#r26) / C1 | D38/D30 | 海报事务渲染、公开大字段与幂等副本仍在 | 延续Sprint22本店读取权限，勿破坏付款与释放锁 |
 | 待处理 | [R27](2026-11-04-project-diagnostic-report.md#r27) / C2 | D30/D32/F12/F13 | 私密幂等快照与历史数据缺保留策略 | 清理前确认晚重试语义及永久业务去重 |
 | 已修复 | [R28](2026-11-04-project-diagnostic-report.md#r28) / A2 | D34/D35 | 腾讯构建仍可缺端成功、依赖与latest不稳 | 复用Sprint18产物契约，腾讯消费者联动 |
-| 待处理 | [R29](2026-11-04-project-diagnostic-report.md#r29) / A2 | D35/D37 | 部署先覆盖线上且吞SQL错误，失败无整套恢复 | R28及阿里产物契约；迁移/网关/回滚一起验证 |
+| 已修复 | [R29](2026-11-04-project-diagnostic-report.md#r29) / A2 | D35/D37 | 部署先覆盖线上且吞SQL错误，失败无整套恢复 | R28及阿里产物契约；迁移/网关/回滚一起验证 |
 | 待处理 | [R30](2026-11-04-project-diagnostic-report.md#r30) / A0 | D21/D35 | root应用与证书失败HTTP降级未区分生产 | 环境负责人TLS/用户/防火墙；不在本轮执行生产操作 |
 | 待专项验证 | [R31](2026-11-04-project-diagnostic-report.md#r31) / A2 | D35/D39 | Windows备份可能假成功或产生错误编码 | 隔离导出工具夹具与PowerShell版本矩阵 |
 | 待处理 | [R32](2026-11-04-project-diagnostic-report.md#r32) / C2 | D21/D35/D39 | 备份旧默认目标、参数拆分及恢复证据不足 | 目标库/保留/RPO/RTO确认；隔离恢复，不连接业务库做测试 |
