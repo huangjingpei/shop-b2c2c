@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、订单统计、状态契约、就绪探针、事务和租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、状态统计、就绪探针、海报减载及租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -121,6 +121,57 @@ class Sprint1SecurityIntegrationTest {
             jdbc.update("INSERT INTO product(id,merchant_id,category_id,title,goods_type,main_image,min_price,status) VALUES(?,?,?,?,1,'image',12.30,?)",
                     id, merchant, category, "catalog-" + id, id == 5 ? 0 : 1);
         }
+    }
+
+    @Test
+    void orderListsAndStatisticsDoNotLoadPosterButStoredContentIsRetained() throws Exception {
+        TradeOrder order = intent("poster-list");
+        String largePoster = "POSTER-MARKER-".repeat(10000);
+        order.setPosterUrl(largePoster); orders.save(order);
+        assertNull(orders.findByMerchantIdOrderByCreatedAtDesc(1L).get(0).getPosterUrl());
+        assertNull(orders.findAllByOrderByCreatedAtDesc().get(0).getPosterUrl());
+        assertEquals(largePoster, orders.findById(order.getId()).orElseThrow().getPosterUrl());
+        assertEquals(largePoster, orders.findStoredPoster(order.getId(), 1L));
+        assertNull(orders.findStoredPoster(order.getId(), 2L));
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        String body = mvc.perform(get("/api/v1/merchant/orders").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data[0].order.posterUrl").isEmpty())
+                .andReturn().getResponse().getContentAsString();
+        assertFalse(body.contains("POSTER-MARKER")); assertTrue(body.length() < largePoster.length());
+        mvc.perform(get("/api/v1/merchant/orders/statistics").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.data.totalOrders").value(1)).andExpect(jsonPath("$.data.pendingOrders").value(1));
+    }
+
+    @Test
+    void storedPosterReadIsAuthenticatedAndScopedWithoutRegeneration() throws Exception {
+        TradeOrder own = intent("poster-own"); own.setPeerPayType(1);
+        own.setPosterUrl("data:image/png;base64,aW1hZ2U="); orders.save(own);
+        TradeOrder other = intent("poster-other"); other.setMerchantId(2L); other.setPosterUrl("other-private-poster"); orders.save(other);
+        TradeOrder empty = intent("poster-empty");
+        String ownPath = "/api/v1/merchant/orders/" + own.getId() + "/poster";
+        mvc.perform(get(ownPath)).andExpect(status().isUnauthorized());
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        mvc.perform(get(ownPath).header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.data").value("data:image/png;base64,aW1hZ2U="));
+        for (Long id : List.of(other.getId(), empty.getId(), Long.MAX_VALUE)) {
+            mvc.perform(get("/api/v1/merchant/orders/" + id + "/poster").param("merchantId", "2")
+                    .header("Authorization", "Bearer " + token))
+                    .andExpect(jsonPath("$.code").value(404)).andExpect(jsonPath("$.data").isEmpty())
+                    .andExpect(header().string("Cache-Control", "no-store"));
+        }
+        assertEquals("INIT", orders.findById(own.getId()).orElseThrow().getPeerStatus());
+        assertEquals("data:image/png;base64,aW1hZ2U=", orders.findById(own.getId()).orElseThrow().getPosterUrl());
+        assertEquals(1, skus.selectById(1L).getStockQuantity());
+    }
+
+    @Test
+    void unboundAdministratorCannotReadAnyMerchantPoster() throws Exception {
+        TradeOrder order = intent("poster-unbound");
+        authUser("SUPERADMIN", null); String token = loginToken();
+        mvc.perform(get("/api/v1/merchant/orders/" + order.getId() + "/poster").param("merchantId", "1")
+                .header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.code").value(403));
     }
 
     @Test

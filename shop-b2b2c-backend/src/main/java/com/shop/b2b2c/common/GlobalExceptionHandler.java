@@ -1,6 +1,6 @@
 /*
  * 文件：GlobalExceptionHandler.java
- * 用途：统一异常响应，无效请求头/JSON返回400、未知资源返回404，通用错误不回显内部文本。
+ * 用途：统一异常响应，无效请求头/JSON/参数类型返回400、未知资源返回404，通用错误不回显内部文本。
  * 维护注意：业务错误码与HTTP状态目前并非完全一致；认证异常文本可能含完整令牌，禁止记录原文；内部异常堆栈仍须日志治理；新增处理须检查客户端兼容和敏感信息，不能把不存在接口包装成成功。
  */
 package com.shop.b2b2c.common;
@@ -21,6 +21,13 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @Slf4j
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    @ExceptionHandler(org.springframework.web.method.annotation.MethodArgumentTypeMismatchException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public R<Void> handleParameterTypeMismatch() {
+        // 路径/查询参数可能包含凭据或隐私，禁止回显绑定异常或原始输入。
+        return R.fail(400, "请求参数格式不正确");
+    }
 
     @ExceptionHandler(org.springframework.http.converter.HttpMessageNotReadableException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)

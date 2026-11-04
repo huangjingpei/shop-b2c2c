@@ -1,7 +1,7 @@
 <!--
 文件：Orders.vue
-用途：商家订单查询、推单、实物发货和定制服务履约页面。
-维护注意：推单重试须保留幂等键，成功才重置；人工履约仅对类型3且PAID展示，类型2缺卡不能用人工交付替代；按钮可见性不替代服务端租户/状态验证。修改规则同步工具单元测试。
+用途：商家订单查询、推单、实物发货、定制服务履约及已存海报按需预览页面。
+维护注意：推单重试须保留幂等键，成功才重置；人工履约仅对类型3且PAID展示，类型2缺卡不能用人工交付替代；按钮可见性不替代服务端租户/状态验证。列表不再含海报正文；点击经本店接口读取，关闭/卸载使旧请求失效，修改规则同步工具单元测试。
 -->
 <template>
   <div class="merchant-orders">
@@ -146,7 +146,7 @@
             <span v-else style="font-size: 12px; color: #94a3b8;">待付款</span>
 
             <!-- 查看代付海报按钮 -->
-            <div v-if="row.order.posterUrl" style="margin-top: 4px;">
+            <div v-if="canPreviewPoster(row.order)" style="margin-top: 4px;">
               <el-button type="info" link size="small" @click="viewPoster(row.order)">
                 🖼️ 查看海报
               </el-button>
@@ -319,12 +319,14 @@
     </el-dialog>
 
     <!-- 4. 查看代付海报弹窗 -->
-    <el-dialog v-model="posterDialogVisible" title="9:16 微信防封买单海报" width="460px">
-      <div style="text-align: center;">
-        <img :src="currentPosterUrl" style="max-height: 480px; width: auto; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);" />
+    <el-dialog v-model="posterView.visible" title="已保存的代付海报" width="460px" @close="posterPreview.close">
+      <p v-if="posterView.loading" role="status">正在读取海报...</p>
+      <p v-else-if="posterView.error" role="alert">{{ posterView.error }}</p>
+      <div v-else-if="posterView.url" style="text-align: center;">
+        <img :src="posterView.url" @error="posterPreview.imageFailed($event.target.getAttribute('src'))" style="max-height: 480px; width: auto; border-radius: 8px; box-shadow: 0 4px 8px rgba(0,0,0,0.1);" />
         <div style="margin-top: 14px;">
           <a 
-            :href="currentPosterUrl" 
+            :href="posterView.url"
             download="代付买单海报.png"
             style="display: inline-block; padding: 8px 20px; background: #e11d48; color: white; border-radius: 8px; font-size: 13px; text-decoration: none; font-weight: bold;"
           >
@@ -341,18 +343,19 @@
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 const pushSubmission = createIdempotentSubmission()
 import { canFulfillService } from '../../utils/goodsType.mjs'
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
+import { canPreviewPoster, createStoredPosterPreview } from '../../utils/storedPoster.mjs'
 
 const loading = ref(false)
 const orders = ref([])
 const deliverVisible = ref(false)
 const virtualFulfillVisible = ref(false)
 const pushPayVisible = ref(false)
-const posterDialogVisible = ref(false)
 const currentOrder = ref(null)
-const currentPosterUrl = ref('')
+const posterView = reactive({ visible: false, loading: false, url: '', error: '' })
+const posterPreview = createStoredPosterPreview({ get: (...args) => request.get(...args), render: state => Object.assign(posterView, state) })
 
 const deliverForm = ref({
   logisticsCompany: '顺丰速运',
@@ -558,10 +561,8 @@ const copyPushLink = () => {
   }
 }
 
-const viewPoster = (order) => {
-  currentPosterUrl.value = order.posterUrl
-  posterDialogVisible.value = true
-}
+const viewPoster = order => posterPreview.open(order)
+onUnmounted(() => posterPreview.close())
 
 onMounted(() => {
   loadOrders()

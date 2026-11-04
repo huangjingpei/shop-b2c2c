@@ -1,7 +1,7 @@
 /*
  * 文件：TradeOrderMapper.java
  * 用途：订单查询、行锁和有效待付预占的支付CAS迁移；SQL代付编码复用PeerStatus。
- * 维护注意：所有订单写者须保持一致的订单行锁顺序；支付状态变更影响行数必须检查。不能在事务外使用FOR UPDATE来声称拥有并发保护。
+ * 维护注意：列表/统计投影不读poster_url，不能将这些不完整实体当作订单全量快照；已存海报单独按ID和商户读取。所有写者须保持订单行锁顺序，支付CAS须检查影响行数，事务外FOR UPDATE无并发保护。
  */
 package com.shop.b2b2c.mapper;
 
@@ -16,6 +16,10 @@ import java.util.Optional;
 
 @Mapper
 public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
+
+    @org.apache.ibatis.annotations.Select("SELECT poster_url FROM trade_order WHERE id = #{id} AND merchant_id = #{merchantId}")
+    String findStoredPoster(@org.apache.ibatis.annotations.Param("id") Long id,
+                           @org.apache.ibatis.annotations.Param("merchantId") Long merchantId);
 
     // Serialize all order writers so stale detail/expiry writes cannot undo payment.
     @org.apache.ibatis.annotations.Select("SELECT * FROM trade_order WHERE peer_pay_token = #{token} FOR UPDATE")
@@ -68,12 +72,14 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
 
     default List<TradeOrder> findByMerchantIdOrderByCreatedAtDesc(Long merchantId) {
         return selectList(new LambdaQueryWrapper<TradeOrder>()
+                .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
                 .eq(TradeOrder::getMerchantId, merchantId)
                 .orderByDesc(TradeOrder::getCreatedAt));
     }
 
     default List<TradeOrder> findAllByOrderByCreatedAtDesc() {
         return selectList(new LambdaQueryWrapper<TradeOrder>()
+                .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
                 .orderByDesc(TradeOrder::getCreatedAt));
     }
 }
