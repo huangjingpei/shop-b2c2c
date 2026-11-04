@@ -45,8 +45,9 @@ public class PeerPayController {
 
     @Operation(summary = "【代付两段式核心】调起收银台时原子预占库存 (锁 15 分钟)")
     @PostMapping("/pre-lock/{token}")
-    public R<PeerPayDTOs.PreLockResult> preLockInventory(@PathVariable String token) {
-        PeerPayDTOs.PreLockResult result = peerPayService.preLockInventory(token);
+    public R<PeerPayDTOs.PreLockResult> preLockInventory(@PathVariable String token,
+            @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey) {
+        PeerPayDTOs.PreLockResult result = peerPayService.preLockInventory(token, idempotencyKey);
         return R.ok(result.getMessage(), result);
     }
 

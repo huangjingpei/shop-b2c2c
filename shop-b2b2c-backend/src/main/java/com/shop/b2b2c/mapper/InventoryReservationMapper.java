@@ -24,6 +24,10 @@ public interface InventoryReservationMapper {
     @Update("UPDATE inventory_reservation SET status=#{status} WHERE order_id=#{id} AND status='HELD'")
     int transition(@Param("id") Long id, @Param("status") String status);
 
-    @Select("SELECT order_id FROM inventory_reservation WHERE status='HELD' AND expires_at <= CURRENT_TIMESTAMP ORDER BY order_id LIMIT 100")
-    List<Long> expiredIds();
+    @Select("SELECT order_id FROM inventory_reservation WHERE status='HELD' AND expires_at <= CURRENT_TIMESTAMP AND order_id > #{cursor} ORDER BY order_id LIMIT #{limit}")
+    List<Long> expiredIdsAfter(@Param("cursor") Long cursor, @Param("limit") int limit);
+
+    default List<Long> expiredIds() {
+        return expiredIdsAfter(0L, 100);
+    }
 }

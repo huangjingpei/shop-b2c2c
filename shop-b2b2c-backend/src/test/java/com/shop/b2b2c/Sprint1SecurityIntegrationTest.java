@@ -1230,6 +1230,116 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    void r10IdempotentAttemptRecoveryRestoresOwnerTokenWithoutDoubleDeductingStock() throws Exception {
+        intent("r10-recovery");
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+
+        // 1. 首次预占成功，携带尝试凭证 attempt-key-alpha
+        var firstLock = payments.preLockInventory("r10-recovery", "attempt-key-alpha");
+        assertEquals("attempt-key-alpha", firstLock.getOwnerToken());
+        assertEquals("RESERVED_LOCK", firstLock.getPeerStatus());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+
+        // 2. 模拟客户端丢响应后重试（相同尝试凭据）：幂等恢复原预占，不重复扣库存
+        var retryLock = payments.preLockInventory("r10-recovery", "attempt-key-alpha");
+        assertEquals("attempt-key-alpha", retryLock.getOwnerToken());
+        assertTrue(retryLock.getSuccess());
+        assertEquals("RESERVED_LOCK", retryLock.getPeerStatus());
+        assertEquals(0, skus.selectById(1).getStockQuantity()); // 库存仍为 0，未发生二次扣减
+
+        // 3. 仿冒者/其他尝试凭证介入：被拒绝，且不能窃取 ownerToken
+        var exOther = assertThrows(BusinessException.class, () -> payments.preLockInventory("r10-recovery", "attempt-key-beta"));
+        assertTrue(exOther.getMessage().contains("已被其他付款人预占中"));
+        var exNull = assertThrows(BusinessException.class, () -> payments.preLockInventory("r10-recovery", null));
+        assertTrue(exNull.getMessage().contains("已被其他付款人预占中"));
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+
+        // 4. 超长凭据校验（>64字符直接拦截，防止数据库截断溢出）
+        String excessiveKey = "k".repeat(65);
+        var exExcessive = assertThrows(BusinessException.class, () -> payments.preLockInventory("r10-recovery", excessiveKey));
+        assertEquals(400, exExcessive.getCode());
+
+        // 5. 原持有者释放预占：库存回滚恢复
+        payments.cancelPreLock("r10-recovery", "attempt-key-alpha");
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals("INIT", orders.lockByPeerPayToken("r10-recovery").getPeerStatus());
+
+        // 6. 释放后另一尝试可以成功预占
+        var nextLock = payments.preLockInventory("r10-recovery", "attempt-key-beta");
+        assertEquals("attempt-key-beta", nextLock.getOwnerToken());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void r10HttpEndpointHonorsIdempotencyKeyHeaderForPreLockRecovery() throws Exception {
+        intent("r10-http");
+
+        // 首次调起预占
+        mvc.perform(post("/api/v1/peer-pay/pre-lock/r10-http")
+                        .header("Idempotency-Key", "http-client-attempt-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.ownerToken").value("http-client-attempt-1"))
+                .andExpect(jsonPath("$.data.peerStatus").value("RESERVED_LOCK"));
+
+        // 重发请求（网络重试）
+        mvc.perform(post("/api/v1/peer-pay/pre-lock/r10-http")
+                        .header("Idempotency-Key", "http-client-attempt-1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.ownerToken").value("http-client-attempt-1"))
+                .andExpect(jsonPath("$.data.message").value("已恢复现有库存预占状态"));
+
+        // 其它客户端调起被拒
+        mvc.perform(post("/api/v1/peer-pay/pre-lock/r10-http")
+                        .header("Idempotency-Key", "different-client"))
+                .andExpect(jsonPath("$.code").value(500))
+                .andExpect(jsonPath("$.message").value("订单已被其他付款人预占中，请稍候再试"));
+    }
+
+    @Test
+    void r12UnpaidDirectCheckoutOrdersAreAutomaticallyClosedAfterFifteenMinutes() {
+        TradeOrder directOrder = unpaid("r12-direct", 1);
+        directOrder.setPeerStatus("INIT");
+        directOrder.setLockExpireTime(null);
+        orders.save(directOrder);
+
+        // 设置创建时间在 20 分钟前（超过 15 分钟超期时限），无预占记录
+        jdbc.update("UPDATE trade_order SET created_at=?, lock_expire_time=NULL WHERE id=?",
+                LocalDateTime.now().minusMinutes(20), directOrder.getId());
+
+        expiryJob.expireUnpaidOrders();
+
+        TradeOrder closed = orders.selectById(directOrder.getId());
+        assertEquals("CLOSED", closed.getOrderStatus());
+        assertEquals("EXPIRED", closed.getPeerStatus());
+    }
+
+    @Test
+    void r12PaidOrdersAndRecentUnpaidOrdersAreNotClosedByExpiryJob() {
+        TradeOrder paidOrder = unpaid("r12-paid", 1);
+        paidOrder.setOrderStatus("PAID");
+        paidOrder.setPeerStatus("PAID");
+        orders.save(paidOrder);
+        jdbc.update("UPDATE trade_order SET created_at=? WHERE id=?", LocalDateTime.now().minusMinutes(30), paidOrder.getId());
+
+        TradeOrder freshUnpaid = unpaid("r12-fresh", 1);
+        freshUnpaid.setPeerStatus("INIT");
+        freshUnpaid.setLockExpireTime(null);
+        orders.save(freshUnpaid);
+        jdbc.update("UPDATE trade_order SET created_at=? WHERE id=?", LocalDateTime.now().minusMinutes(5), freshUnpaid.getId());
+
+        expiryJob.expireUnpaidOrders();
+
+        // 已支付订单绝不关闭
+        assertEquals("PAID", orders.selectById(paidOrder.getId()).getOrderStatus());
+        assertEquals("PAID", orders.selectById(paidOrder.getId()).getPeerStatus());
+
+        // 未满 15 分钟的意向单保持 UNPAID
+        assertEquals("UNPAID", orders.selectById(freshUnpaid.getId()).getOrderStatus());
+    }
+
+    @Test
     void checkoutRejectsCrossProductSkuWithoutSideEffects() throws Exception {
         mvc.perform(post("/api/v1/public/orders/checkout").header("Idempotency-Key", java.util.UUID.randomUUID().toString()).contentType("application/json")
                         .content("{\"productId\":1,\"skuId\":2,\"quantity\":1,\"buyerContact\":\"buyer\"}"))

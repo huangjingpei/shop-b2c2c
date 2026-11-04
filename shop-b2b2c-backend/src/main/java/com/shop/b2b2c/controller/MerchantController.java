@@ -160,6 +160,7 @@ public class MerchantController {
         private BigDecimal monthlyFee;
         private java.time.LocalDate feeFreeUntil;
         private String feeStatus; // ServiceFeeStatus五种编码；null表示保留原值
+        private Boolean clearFeeFreeUntil; // true表示显式清空免收截止日
     }
 
     @Operation(summary = "【超管】配置商户月度技术服务费与免收期")
@@ -171,7 +172,11 @@ public class MerchantController {
         MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         if (dto.getMonthlyFee() != null) store.setMonthlyFee(dto.getMonthlyFee());
-        if (dto.getFeeFreeUntil() != null) store.setFeeFreeUntil(dto.getFeeFreeUntil().atStartOfDay());
+        if (Boolean.TRUE.equals(dto.getClearFeeFreeUntil())) {
+            store.setFeeFreeUntil(null);
+        } else if (dto.getFeeFreeUntil() != null) {
+            store.setFeeFreeUntil(dto.getFeeFreeUntil().atStartOfDay());
+        }
         if (dto.getFeeStatus() != null) store.setFeeStatus(dto.getFeeStatus());
         storeMapper.save(store);
         return R.ok("商户技术服务费配置更新成功", null);

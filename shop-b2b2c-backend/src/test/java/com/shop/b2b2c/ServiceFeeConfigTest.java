@@ -65,4 +65,47 @@ class ServiceFeeConfigTest {
                 mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class)).updateServiceFee(1L, null));
         assertEquals(400, ex.getCode()); verifyNoInteractions(stores);
     }
+
+    @Test
+    void clearFeeFreeUntilTrueExplicitlyClearsDeadlineWhilePreservingOtherFields() {
+        var stores = mock(MerchantStoreMapper.class);
+        var store = new MerchantStore();
+        store.setFeeStatus("TRIAL");
+        store.setMonthlyFee(new BigDecimal("99.00"));
+        store.setFeeFreeUntil(LocalDate.of(2026, 12, 31).atStartOfDay());
+        when(stores.findById(1L)).thenReturn(Optional.of(store));
+
+        var dto = new MerchantController.ServiceFeeConfigDTO();
+        dto.setClearFeeFreeUntil(true);
+
+        var res = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class))
+                .updateServiceFee(1L, dto);
+
+        assertEquals(200, res.getCode());
+        assertNull(store.getFeeFreeUntil(), "R23: 显式指定 clearFeeFreeUntil=true 应成功清空免收截止日");
+        assertEquals("TRIAL", store.getFeeStatus(), "原有费率状态不应被覆盖");
+        assertEquals(new BigDecimal("99.00"), store.getMonthlyFee(), "原有月费不应被覆盖");
+        verify(stores).save(store);
+    }
+
+    @Test
+    void clearFeeFreeUntilFalseWithNullDatePreservesExistingDeadline() {
+        var stores = mock(MerchantStoreMapper.class);
+        var store = new MerchantStore();
+        store.setFeeStatus("NORMAL");
+        store.setFeeFreeUntil(LocalDate.of(2026, 12, 31).atStartOfDay());
+        when(stores.findById(1L)).thenReturn(Optional.of(store));
+
+        var dto = new MerchantController.ServiceFeeConfigDTO();
+        dto.setClearFeeFreeUntil(false);
+        dto.setMonthlyFee(new BigDecimal("50.00"));
+
+        var res = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class))
+                .updateServiceFee(1L, dto);
+
+        assertEquals(200, res.getCode());
+        assertEquals(LocalDate.of(2026, 12, 31).atStartOfDay(), store.getFeeFreeUntil(), "clearFeeFreeUntil=false 且未传新日期应保留原有截止日");
+        assertEquals(new BigDecimal("50.00"), store.getMonthlyFee());
+        verify(stores).save(store);
+    }
 }

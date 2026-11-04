@@ -41,6 +41,15 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
                         @org.apache.ibatis.annotations.Param("tradeNo") String tradeNo,
                         @org.apache.ibatis.annotations.Param("channel") String channel);
 
+    @org.apache.ibatis.annotations.Select("SELECT id FROM trade_order "
+            + "WHERE order_status = 'UNPAID' "
+            + "AND (lock_expire_time <= #{now} OR (lock_expire_time IS NULL AND created_at <= #{cutoffTime})) "
+            + "AND id > #{cursor} ORDER BY id LIMIT #{limit}")
+    List<Long> findExpiredUnpaidOrderIds(@org.apache.ibatis.annotations.Param("now") java.time.LocalDateTime now,
+                                         @org.apache.ibatis.annotations.Param("cutoffTime") java.time.LocalDateTime cutoffTime,
+                                         @org.apache.ibatis.annotations.Param("cursor") Long cursor,
+                                         @org.apache.ibatis.annotations.Param("limit") int limit);
+
     default Optional<TradeOrder> findById(Long id) {
         return Optional.ofNullable(selectById(id));
     }

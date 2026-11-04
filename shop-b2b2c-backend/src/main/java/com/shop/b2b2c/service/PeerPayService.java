@@ -34,6 +34,13 @@ public interface PeerPayService {
     PeerPayDTOs.PreLockResult preLockInventory(String token);
 
     /**
+     * 支持幂等尝试凭据的库存预占（重试同尝试可恢复ownerToken，不重复扣库存）
+     */
+    default PeerPayDTOs.PreLockResult preLockInventory(String token, String clientKey) {
+        return preLockInventory(token);
+    }
+
+    /**
      * 付款人主动关闭/离开收银台：主动释放预占锁
      */
     void cancelPreLock(String token, String ownerToken);

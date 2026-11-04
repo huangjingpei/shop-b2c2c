@@ -333,13 +333,54 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PeerPayDTOs.PreLockResult preLockInventory(String token) {
+        return preLockInventory(token, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PeerPayDTOs.PreLockResult preLockInventory(String token, String clientKey) {
         TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
                 .orElseThrow(() -> new BusinessException("代付账单不存在"));
 
-        if (!"UNPAID".equals(order.getOrderStatus()) || !PeerStatus.INIT.equals(order.getPeerStatus())
+        expireIfNecessary(order);
+
+        if (!"UNPAID".equals(order.getOrderStatus())
                 || order.getCreatedAt() == null || order.getCreatedAt().plusMinutes(15).isBefore(LocalDateTime.now())) {
             throw new BusinessException("订单已过期或不可预占，请刷新账单");
         }
+
+        String sanitizedKey = (clientKey != null) ? clientKey.trim() : null;
+        if (sanitizedKey != null && sanitizedKey.length() > 64) {
+            throw new BusinessException(400, "预占幂等凭据长度不能超过64字符");
+        }
+        if (sanitizedKey != null && sanitizedKey.isEmpty()) {
+            sanitizedKey = null;
+        }
+
+        // R10 恢复逻辑：若订单已由当前尝试持有有效预占，同尝试凭证可幂等恢复，不重复扣库存
+        if (PeerStatus.RESERVED_LOCK.equals(order.getPeerStatus())) {
+            InventoryReservation existing = reservationMapper.find(order.getId());
+            if (existing != null && "HELD".equals(existing.getStatus())
+                    && existing.getExpiresAt() != null && existing.getExpiresAt().isAfter(LocalDateTime.now())) {
+                if (sanitizedKey != null && sanitizedKey.equals(existing.getOwnerToken())) {
+                    PeerPayDTOs.PreLockResult recovered = new PeerPayDTOs.PreLockResult();
+                    recovered.setOwnerToken(existing.getOwnerToken());
+                    recovered.setSuccess(true);
+                    recovered.setPeerStatus(PeerStatus.RESERVED_LOCK);
+                    long remaining = Duration.between(LocalDateTime.now(), existing.getExpiresAt()).getSeconds();
+                    recovered.setLockSeconds(Math.max(0, remaining));
+                    recovered.setExpireTime(existing.getExpiresAt());
+                    recovered.setMessage("已恢复现有库存预占状态");
+                    return recovered;
+                }
+            }
+            throw new BusinessException("订单已被其他付款人预占中，请稍候再试");
+        }
+
+        if (!PeerStatus.INIT.equals(order.getPeerStatus())) {
+            throw new BusinessException("订单状态不可预占，请刷新账单");
+        }
+
         List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
         if (items.size() != 1) throw new BusinessException("当前仅支持单商品订单");
         TradeOrderItem item = items.get(0);
@@ -351,13 +392,14 @@ public class PeerPayServiceImpl implements PeerPayService {
             throw new BusinessException("商品库存不足或SKU归属异常");
         }
         LocalDateTime expireTime = LocalDateTime.now().plusMinutes(DEFAULT_LOCK_MINUTES);
+        String ownerToken = (sanitizedKey != null) ? sanitizedKey : UUID.randomUUID().toString().replace("-", "");
         InventoryReservation reservation = new InventoryReservation();
         reservation.setOrderId(order.getId());
         reservation.setSkuId(item.getSkuId());
         reservation.setProductId(item.getProductId());
         reservation.setMerchantId(order.getMerchantId());
         reservation.setQuantity(item.getQuantity());
-        reservation.setOwnerToken(UUID.randomUUID().toString().replace("-", ""));
+        reservation.setOwnerToken(ownerToken);
         reservation.setExpiresAt(expireTime);
         reservationMapper.deleteReleased(order.getId());
         reservationMapper.insert(reservation);
@@ -387,6 +429,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         if (!"UNPAID".equals(order.getOrderStatus())) return;
         if (release(reservation)) {
             order.setPeerStatus(PeerStatus.INIT);
+            order.setLockExpireTime(null);
             orderMapper.save(order);
         }
     }

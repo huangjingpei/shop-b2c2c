@@ -6,7 +6,9 @@
 package com.shop.b2b2c.entity;
 
 import com.shop.b2b2c.common.PeerStatus;
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -43,7 +45,8 @@ public class TradeOrder {
     private Integer peerPayType = 0; // 0-自付, 1-买家求助代付, 2-卖家代客推单
     private String peerPayerId; // 实际代付付款人标识 (OpenID/UID/流水号)
     private String peerStatus = PeerStatus.INIT; // INIT, RESERVED_LOCK, PAID, EXPIRED, CANCELLED
-    private LocalDateTime lockExpireTime; // 15分钟原子预占超时时刻
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
+    private LocalDateTime lockExpireTime; // 15分钟原子预占超时时刻，取消或超时时支持显式清空为null
     private String peerMessage; // 代付人定制求助留言
     private String posterUrl; // 9:16 微信带参分享买单海报 Base64
 
