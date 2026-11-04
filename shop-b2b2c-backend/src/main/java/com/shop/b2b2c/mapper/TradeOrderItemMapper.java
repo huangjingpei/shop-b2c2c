@@ -38,4 +38,12 @@ public interface TradeOrderItemMapper extends BaseMapper<TradeOrderItem> {
         return selectList(new LambdaQueryWrapper<TradeOrderItem>()
                 .eq(TradeOrderItem::getOrderSn, orderSn));
     }
+
+    default List<TradeOrderItem> findByOrderSns(java.util.Collection<String> orderSns) {
+        if (orderSns == null || orderSns.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        return selectList(new LambdaQueryWrapper<TradeOrderItem>()
+                .in(TradeOrderItem::getOrderSn, orderSns));
+    }
 }

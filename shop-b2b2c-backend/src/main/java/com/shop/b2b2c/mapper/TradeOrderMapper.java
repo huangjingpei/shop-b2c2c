@@ -94,9 +94,43 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
                 .orderByDesc(TradeOrder::getCreatedAt));
     }
 
+    default List<TradeOrder> findByMerchantIdPaged(Long merchantId, int page, int pageSize) {
+        int boundedPage = Math.max(1, page);
+        int boundedSize = Math.min(Math.max(1, pageSize), 200);
+        long offset = (long) (boundedPage - 1) * boundedSize;
+        return selectList(new LambdaQueryWrapper<TradeOrder>()
+                .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
+                .eq(TradeOrder::getMerchantId, merchantId)
+                .orderByDesc(TradeOrder::getCreatedAt)
+                .last("LIMIT " + boundedSize + " OFFSET " + offset));
+    }
+
     default List<TradeOrder> findAllByOrderByCreatedAtDesc() {
         return selectList(new LambdaQueryWrapper<TradeOrder>()
                 .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
                 .orderByDesc(TradeOrder::getCreatedAt));
+    }
+
+    default List<TradeOrder> findAllPaged(int page, int pageSize) {
+        int boundedPage = Math.max(1, page);
+        int boundedSize = Math.min(Math.max(1, pageSize), 200);
+        long offset = (long) (boundedPage - 1) * boundedSize;
+        return selectList(new LambdaQueryWrapper<TradeOrder>()
+                .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
+                .orderByDesc(TradeOrder::getCreatedAt)
+                .last("LIMIT " + boundedSize + " OFFSET " + offset));
+    }
+
+    default List<TradeOrder> findStatisticsProjectionByMerchantId(Long merchantId) {
+        return selectList(new LambdaQueryWrapper<TradeOrder>()
+                .select(TradeOrder::getOrderStatus, TradeOrder::getPeerStatus,
+                        TradeOrder::getPayAmount, TradeOrder::getCommissionAmount)
+                .eq(TradeOrder::getMerchantId, merchantId));
+    }
+
+    default List<TradeOrder> findStatisticsProjectionAll() {
+        return selectList(new LambdaQueryWrapper<TradeOrder>()
+                .select(TradeOrder::getOrderStatus, TradeOrder::getPeerStatus,
+                        TradeOrder::getPayAmount, TradeOrder::getCommissionAmount));
     }
 }

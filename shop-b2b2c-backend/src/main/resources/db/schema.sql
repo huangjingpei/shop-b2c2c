@@ -109,7 +109,9 @@ CREATE TABLE IF NOT EXISTS `product_sku` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_sku_code` (`sku_code`),
-  KEY `idx_product_id` (`product_id`)
+  KEY `idx_product_id` (`product_id`),
+  CONSTRAINT `chk_sku_stock` CHECK (`stock_quantity` >= 0),
+  CONSTRAINT `chk_sku_price` CHECK (`price` >= 0.00)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品规格SKU表';
 
 -- 7. 虚拟卡密库存表 (R05/R25: 分级加密存储与SHA-256指纹唯一去重)
@@ -163,7 +165,8 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   UNIQUE KEY `uk_peer_pay_token` (`peer_pay_token`),
   KEY `idx_merchant_order` (`merchant_id`, `order_status`),
   KEY `idx_contact` (`buyer_contact`),
-  KEY `idx_query_token` (`query_token`)
+  KEY `idx_query_token` (`query_token`),
+  CONSTRAINT `chk_order_amounts` CHECK (`total_amount` >= 0.00 AND `pay_amount` >= 0.00)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易订单主表';
 
 -- 9. 订单商品明细表
@@ -181,7 +184,9 @@ CREATE TABLE IF NOT EXISTS `trade_order_item` (
   `subtotal` DECIMAL(10,2) NOT NULL,
   `card_details` TEXT DEFAULT NULL COMMENT '核销卡密文本快照',
   PRIMARY KEY (`id`),
-  KEY `idx_order_id` (`order_id`)
+  KEY `idx_order_id` (`order_id`),
+  KEY `idx_order_sn` (`order_sn`),
+  CONSTRAINT `chk_item_quantity` CHECK (`quantity` > 0 AND `price` >= 0.00 AND `subtotal` >= 0.00)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单明细表';
 
 -- 10. 代付成功页【我也想开店】平台运营广告配置表
@@ -252,7 +257,8 @@ CREATE TABLE IF NOT EXISTS inventory_reservation (
   owner_token VARCHAR(64) NOT NULL,
   status VARCHAR(16) NOT NULL,
   expires_at DATETIME NOT NULL,
-  KEY idx_reservation_expiry (status, expires_at)
+  KEY idx_reservation_expiry (status, expires_at),
+  CONSTRAINT chk_reservation_quantity CHECK (quantity > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 14. 业务幂等摘要及原响应快照（保留原表名；建单与人工库存调整用不同作用域）

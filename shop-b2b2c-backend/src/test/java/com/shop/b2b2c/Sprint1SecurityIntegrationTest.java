@@ -2622,6 +2622,124 @@ class Sprint1SecurityIntegrationTest {
         });
     }
 
+    @Test
+    void r15DatabaseStorageLayerCheckConstraintsDefenseInDepth() {
+        // 1. product_sku: stock_quantity cannot be negative
+        assertThrows(Exception.class, () -> {
+            jdbc.update("INSERT INTO product_sku(id, product_id, merchant_id, sku_code, spec_data, price, stock_quantity) " +
+                    "VALUES(991, 1, 1, 'SKU-NEG-STOCK', '{}', 10.00, -1)");
+        });
+
+        // 2. product_sku: price cannot be negative
+        assertThrows(Exception.class, () -> {
+            jdbc.update("INSERT INTO product_sku(id, product_id, merchant_id, sku_code, spec_data, price, stock_quantity) " +
+                    "VALUES(992, 1, 1, 'SKU-NEG-PRICE', '{}', -0.01, 10)");
+        });
+
+        // 3. inventory_reservation: quantity must be strictly greater than 0
+        assertThrows(Exception.class, () -> {
+            jdbc.update("INSERT INTO inventory_reservation(order_id, sku_id, product_id, merchant_id, quantity, owner_token, status, expires_at) " +
+                    "VALUES(993, 1, 1, 1, 0, 'tok-zero', 'HELD', CURRENT_TIMESTAMP)");
+        });
+        assertThrows(Exception.class, () -> {
+            jdbc.update("INSERT INTO inventory_reservation(order_id, sku_id, product_id, merchant_id, quantity, owner_token, status, expires_at) " +
+                    "VALUES(994, 1, 1, 1, -5, 'tok-neg', 'HELD', CURRENT_TIMESTAMP)");
+        });
+
+        // 4. trade_order: total_amount and pay_amount cannot be negative
+        assertThrows(Exception.class, () -> {
+            jdbc.update("INSERT INTO trade_order(order_sn, merchant_id, buyer_contact, query_token, total_amount, pay_amount) " +
+                    "VALUES('SN-NEG-TOTAL', 1, '13800000000', 'qtok-neg', -10.00, 10.00)");
+        });
+        assertThrows(Exception.class, () -> {
+            jdbc.update("INSERT INTO trade_order(order_sn, merchant_id, buyer_contact, query_token, total_amount, pay_amount) " +
+                    "VALUES('SN-NEG-PAY', 1, '13800000000', 'qtok-neg-pay', 10.00, -0.01)");
+        });
+
+        // 5. trade_order_item: quantity > 0, price >= 0, subtotal >= 0
+        assertThrows(Exception.class, () -> {
+            jdbc.update("INSERT INTO trade_order_item(order_id, order_sn, product_id, sku_id, sku_code, product_title, price, quantity, subtotal) " +
+                    "VALUES(995, 'SN-ITEM-ZERO-QTY', 1, 1, 'SKU1', 'Test', 10.00, 0, 0.00)");
+        });
+        assertThrows(Exception.class, () -> {
+            jdbc.update("INSERT INTO trade_order_item(order_id, order_sn, product_id, sku_id, sku_code, product_title, price, quantity, subtotal) " +
+                    "VALUES(996, 'SN-ITEM-NEG-PRICE', 1, 1, 'SKU1', 'Test', -5.00, 1, 5.00)");
+        });
+
+        // 6. Legitimate entries satisfy CHECK constraints and persist successfully
+        int insertedSku = jdbc.update("INSERT INTO product_sku(id, product_id, merchant_id, sku_code, spec_data, price, stock_quantity) " +
+                "VALUES(997, 1, 1, 'SKU-LEGAL-R15', '{}', 0.00, 0)");
+        assertEquals(1, insertedSku);
+    }
+
+    @Test
+    void r24BoundedOrderListingsBatchItemsAndLightweightStatistics() throws Exception {
+        // Clean order tables for isolated assertion
+        jdbc.update("DELETE FROM trade_order_item");
+        jdbc.update("DELETE FROM trade_order");
+
+        // Create 3 orders for merchant 1
+        TradeOrder o1 = unpaid("r24-m1-order1", 2);
+        TradeOrder o2 = unpaid("r24-m1-order2", 1);
+        TradeOrder o3 = unpaid("r24-m1-order3", 3);
+
+        // Create 1 order for merchant 2
+        TradeOrder o4 = unpaid("r24-m2-order4", 1);
+        o4.setMerchantId(2L);
+        orders.save(o4);
+
+        // 1. Merchant 1: Paged query with pageSize=2 returns exactly first page (2 orders)
+        authUser("MERCHANT_ADMIN", 1L);
+        String tokenM1 = loginToken();
+
+        mvc.perform(get("/api/v1/merchant/orders")
+                        .header("Authorization", "Bearer " + tokenM1)
+                        .param("page", "1")
+                        .param("pageSize", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].items").isArray())
+                .andExpect(jsonPath("$.data[0].order.queryToken").doesNotExist())
+                .andExpect(jsonPath("$.data[0].order.posterUrl").doesNotExist());
+
+        // Merchant 1: Page 2 returns the remaining 1 order
+        mvc.perform(get("/api/v1/merchant/orders")
+                        .header("Authorization", "Bearer " + tokenM1)
+                        .param("page", "2")
+                        .param("pageSize", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(1));
+
+        // 2. Merchant 1 Statistics: Uses lightweight projection (findStatisticsProjectionByMerchantId)
+        mvc.perform(get("/api/v1/merchant/orders/statistics")
+                        .header("Authorization", "Bearer " + tokenM1))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.totalOrders").value(3))
+                .andExpect(jsonPath("$.data.pendingOrders").value(3))
+                .andExpect(jsonPath("$.data.paidOrders").value(0));
+
+        // 3. Superadmin: Admin order listing supports bounded pagination and platform statistics
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("SUPERADMIN", null);
+        String adminToken = loginToken();
+
+        mvc.perform(get("/api/v1/admin/orders")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .param("page", "1")
+                        .param("pageSize", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.totalOrders").value(4))
+                .andExpect(jsonPath("$.data.orders.length()").value(2))
+                .andExpect(jsonPath("$.data.statistics.totalOrders").value(4))
+                .andExpect(jsonPath("$.data.orders[0].queryToken").doesNotExist())
+                .andExpect(jsonPath("$.data.orders[0].posterUrl").doesNotExist());
+    }
+
     private void race(int count, java.util.function.IntConsumer action) throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(count);
         CountDownLatch start = new CountDownLatch(1);

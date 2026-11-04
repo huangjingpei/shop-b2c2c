@@ -103,7 +103,9 @@ CREATE TABLE IF NOT EXISTS `product_sku` (
   `price` DECIMAL(10,2) NOT NULL COMMENT '售价',
   `stock_quantity` INT NOT NULL DEFAULT 0 COMMENT '可用物理库存',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  CONSTRAINT `chk_sku_stock` CHECK (`stock_quantity` >= 0),
+  CONSTRAINT `chk_sku_price` CHECK (`price` >= 0.00)
 );
 
 -- 7. 虚拟卡密库存表
@@ -151,7 +153,8 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `service_voucher` TEXT DEFAULT NULL COMMENT '线上服务交付凭证 (卡密/网盘/交付报告)',
   `lock_expire_time` DATETIME DEFAULT NULL COMMENT '两段式库存预扣到期时间',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  CONSTRAINT `chk_order_amounts` CHECK (`total_amount` >= 0.00 AND `pay_amount` >= 0.00)
 );
 
 -- 9. 订单商品明细表
@@ -168,7 +171,9 @@ CREATE TABLE IF NOT EXISTS `trade_order_item` (
   `quantity` INT NOT NULL,
   `subtotal` DECIMAL(10,2) NOT NULL,
   `card_details` TEXT DEFAULT NULL COMMENT '核销卡密文本快照',
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  KEY `idx_order_sn` (`order_sn`),
+  CONSTRAINT `chk_item_quantity` CHECK (`quantity` > 0 AND `price` >= 0.00 AND `subtotal` >= 0.00)
 );
 
 -- 10. 代付成功页【我也想开店】平台运营广告配置表
@@ -237,7 +242,8 @@ CREATE TABLE IF NOT EXISTS inventory_reservation (
   quantity INT NOT NULL,
   owner_token VARCHAR(64) NOT NULL,
   status VARCHAR(16) NOT NULL,
-  expires_at DATETIME NOT NULL
+  expires_at DATETIME NOT NULL,
+  CONSTRAINT chk_reservation_quantity CHECK (quantity > 0)
 );
 
 -- 文件：003_order_idempotency.sql

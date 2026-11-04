@@ -55,7 +55,7 @@
 | 已修复 | [R12](2026-11-04-project-diagnostic-report.md#r12) / B1 | D10/F08 | 无预占意向单缺统一后台关闭 | 普通/代付有效期确认；统一F08状态表 |
 | 已修复 | [R13](2026-11-04-project-diagnostic-report.md#r13) / B3 | F01/F03/F05/F08/F09/D06/D32 | 到账事实与本地履约未解耦，支付事件未建模 | F01为主入口，后续F03/F05/F09消费同一事件 |
 | 待专项验证 | [R14](2026-11-04-project-diagnostic-report.md#r14) / V1 | D04/D05/D32/F12 | 锁序与库存守恒缺完整MySQL并发证据 | 测试设计先列写者锁图；不能以推测夹带业务修改 |
-| 待处理 | [R15](2026-11-04-project-diagnostic-report.md#r15) / B2 | D31/D32/F01/F12 | 主表约束、版本迁移与历史修复工具不全 | 脏数据只读核查后迁移，保留唯一开发schema |
+| 已修复 | [R15](2026-11-04-project-diagnostic-report.md#r15) / B2 | D31/D32/F01/F12 | 主表约束、版本迁移与历史修复工具不全 | 脏数据只读核查后迁移，保留唯一开发schema |
 | 已修复 | [R16](2026-11-04-project-diagnostic-report.md#r16) / A1 | D13/D26/F19 | 批量折扣只在前端，展示价与订单价不同 | 先去无依据折扣；F19阶梯价另待确认 |
 | 已修复 | [R17](2026-11-04-project-diagnostic-report.md#r17) / A1 | D13/F11 | 创建与编辑商品校验及最低价语义分裂 | 共享TradeGuards/编辑规则，不能另建一套金额逻辑 |
 | 已修复 | [R18](2026-11-04-project-diagnostic-report.md#r18) / A1 | D11/D31/F12 | 年卡SKU库存为3却无对应种子卡密 | 只修开发基线；不重置存量库资产 |
@@ -64,7 +64,7 @@
 | 已修复 | [R21](2026-11-04-project-diagnostic-report.md#r21) / A2 | D26/D28 | 自己付款跳转依赖响应不存在的productId | 明确自己付款动作语义；不恢复Mock |
 | 已修复 | [R22](2026-11-04-project-diagnostic-report.md#r22) / A1 | D26/F02/F03/F05/F19 | 担保认证、虚构原价、隐藏商品与开通提示不真实 | 隐私开关/经营宣传规则确认；F02官方状态另接入 |
 | 已修复 | [R23](2026-11-04-project-diagnostic-report.md#r23) / A2 | D33/F10 | 服务费免收截止日不能清空 | 显式清除协议兼容Sprint17，收费政策另确认 |
-| 待处理 | [R24](2026-11-04-project-diagnostic-report.md#r24) / C1 | D30/D32/D38 | 全量列表、N+1明细及内存统计残留 | 保留OrderStatistics及列表消费方兼容 |
+| 已修复 | [R24](2026-11-04-project-diagnostic-report.md#r24) / C1 | D30/D32/D38 | 全量列表、N+1明细及内存统计残留 | 保留OrderStatistics及列表消费方兼容 |
 | 已修复 | [R25](2026-11-04-project-diagnostic-report.md#r25) / B2 | F12/D30 | 导入每次全扫全店历史明文且锁商户 | 与R05同一数据迁移设计，先唯一约束再缩锁 |
 | 待处理 | [R26](2026-11-04-project-diagnostic-report.md#r26) / C1 | D38/D30 | 海报事务渲染、公开大字段与幂等副本仍在 | 延续Sprint22本店读取权限，勿破坏付款与释放锁 |
 | 待处理 | [R27](2026-11-04-project-diagnostic-report.md#r27) / C2 | D30/D32/F12/F13 | 私密幂等快照与历史数据缺保留策略 | 清理前确认晚重试语义及永久业务去重 |

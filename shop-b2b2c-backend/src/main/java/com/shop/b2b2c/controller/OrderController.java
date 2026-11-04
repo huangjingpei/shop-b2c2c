@@ -168,17 +168,41 @@ public class OrderController {
     // ==========================================
 
     public R<List<Map<String, Object>>> listMerchantOrders() {
-        return listMerchantOrders(null);
+        return listMerchantOrders(null, null, null);
     }
 
-    @Operation(summary = "【商家】查询属于本店的全部订单 (R04: 敏感凭证与卡密脱敏)")
-    @GetMapping("/api/v1/merchant/orders")
     public R<List<Map<String, Object>>> listMerchantOrders(jakarta.servlet.http.HttpServletResponse response) {
+        return listMerchantOrders(null, null, response);
+    }
+
+    @Operation(summary = "【商家】查询属于本店的全部订单 (R04: 敏感凭证与卡密脱敏, R24: 有界分页与消除N+1)")
+    @GetMapping("/api/v1/merchant/orders")
+    public R<List<Map<String, Object>>> listMerchantOrders(
+            @RequestParam(value = "page", required = false) Integer page,
+            @RequestParam(value = "pageSize", required = false) Integer pageSize,
+            jakarta.servlet.http.HttpServletResponse response) {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
         }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
-        List<TradeOrder> orders = orderMapper.findByMerchantIdOrderByCreatedAtDesc(merchantId);
+        List<TradeOrder> orders;
+        if (page != null || pageSize != null) {
+            int p = page != null ? page : 1;
+            int ps = pageSize != null ? pageSize : 50;
+            orders = orderMapper.findByMerchantIdPaged(merchantId, p, ps);
+        } else {
+            orders = orderMapper.findByMerchantIdPaged(merchantId, 1, 200);
+        }
+
+        // R24: 批量拉取订单明细，消除循环逐单N+1查询
+        List<String> orderSns = orders.stream()
+                .map(TradeOrder::getOrderSn)
+                .filter(Objects::nonNull)
+                .toList();
+        List<TradeOrderItem> allItems = itemMapper.findByOrderSns(orderSns);
+        Map<String, List<TradeOrderItem>> itemsBySn = allItems.stream()
+                .filter(it -> it.getOrderSn() != null)
+                .collect(java.util.stream.Collectors.groupingBy(TradeOrderItem::getOrderSn));
 
         List<Map<String, Object>> resList = new ArrayList<>();
         for (TradeOrder o : orders) {
@@ -192,7 +216,7 @@ public class OrderController {
             Map<String, Object> map = new HashMap<>();
             map.put("order", o);
 
-            List<TradeOrderItem> items = itemMapper.findByOrderSn(o.getOrderSn());
+            List<TradeOrderItem> items = itemsBySn.getOrDefault(o.getOrderSn(), Collections.emptyList());
             for (TradeOrderItem item : items) {
                 if (item.getCardDetails() != null && !item.getCardDetails().isBlank()) {
                     item.setCardDetails("已自动发放 (共" + (item.getQuantity() != null ? item.getQuantity() : 1) + "张)");
@@ -256,14 +280,14 @@ public class OrderController {
         return merchantStatistics(null);
     }
 
-    @Operation(summary = "【商家】本店订单状态统计（非资金账本）")
+    @Operation(summary = "【商家】本店订单状态统计（非资金账本，R24: 轻量列投影聚合）")
     @GetMapping("/api/v1/merchant/orders/statistics")
     public R<com.shop.b2b2c.common.OrderStatistics> merchantStatistics(jakarta.servlet.http.HttpServletResponse response) {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
         }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
-        return R.ok(com.shop.b2b2c.common.OrderStatistics.from(orderMapper.findByMerchantIdOrderByCreatedAtDesc(merchantId)));
+        return R.ok(com.shop.b2b2c.common.OrderStatistics.from(orderMapper.findStatisticsProjectionByMerchantId(merchantId)));
     }
 
     @Data
@@ -338,12 +362,19 @@ public class OrderController {
     // ==========================================
 
     public R<Map<String, Object>> listAdminOrders() {
-        return listAdminOrders(null);
+        return listAdminOrders(null, null, null);
     }
 
-    @Operation(summary = "【超管】平台订单及状态统计（非资金账本，R04: 敏感凭证脱敏与no-store）")
-    @GetMapping("/api/v1/admin/orders")
     public R<Map<String, Object>> listAdminOrders(jakarta.servlet.http.HttpServletResponse response) {
+        return listAdminOrders(null, null, response);
+    }
+
+    @Operation(summary = "【超管】平台订单及状态统计（非资金账本，R04: 敏感凭证脱敏与no-store，R24: 有界分页与消除N+1）")
+    @GetMapping("/api/v1/admin/orders")
+    public R<Map<String, Object>> listAdminOrders(
+            @RequestParam(value = "page", required = false) Integer page,
+            @RequestParam(value = "pageSize", required = false) Integer pageSize,
+            jakarta.servlet.http.HttpServletResponse response) {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
         }
@@ -353,7 +384,14 @@ public class OrderController {
             }
         } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
         }
-        List<TradeOrder> orders = orderMapper.findAllByOrderByCreatedAtDesc();
+        List<TradeOrder> orders;
+        if (page != null || pageSize != null) {
+            int p = page != null ? page : 1;
+            int ps = pageSize != null ? pageSize : 50;
+            orders = orderMapper.findAllPaged(p, ps);
+        } else {
+            orders = orderMapper.findAllPaged(1, 200);
+        }
 
         for (TradeOrder o : orders) {
             o.setQueryToken(null);
@@ -363,10 +401,12 @@ public class OrderController {
             }
         }
 
-        var statistics = com.shop.b2b2c.common.OrderStatistics.from(orders);
+        // R24: 轻量列投影聚合统计，消除全表大字段无界加载
+        var statOrders = orderMapper.findStatisticsProjectionAll();
+        var statistics = com.shop.b2b2c.common.OrderStatistics.from(statOrders);
 
         Map<String, Object> res = new HashMap<>();
-        res.put("totalOrders", orders.size());
+        res.put("totalOrders", statistics.totalOrders());
         // 保留旧字段类型供旧客户端使用；新页面使用statistics中的精确金额字符串。
         res.put("totalTurnover", new BigDecimal(statistics.paidTurnover()));
         res.put("totalCommission", new BigDecimal(statistics.estimatedCommission()));
