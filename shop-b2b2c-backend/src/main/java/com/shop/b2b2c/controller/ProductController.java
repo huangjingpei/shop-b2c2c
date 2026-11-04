@@ -31,7 +31,6 @@ import java.util.*;
 
 @Tag(name = "商品与卡密库 (Product & Virtual Card)")
 @RestController
-@RequiredArgsConstructor
 public class ProductController {
 
     private final ProductMapper productMapper;
@@ -40,6 +39,25 @@ public class ProductController {
     private final MerchantStoreMapper storeMapper;
     private final CategoryMapper categoryMapper;
     private final com.shop.b2b2c.service.CardAssetService cardAssets;
+    private final com.shop.b2b2c.service.CardCipherService cardCipher;
+
+    public ProductController(ProductMapper productMapper, ProductSkuMapper skuMapper, ProductVirtualCardMapper cardMapper,
+                             MerchantStoreMapper storeMapper, CategoryMapper categoryMapper, com.shop.b2b2c.service.CardAssetService cardAssets) {
+        this(productMapper, skuMapper, cardMapper, storeMapper, categoryMapper, cardAssets, new com.shop.b2b2c.service.CardCipherService());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public ProductController(ProductMapper productMapper, ProductSkuMapper skuMapper, ProductVirtualCardMapper cardMapper,
+                             MerchantStoreMapper storeMapper, CategoryMapper categoryMapper, com.shop.b2b2c.service.CardAssetService cardAssets,
+                             com.shop.b2b2c.service.CardCipherService cardCipher) {
+        this.productMapper = productMapper;
+        this.skuMapper = skuMapper;
+        this.cardMapper = cardMapper;
+        this.storeMapper = storeMapper;
+        this.categoryMapper = categoryMapper;
+        this.cardAssets = cardAssets;
+        this.cardCipher = cardCipher != null ? cardCipher : new com.shop.b2b2c.service.CardCipherService();
+    }
 
     // ==========================================
     // 16688 买家端公开货源流 API
@@ -216,15 +234,23 @@ public class ProductController {
             }
         } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
         }
+        List<ProductVirtualCard> result;
         if (skuId != null) {
             ProductSku sku = skuMapper.findById(skuId)
                     .orElseThrow(() -> new BusinessException("SKU不存在"));
             if (!merchantId.equals(sku.getMerchantId())) {
                 throw new BusinessException(403, "无权访问其他商户卡密");
             }
-            return R.ok(cardMapper.findAvailableForMerchant(skuId, merchantId));
+            result = cardMapper.findAvailableForMerchant(skuId, merchantId);
+        } else {
+            result = cardMapper.findByMerchantId(merchantId);
         }
-        return R.ok(cardMapper.findByMerchantId(merchantId));
+        for (ProductVirtualCard c : result) {
+            if (c.getCardContent() != null) {
+                c.setCardContent(cardCipher.decrypt(c.getCardContent()));
+            }
+        }
+        return R.ok(result);
     }
 
     public R<ProductVirtualCard> getCardDetail(Long id) {
@@ -248,6 +274,9 @@ public class ProductController {
         ProductVirtualCard card = cardMapper.selectById(id);
         if (card == null || !merchantId.equals(card.getMerchantId())) {
             throw new BusinessException(404, "卡密不存在或无权访问");
+        }
+        if (card.getCardContent() != null) {
+            card.setCardContent(cardCipher.decrypt(card.getCardContent()));
         }
         return R.ok(card);
     }

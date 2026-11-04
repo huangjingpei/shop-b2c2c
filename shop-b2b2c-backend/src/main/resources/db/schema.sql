@@ -112,17 +112,19 @@ CREATE TABLE IF NOT EXISTS `product_sku` (
   KEY `idx_product_id` (`product_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品规格SKU表';
 
--- 7. 虚拟卡密库存表
+-- 7. 虚拟卡密库存表 (R05/R25: 分级加密存储与SHA-256指纹唯一去重)
 CREATE TABLE IF NOT EXISTS `product_virtual_card` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `product_id` BIGINT UNSIGNED NOT NULL,
   `sku_id` BIGINT UNSIGNED NOT NULL,
   `merchant_id` BIGINT UNSIGNED NOT NULL,
-  `card_content` TEXT NOT NULL COMMENT '卡密明细文本 (卡号/卡密/激活链接)',
+  `card_fingerprint` CHAR(64) DEFAULT NULL COMMENT '卡密SHA-256去重指纹 (同店铺唯一)',
+  `card_content` TEXT NOT NULL COMMENT '卡密明细文本 (AES-256-GCM加密载荷)',
   `status` TINYINT NOT NULL DEFAULT 0 COMMENT '状态: 0-未售出, 1-已售出核销, 2-作废',
   `order_sn` VARCHAR(64) DEFAULT NULL COMMENT '售出关联订单号',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_merchant_fingerprint` (`merchant_id`, `card_fingerprint`),
   KEY `idx_sku_status` (`sku_id`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='虚拟商品卡密库存表';
 

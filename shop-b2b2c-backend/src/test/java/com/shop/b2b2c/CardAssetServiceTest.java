@@ -66,7 +66,10 @@ class CardAssetServiceTest {
         verify(batches).link(7L, 11L); verify(batches).link(7L, 12L);
         var captured = org.mockito.ArgumentCaptor.forClass(ProductVirtualCard.class);
         verify(cards, times(2)).insert(captured.capture());
-        assertEquals(List.of("item", "ITEM"), captured.getAllValues().stream().map(ProductVirtualCard::getCardContent).toList());
+        var cipher = new com.shop.b2b2c.service.CardCipherService();
+        assertEquals(List.of("item", "ITEM"), captured.getAllValues().stream().map(c -> cipher.decrypt(c.getCardContent())).toList());
+        assertTrue(captured.getAllValues().stream().allMatch(c -> c.getCardContent().startsWith("ENC:v1:")));
+        assertTrue(captured.getAllValues().stream().allMatch(c -> c.getCardFingerprint() != null && c.getCardFingerprint().length() == 64));
         verify(skus).addStock(1L, 1L, 2);
         verify(manager).getTransaction(argThat(def -> def.getIsolationLevel() == TransactionDefinition.ISOLATION_READ_COMMITTED));
     }

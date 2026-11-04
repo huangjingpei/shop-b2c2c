@@ -2457,6 +2457,171 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200));
     }
 
+    @Test
+    void r05CardAssetTieredEncryptionAndDecryptionProtection() throws Exception {
+        // Clear card fixture from setup so we have a known state
+        jdbc.update("DELETE FROM product_virtual_card WHERE merchant_id=1");
+
+        authUser("MERCHANT_ADMIN", 1L);
+        String adminToken = loginToken();
+
+        String cardPlain = "ACTIVATE-CODE-98765-SECRET";
+        var importDto = new ProductController.BatchImportCardDTO();
+        importDto.setProductId(1L);
+        importDto.setSkuId(1L);
+        importDto.setCardContents(List.of(cardPlain));
+
+        // 1. Merchant Admin imports card
+        mvc.perform(post("/api/v1/merchant/cards/import")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(importDto)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 2. Verify database: card_content is ENCRYPTED with ENC:v1: and plaintext DOES NOT appear in DB
+        String dbCardContent = jdbc.queryForObject(
+                "SELECT card_content FROM product_virtual_card WHERE sku_id=1 AND status=0",
+                String.class);
+        assertNotNull(dbCardContent);
+        assertTrue(dbCardContent.startsWith("ENC:v1:"), "Database card_content must start with ENC:v1:");
+        assertFalse(dbCardContent.contains("ACTIVATE-CODE"), "Database must never store plaintext card!");
+
+        // Verify card_fingerprint is stored as 64-char SHA-256
+        String dbFingerprint = jdbc.queryForObject(
+                "SELECT card_fingerprint FROM product_virtual_card WHERE sku_id=1 AND status=0",
+                String.class);
+        assertNotNull(dbFingerprint);
+        assertEquals(64, dbFingerprint.length());
+
+        // 3. Authorized manager queries single card detail: cardContent is DECRYPTED
+        Long cardId = jdbc.queryForObject("SELECT id FROM product_virtual_card WHERE sku_id=1 AND status=0", Long.class);
+        mvc.perform(get("/api/v1/merchant/cards/" + cardId)
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.cardContent").value(cardPlain));
+
+        // 4. Create and fulfill order via payment event
+        TradeOrder order = unpaid("r05-fulfill", 1);
+
+        paymentEventService.processPaymentEvent(com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel("WECHAT")
+                .payTradeNo("TX_R05_001")
+                .orderSn(order.getOrderSn())
+                .merchantId(1L)
+                .payAmount(new java.math.BigDecimal("10.00"))
+                .currency("CNY")
+                .rawPayload("{}")
+                .build());
+
+        // 5. Verify database after fulfillment:
+        // - trade_order_item.card_details is ENCRYPTED with ENC:v1:
+        String dbItemCardDetails = jdbc.queryForObject(
+                "SELECT card_details FROM trade_order_item WHERE order_sn=?",
+                String.class, order.getOrderSn());
+        assertNotNull(dbItemCardDetails);
+        assertTrue(dbItemCardDetails.startsWith("ENC:v1:"), "trade_order_item.card_details must be encrypted in DB");
+        assertFalse(dbItemCardDetails.contains("ACTIVATE-CODE"), "No plain cards in order item DB!");
+
+        // - trade_order.service_voucher is an audit summary, does NOT contain plaintext cards
+        String dbServiceVoucher = jdbc.queryForObject(
+                "SELECT service_voucher FROM trade_order WHERE order_sn=?",
+                String.class, order.getOrderSn());
+        assertNotNull(dbServiceVoucher);
+        assertEquals("系统卡密已自动交付 (共1张)", dbServiceVoucher);
+
+        // 6. Authorized buyer queries order with queryToken: cardDetails is DECRYPTED
+        mvc.perform(receiptLookup("r05-fulfill", order.getQueryToken()))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].cardDetails").value(cardPlain));
+
+        // 7. Authorized manager queries order: cardDetails is DECRYPTED
+        mvc.perform(get("/api/v1/merchant/orders/" + order.getId())
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].cardDetails").value(cardPlain));
+
+        // 8. Staff queries order: cardDetails is MASKED
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_STAFF", 1L);
+        String staffToken = loginToken();
+        mvc.perform(get("/api/v1/merchant/orders/" + order.getId())
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].cardDetails").value("已自动发放 (员工账号无权查阅明文)"));
+    }
+
+    @Test
+    void r25CardDeduplicationByFingerprintWithoutStoreScanning() throws Exception {
+        // Clear card fixtures from setup
+        jdbc.update("DELETE FROM product_virtual_card");
+
+        authUser("MERCHANT_ADMIN", 1L);
+        String adminToken1 = loginToken();
+
+        String cardCode = "CARD-DEDUP-UNIQUE-XYZ-123";
+
+        // 1. Initial import of cardCode into store 1 / sku 1 succeeds
+        var import1 = new ProductController.BatchImportCardDTO();
+        import1.setProductId(1L);
+        import1.setSkuId(1L);
+        import1.setCardContents(List.of(cardCode));
+
+        mvc.perform(post("/api/v1/merchant/cards/import")
+                        .header("Authorization", "Bearer " + adminToken1)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(import1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 2. Importing the same cardCode again into store 1 is REJECTED with 409
+        mvc.perform(post("/api/v1/merchant/cards/import")
+                        .header("Authorization", "Bearer " + adminToken1)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(import1)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(409));
+
+        // 3. Duplicate within the same batch is REJECTED with 400
+        var intraBatchDup = new ProductController.BatchImportCardDTO();
+        intraBatchDup.setProductId(1L);
+        intraBatchDup.setSkuId(1L);
+        intraBatchDup.setCardContents(List.of("UNIQUE-INTRA-1", " UNIQUE-INTRA-1 "));
+
+        mvc.perform(post("/api/v1/merchant/cards/import")
+                        .header("Authorization", "Bearer " + adminToken1)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(intraBatchDup)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 4. Cross-store isolation: store 2 CAN import the same cardCode
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_ADMIN", 2L);
+        String adminToken2 = loginToken();
+
+        var import2 = new ProductController.BatchImportCardDTO();
+        import2.setProductId(2L);
+        import2.setSkuId(2L);
+        import2.setCardContents(List.of(cardCode));
+
+        mvc.perform(post("/api/v1/merchant/cards/import")
+                        .header("Authorization", "Bearer " + adminToken2)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(import2)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        // 5. Database unique constraint uk_merchant_fingerprint directly blocks duplicate insert
+        String fp = new com.shop.b2b2c.service.CardCipherService().fingerprint(cardCode);
+        assertThrows(Exception.class, () -> {
+            jdbc.update("INSERT INTO product_virtual_card(product_id, sku_id, merchant_id, card_fingerprint, card_content, status) " +
+                    "VALUES(1, 1, 1, ?, 'ENC:direct-insert', 0)", fp);
+        });
+    }
+
     private void race(int count, java.util.function.IntConsumer action) throws Exception {
         ExecutorService pool = Executors.newFixedThreadPool(count);
         CountDownLatch start = new CountDownLatch(1);

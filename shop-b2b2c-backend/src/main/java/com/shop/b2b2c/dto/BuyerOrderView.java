@@ -17,16 +17,22 @@ public record BuyerOrderView(OrderInfo order, List<ItemInfo> items, PublicStoreV
     public record ItemInfo(Long id, String productTitle, String specInfo, BigDecimal price,
                            Integer quantity, BigDecimal subtotal, String cardDetails) {}
     public static BuyerOrderView from(TradeOrder order, List<TradeOrderItem> items, MerchantStore store) {
+        return from(order, items, store, new com.shop.b2b2c.service.CardCipherService());
+    }
+
+    public static BuyerOrderView from(TradeOrder order, List<TradeOrderItem> items, MerchantStore store,
+            com.shop.b2b2c.service.CardCipherService cipher) {
         boolean completed = "COMPLETED".equals(order.getOrderStatus());
         boolean cards = completed && Integer.valueOf(2).equals(order.getGoodsType());
         boolean service = completed && Integer.valueOf(3).equals(order.getGoodsType());
         boolean shipping = Integer.valueOf(1).equals(order.getGoodsType())
                 && Set.of("SHIPPED", "COMPLETED").contains(order.getOrderStatus());
+        var activeCipher = cipher != null ? cipher : new com.shop.b2b2c.service.CardCipherService();
         return new BuyerOrderView(new OrderInfo(order.getOrderSn(), order.getOrderStatus(), order.getGoodsType(),
                 order.getPayAmount(), order.getCreatedAt(), service ? order.getServiceVoucher() : null,
                 shipping ? order.getLogisticsCompany() : null, shipping ? order.getTrackingNumber() : null,
                 shipping ? order.getDeliveryTime() : null), items.stream().map(item -> new ItemInfo(item.getId(),
                 item.getProductTitle(), item.getSpecInfo(), item.getPrice(), item.getQuantity(), item.getSubtotal(),
-                cards ? item.getCardDetails() : null)).toList(), PublicStoreView.from(store));
+                cards ? activeCipher.decrypt(item.getCardDetails()) : null)).toList(), PublicStoreView.from(store));
     }
 }

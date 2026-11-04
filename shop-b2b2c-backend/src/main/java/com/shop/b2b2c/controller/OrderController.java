@@ -42,6 +42,7 @@ public class OrderController {
     private final com.shop.b2b2c.service.BuyerOrderQueryService buyerQueries;
     private final PeerPayService peerPayService;
     private final com.shop.b2b2c.service.OrderIdempotencyService idempotency;
+    private final com.shop.b2b2c.service.CardCipherService cardCipher;
 
     @Data
     public static class CheckoutDTO {
@@ -237,6 +238,12 @@ public class OrderController {
                     item.setCardDetails("已自动发放 (员工账号无权查阅明文)");
                 }
             }
+        } else {
+            for (TradeOrderItem item : items) {
+                if (item.getCardDetails() != null && !item.getCardDetails().isBlank()) {
+                    item.setCardDetails(cardCipher.decrypt(item.getCardDetails()));
+                }
+            }
         }
 
         Map<String, Object> map = new HashMap<>();
@@ -392,7 +399,13 @@ public class OrderController {
 
         Map<String, Object> map = new HashMap<>();
         map.put("order", order);
-        map.put("items", itemMapper.findByOrderSn(order.getOrderSn()));
+        List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
+        for (TradeOrderItem item : items) {
+            if (item.getCardDetails() != null && !item.getCardDetails().isBlank()) {
+                item.setCardDetails(cardCipher.decrypt(item.getCardDetails()));
+            }
+        }
+        map.put("items", items);
         return R.ok(map);
     }
 }

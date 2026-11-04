@@ -20,6 +20,7 @@ public class ProductVirtualCard {
     private Long productId;
     private Long skuId;
     private Long merchantId;
+    private String cardFingerprint;
     private String cardContent;
     private Integer status = 0; // 0-未售出, 1-已售出核销, 2-作废
     private String orderSn;

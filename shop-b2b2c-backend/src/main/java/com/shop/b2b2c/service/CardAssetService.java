@@ -23,11 +23,19 @@ public class CardAssetService {
     private final ProductVirtualCardMapper cards;
     private final ProductSkuMapper skus;
     private final CardImportBatchMapper batches;
+    private final CardCipherService cipher;
     private final TransactionTemplate transaction;
     public CardAssetService(CardAssetMapper assets, ProductEditingMapper products, InventoryAdjustmentMapper inventory,
                             ProductVirtualCardMapper cards, ProductSkuMapper skus, CardImportBatchMapper batches, PlatformTransactionManager manager) {
+        this(assets, products, inventory, cards, skus, batches, manager, new CardCipherService());
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public CardAssetService(CardAssetMapper assets, ProductEditingMapper products, InventoryAdjustmentMapper inventory,
+                            ProductVirtualCardMapper cards, ProductSkuMapper skus, CardImportBatchMapper batches, PlatformTransactionManager manager,
+                            CardCipherService cipher) {
         this.assets = assets; this.products = products; this.inventory = inventory; this.cards = cards; this.skus = skus;
-        this.batches = batches;
+        this.batches = batches; this.cipher = cipher != null ? cipher : new CardCipherService();
         transaction = new TransactionTemplate(manager); transaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 
@@ -43,7 +51,7 @@ public class CardAssetService {
             String value = content.trim();
             // trim还会移除部分ASCII控制字符，必须在规范化后判断是否为空。
             if (value.isBlank()) throw new BusinessException(400, "卡密不能为空且每条最多4096字符");
-            if (!fingerprints.add(fingerprint(value))) throw new BusinessException(400, "本批卡密存在重复，整批未导入");
+            if (!fingerprints.add(cipher.fingerprint(value))) throw new BusinessException(400, "本批卡密存在重复，整批未导入");
             normalized.add(value);
         }
         return transaction.execute(status -> {
@@ -52,16 +60,30 @@ public class CardAssetService {
             if (current.getStockQuantity() < 0 || held < 0 || (long) current.getStockQuantity() + normalized.size() > Integer.MAX_VALUE - held) {
                 throw new BusinessException(400, "库存数量异常或超过上限（含待释放预占）");
             }
-            for (String previous : assets.historyContents(merchant)) {
-                if (previous != null && fingerprints.contains(fingerprint(previous.trim()))) {
-                    throw new BusinessException(409, "卡密已存在于本店历史记录，整批未导入；请核对库存");
+            // R25: 优先通过数据库索引指纹直接查找，避免全店历史明文全量读入内存
+            String existing = assets.findExistingFingerprint(merchant, fingerprints);
+            if (existing == null && assets.historyContents(merchant) != null) {
+                // 兼容未生成指纹的历史遗留卡密或Mock夹具
+                for (String previous : assets.historyContents(merchant)) {
+                    if (previous != null && fingerprints.contains(cipher.fingerprint(previous.trim()))) {
+                        existing = cipher.fingerprint(previous.trim());
+                        break;
+                    }
                 }
+            }
+            if (existing != null) {
+                throw new BusinessException(409, "卡密已存在于本店历史记录，整批未导入；请核对库存");
             }
             var batch = new CardImportBatch(); batch.setMerchantId(merchant); batch.setActorId(actor); batch.setProductId(product); batch.setSkuId(sku);
             batch.setImportedCount(normalized.size()); batch.setBeforeStock(current.getStockQuantity()); batch.setAfterStock(current.getStockQuantity() + normalized.size());
             if (batches.insert(batch) != 1 || batch.getId() == null || batch.getId() < 1) throw new IllegalStateException("导入批次记录失败");
             for (String content : normalized) {
-                var card = new ProductVirtualCard(); card.setMerchantId(merchant); card.setProductId(product); card.setSkuId(sku); card.setCardContent(content);
+                var card = new ProductVirtualCard();
+                card.setMerchantId(merchant);
+                card.setProductId(product);
+                card.setSkuId(sku);
+                card.setCardFingerprint(cipher.fingerprint(content));
+                card.setCardContent(cipher.encrypt(content)); // R05: AES-256-GCM分级加密存储
                 if (cards.insert(card) != 1) throw new IllegalStateException("卡密入库失败");
                 if (card.getId() == null || card.getId() < 1 || batches.link(batch.getId(), card.getId()) != 1) throw new IllegalStateException("导入批次关联失败");
             }

@@ -112,11 +112,13 @@ CREATE TABLE IF NOT EXISTS `product_virtual_card` (
   `product_id` BIGINT  NOT NULL,
   `sku_id` BIGINT  NOT NULL,
   `merchant_id` BIGINT  NOT NULL,
+  `card_fingerprint` CHAR(64) DEFAULT NULL,
   `card_content` TEXT NOT NULL COMMENT '卡密明细文本 (卡号/卡密/激活链接)',
   `status` TINYINT NOT NULL DEFAULT 0 COMMENT '状态: 0-未售出, 1-已售出核销, 2-作废',
   `order_sn` VARCHAR(64) DEFAULT NULL COMMENT '售出关联订单号',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_merchant_fingerprint` (`merchant_id`, `card_fingerprint`)
 );
 
 -- 8. 交易订单主表 (含两段式代付字段)

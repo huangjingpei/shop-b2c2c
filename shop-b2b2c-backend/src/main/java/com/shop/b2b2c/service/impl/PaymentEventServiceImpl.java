@@ -37,6 +37,7 @@ public class PaymentEventServiceImpl implements PaymentEventService {
     private final MerchantStoreMapper storeMapper;
     private final InventoryReservationMapper reservationMapper;
     private final ProductVirtualCardMapper cardMapper;
+    private final com.shop.b2b2c.service.CardCipherService cardCipher;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -205,14 +206,17 @@ public class PaymentEventServiceImpl implements PaymentEventService {
                         eventRecorder.recordEventStatus(pe.getId(), "FULFILLMENT_FAILED", "卡密已被分配，需人工审核");
                         throw new BusinessException("卡密已被分配，请重试");
                     }
-                    deliveredCards.add(card.getCardContent());
+                    String plain = cardCipher.decrypt(card.getCardContent());
+                    deliveredCards.add(plain);
                 }
-                firstItem.setCardDetails(String.join("\n", deliveredCards));
+                // R05: 订单明细中卡密快照使用分级加密存储，避免正文多处直接泄露
+                firstItem.setCardDetails(cardCipher.encrypt(String.join("\n", deliveredCards)));
                 itemMapper.save(firstItem);
 
                 order.setOrderStatus("COMPLETED");
                 order.setSharingStatus("PENDING");
-                order.setServiceVoucher("系统卡密秒级自动交付: " + String.join(" | ", deliveredCards));
+                // R05: 服务凭证仅保存脱敏核销审计摘要，严禁在服务凭证中冗余明文卡密
+                order.setServiceVoucher("系统卡密已自动交付 (共" + deliveredCards.size() + "张)");
                 order.setFinishTime(LocalDateTime.now());
             } else {
                 eventRecorder.recordEventStatus(pe.getId(), "FULFILLMENT_FAILED", "卡密库存不足，已转入交付异常待人工审核");

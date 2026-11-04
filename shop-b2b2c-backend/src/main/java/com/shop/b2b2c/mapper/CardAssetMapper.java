@@ -13,6 +13,12 @@ public interface CardAssetMapper {
     Long lockMerchant(@Param("merchant") Long merchant);
     @Select("SELECT card_content FROM product_virtual_card WHERE merchant_id=#{merchant}")
     List<String> historyContents(@Param("merchant") Long merchant);
+    @Select("<script>"
+            + "SELECT card_fingerprint FROM product_virtual_card WHERE merchant_id=#{merchant} AND card_fingerprint IN "
+            + "<foreach collection='fingerprints' item='fp' open='(' separator=',' close=')'>#{fp}</foreach> "
+            + "LIMIT 1"
+            + "</script>")
+    String findExistingFingerprint(@Param("merchant") Long merchant, @Param("fingerprints") java.util.Collection<String> fingerprints);
     @Select("SELECT * FROM product_virtual_card WHERE id=#{id} AND merchant_id=#{merchant}")
     ProductVirtualCard findCard(@Param("merchant") Long merchant, @Param("id") Long id);
     @Select("SELECT * FROM product_virtual_card WHERE id=#{id} AND merchant_id=#{merchant} FOR UPDATE")
