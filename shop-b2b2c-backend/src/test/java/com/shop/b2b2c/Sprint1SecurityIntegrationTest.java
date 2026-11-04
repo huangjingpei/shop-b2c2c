@@ -29,6 +29,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -2936,6 +2937,107 @@ class Sprint1SecurityIntegrationTest {
         assertNull(queriedBySn.getPosterUrl(), "findByOrderSn must project out posterUrl");
         TradeOrder queriedByContact = orders.findByOrderSnAndBuyerContact(queried.getOrderSn(), "13812345678").orElseThrow();
         assertNull(queriedByContact.getPosterUrl(), "findByOrderSnAndBuyerContact must project out posterUrl");
+    }
+
+    @Test
+    void r07OrderCreationCostBudgetingAndFloodingDefense() throws Exception {
+        // 1. 正常建单成功并写入数据库
+        String normalKey = "r07-normal-key-" + UUID.randomUUID();
+        String validBody = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"13800000001\"}";
+        mvc.perform(post("/api/v1/peer-pay/buyer/create")
+                        .header("Idempotency-Key", normalKey)
+                        .contentType("application/json")
+                        .content(validBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderSn").isNotEmpty());
+
+        int orderCountBefore = jdbc.queryForObject("SELECT COUNT(*) FROM trade_order", Integer.class);
+        int idempCountBefore = jdbc.queryForObject("SELECT COUNT(*) FROM order_idempotency", Integer.class);
+        int skuStockBefore = jdbc.queryForObject("SELECT stock_quantity FROM product_sku WHERE id = 1", Integer.class);
+
+        // 2. 模拟新键洪泛攻击：当成本限流器触发 (Redis 返回 0L 超限) 时，建单立即被拒绝 (429)
+        when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(0L);
+
+        try {
+            // A. 代付建单超限：返回 429
+            mvc.perform(post("/api/v1/peer-pay/buyer/create")
+                            .header("Idempotency-Key", "flood-peer-" + UUID.randomUUID())
+                            .contentType("application/json")
+                            .content(validBody))
+                    .andExpect(jsonPath("$.code").value(429))
+                    .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("建单过于频繁")));
+
+            // B. 普通公开 checkout 建单超限：返回 429
+            String checkoutBody = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"13800000001\",\"merchantId\":1}";
+            mvc.perform(post("/api/v1/public/orders/checkout")
+                            .header("Idempotency-Key", "flood-checkout-" + UUID.randomUUID())
+                            .contentType("application/json")
+                            .content(checkoutBody))
+                    .andExpect(jsonPath("$.code").value(429))
+                    .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("建单过于频繁")));
+
+            // C. 核心安全守恒断言：超限不写单、不写入幂等表、不扣库存
+            int orderCountAfter = jdbc.queryForObject("SELECT COUNT(*) FROM trade_order", Integer.class);
+            int idempCountAfter = jdbc.queryForObject("SELECT COUNT(*) FROM order_idempotency", Integer.class);
+            int skuStockAfter = jdbc.queryForObject("SELECT stock_quantity FROM product_sku WHERE id = 1", Integer.class);
+
+            assertEquals(orderCountBefore, orderCountAfter, "Rate-limited requests must NEVER write records to trade_order");
+            assertEquals(idempCountBefore, idempCountAfter, "Rate-limited requests must NEVER write records to order_idempotency");
+            assertEquals(skuStockBefore, skuStockAfter, "Rate-limited requests must NEVER deduct inventory");
+        } finally {
+            when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
+        }
+    }
+
+    @Test
+    void r07PreLockAndPosterCostBudgetingDefense() throws Exception {
+        // 1. 创建待预占订单
+        TradeOrder order = intent("r07-prelock-budget");
+        int stockBefore = jdbc.queryForObject("SELECT stock_quantity FROM product_sku WHERE id = 1", Integer.class);
+        int resBefore = jdbc.queryForObject("SELECT COUNT(*) FROM inventory_reservation WHERE status = 'HELD'", Integer.class);
+
+        // 2. 模拟高频重复预占超限 (Redis 返回 0L)
+        when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(0L);
+
+        try {
+            // A. 预占接口受限：返回 429
+            mvc.perform(post("/api/v1/peer-pay/pre-lock/" + order.getPeerPayToken()))
+                    .andExpect(jsonPath("$.code").value(429))
+                    .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("预占尝试过于频繁")));
+
+            // B. 预占超限后数据严格守恒：不扣减库存、不插入预占表记录
+            int stockAfter = jdbc.queryForObject("SELECT stock_quantity FROM product_sku WHERE id = 1", Integer.class);
+            int resAfter = jdbc.queryForObject("SELECT COUNT(*) FROM inventory_reservation WHERE status = 'HELD'", Integer.class);
+            assertEquals(stockBefore, stockAfter, "Pre-lock throttling must NEVER deduct stock_quantity");
+            assertEquals(resBefore, resAfter, "Pre-lock throttling must NEVER create inventory_reservation rows");
+
+            // C. 海报生成接口受限：返回 429
+            mvc.perform(get("/api/v1/peer-pay/poster/" + order.getPeerPayToken()))
+                    .andExpect(jsonPath("$.code").value(429))
+                    .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("海报获取过于频繁")));
+        } finally {
+            when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
+        }
+
+        // 3. 超长字段参数防御 (防内存/网络膨胀)：超长手机号/留言直接 400 阻断
+        String longContact = "x".repeat(65);
+        String longMessage = "m".repeat(201);
+        String longContactBody = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"" + longContact + "\"}";
+        mvc.perform(post("/api/v1/peer-pay/buyer/create")
+                        .header("Idempotency-Key", "overflow-contact-" + UUID.randomUUID())
+                        .contentType("application/json")
+                        .content(longContactBody))
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("64字符")));
+
+        String longMessageBody = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"13812345678\",\"peerMessage\":\"" + longMessage + "\"}";
+        mvc.perform(post("/api/v1/peer-pay/buyer/create")
+                        .header("Idempotency-Key", "overflow-msg-" + UUID.randomUUID())
+                        .contentType("application/json")
+                        .content(longMessageBody))
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("200字符")));
     }
 
     private void race(int count, java.util.function.IntConsumer action) throws Exception {

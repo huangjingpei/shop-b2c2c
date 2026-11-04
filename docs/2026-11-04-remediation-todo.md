@@ -47,7 +47,7 @@
 | 已修复 | [R04](2026-11-04-project-diagnostic-report.md#r04) / A1 | D18/D23/D30/F12/F13 | 管理列表批量返回领取凭证及卡密正文 | R02权限矩阵；前后端同时适配DTO |
 | 已修复 | [R05](2026-11-04-project-diagnostic-report.md#r05) / B2 | D21/F12/F13 | 卡密多份明文与身份结算资料缺分级保护 | 密钥管理/历史迁移；联动R25，不使用密码哈希存卡密 |
 | 待专项验证 | [R06](2026-11-04-project-diagnostic-report.md#r06) / A2 | D20/D23/D35 | 代理部署下限流可能共享回环IP桶 | 可信代理拓扑及后端访问限制，联动R30 |
-| 待处理 | [R07](2026-11-04-project-diagnostic-report.md#r07) / A2 | D38/D30/F01 | 公开建单、预占和海报无应用成本预算 | 限额/匿名体验规则；复用幂等与库存服务 |
+| 已修复 | [R07](2026-11-04-project-diagnostic-report.md#r07) / A2 | D38/D30/F01 | 公开建单、预占和海报无应用成本预算 | 限额/匿名体验规则；复用幂等与库存服务 |
 | 待专项验证 | [R08](2026-11-04-project-diagnostic-report.md#r08) / V1 | D21/D23/D24/F13 | 长期会话、日志和依赖安全缺完整证据 | 专项授权/环境证据；不凭版本年龄判CVE |
 | 已修复 | [R09](2026-11-04-project-diagnostic-report.md#r09) / A1 | D12/D13/F13 | 整实体保存可能恢复旧封禁状态或费率 | 集中所有店铺写者；独立于F01 |
 | 已修复 | [R10](2026-11-04-project-diagnostic-report.md#r10) / B1 | D09/D27/F08 | 预占提交后丢响应无法恢复ownerToken | 支付尝试/所有权契约；联动R12/R13 |

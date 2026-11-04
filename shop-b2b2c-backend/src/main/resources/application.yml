@@ -77,6 +77,15 @@ app:
     login-account-limit: ${AUTH_LOGIN_ACCOUNT_LIMIT:20}
     login-ip-limit: ${AUTH_LOGIN_IP_LIMIT:100}
     login-window-seconds: ${AUTH_LOGIN_WINDOW_SECONDS:300}
+    order-create-ip-limit: ${APP_ORDER_CREATE_IP_LIMIT:60}
+    order-create-contact-limit: ${APP_ORDER_CREATE_CONTACT_LIMIT:30}
+    order-create-window-seconds: ${APP_ORDER_CREATE_WINDOW_SECONDS:300}
+    prelock-ip-limit: ${APP_PRELOCK_IP_LIMIT:60}
+    prelock-token-limit: ${APP_PRELOCK_TOKEN_LIMIT:20}
+    prelock-window-seconds: ${APP_PRELOCK_WINDOW_SECONDS:300}
+    poster-ip-limit: ${APP_POSTER_IP_LIMIT:60}
+    poster-token-limit: ${APP_POSTER_TOKEN_LIMIT:20}
+    poster-window-seconds: ${APP_POSTER_WINDOW_SECONDS:60}
   frontend:
     storefront-url: ${APP_FRONTEND_STOREFRONT_URL:http://localhost:3002}
 

@@ -43,6 +43,7 @@ public class OrderController {
     private final PeerPayService peerPayService;
     private final com.shop.b2b2c.service.OrderIdempotencyService idempotency;
     private final com.shop.b2b2c.service.CardCipherService cardCipher;
+    private final com.shop.b2b2c.service.TradeCostLimiter costLimiter;
 
     @Data
     public static class CheckoutDTO {
@@ -60,7 +61,12 @@ public class OrderController {
     @Operation(summary = "【公开】创建单店待付款订单（不扣库存、不履约）")
     @PostMapping("/api/v1/public/orders/checkout")
     public R<Map<String, Object>> checkoutRequest(@RequestBody CheckoutDTO dto,
-            @RequestHeader("Idempotency-Key") String key) {
+            @RequestHeader("Idempotency-Key") String key,
+            jakarta.servlet.http.HttpServletRequest request) {
+        if (dto == null) {
+            throw new BusinessException(400, "请求参数不能为空");
+        }
+        costLimiter.checkOrderCreation(request != null ? request.getRemoteAddr() : null, dto.getBuyerContact());
         return R.ok("订单已创建，等待付款；支付通道暂未开放",
                 idempotency.execute("checkout:guest", key, dto, () -> checkout(dto).getData()));
     }
@@ -73,6 +79,12 @@ public class OrderController {
         }
         if (dto.getBuyerContact() == null || dto.getBuyerContact().trim().isEmpty()) {
             throw new BusinessException("请输入联系手机号或邮箱，用于提取商品与查单");
+        }
+        if (dto.getBuyerContact().trim().length() > 64) {
+            throw new BusinessException(400, "联系手机号或邮箱长度不能超过64字符");
+        }
+        if (dto.getPaymentChannel() != null && dto.getPaymentChannel().trim().length() > 32) {
+            throw new BusinessException(400, "支付通道标识长度不能超过32字符");
         }
 
         Product product = productMapper.findById(dto.getProductId())

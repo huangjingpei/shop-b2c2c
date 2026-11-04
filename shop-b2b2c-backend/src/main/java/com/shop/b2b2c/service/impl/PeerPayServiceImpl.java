@@ -55,6 +55,15 @@ public class PeerPayServiceImpl implements PeerPayService {
         if (req.getBuyerContact() == null || req.getBuyerContact().trim().isEmpty()) {
             throw new BusinessException("请输入联系手机号或邮箱，用于提取商品与查单");
         }
+        if (req.getBuyerContact().trim().length() > 64) {
+            throw new BusinessException(400, "联系手机号或邮箱长度不能超过64字符");
+        }
+        if (req.getPeerMessage() != null && req.getPeerMessage().trim().length() > 200) {
+            throw new BusinessException(400, "代付留言长度不能超过200字符");
+        }
+        if (req.getRecipientAddress() != null && req.getRecipientAddress().trim().length() > 255) {
+            throw new BusinessException(400, "收件人地址长度不能超过255字符");
+        }
 
         Product product = productMapper.findById(req.getProductId())
                 .orElseThrow(() -> new BusinessException("商品不存在"));
