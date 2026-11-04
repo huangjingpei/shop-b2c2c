@@ -101,6 +101,7 @@ class Sprint1SecurityIntegrationTest {
                     id, id, id, "SKU" + id);
         }
         jdbc.update("INSERT INTO product_virtual_card(id,merchant_id,product_id,sku_id,card_content,status) VALUES(1,1,1,1,'secret',0)");
+        jdbc.update("MERGE INTO category(id,parent_id,name,sort_order) KEY(id) VALUES(1,0,'standard',0)");
     }
 
     @org.junit.jupiter.api.AfterEach

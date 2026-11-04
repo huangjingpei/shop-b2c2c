@@ -313,13 +313,16 @@ INSERT IGNORE INTO `product_sku` (`id`, `product_id`, `merchant_id`, `sku_code`,
 (1, 1, 1, 'TX-VIP-1M', '{"时长": "1个月 (月卡)", "类型": "直充激活卡密"}', 18.80, 5),
 (2, 1, 1, 'TX-VIP-1Y', '{"时长": "12个月 (年卡)", "类型": "直充激活卡密"}', 178.00, 3);
 
--- 注入 5 张月卡卡密库存
+-- 注入 5 张月卡卡密库存与 3 张年卡卡密库存
 INSERT IGNORE INTO `product_virtual_card` (`id`, `product_id`, `sku_id`, `merchant_id`, `card_content`, `status`) VALUES
 (1, 1, 1, 1, 'TXVIP-2026-A8K2-9D7F-1101', 0),
 (2, 1, 1, 1, 'TXVIP-2026-B3J9-4C2E-1102', 0),
 (3, 1, 1, 1, 'TXVIP-2026-K9M1-7L4X-1103', 0),
 (4, 1, 1, 1, 'TXVIP-2026-W4R8-2P6Q-1104', 0),
-(5, 1, 1, 1, 'TXVIP-2026-X7V5-9T3S-1105', 0);
+(5, 1, 1, 1, 'TXVIP-2026-X7V5-9T3S-1105', 0),
+(6, 1, 2, 1, 'TXVIP-2026-Y1-7K8M-9P2D-1201', 0),
+(7, 1, 2, 1, 'TXVIP-2026-Y1-3F4G-5H6J-1202', 0),
+(8, 1, 2, 1, 'TXVIP-2026-Y1-9Q8W-7E6R-1203', 0);
 
 -- 初始演示商品 2 (实物商品 - 机械键盘定制键帽)
 INSERT IGNORE INTO `product` (`id`, `merchant_id`, `category_id`, `title`, `sub_title`, `goods_type`, `main_image`, `min_price`, `status`, `sort_order`)

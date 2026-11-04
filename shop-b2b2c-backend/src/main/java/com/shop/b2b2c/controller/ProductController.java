@@ -6,6 +6,7 @@
 package com.shop.b2b2c.controller;
 
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.ManagementGuards;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.SecurityUtils;
 import com.shop.b2b2c.common.TradeGuards;
@@ -13,6 +14,7 @@ import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.entity.Product;
 import com.shop.b2b2c.entity.ProductSku;
 import com.shop.b2b2c.entity.ProductVirtualCard;
+import com.shop.b2b2c.mapper.CategoryMapper;
 import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import com.shop.b2b2c.mapper.ProductMapper;
 import com.shop.b2b2c.mapper.ProductSkuMapper;
@@ -36,6 +38,7 @@ public class ProductController {
     private final ProductSkuMapper skuMapper;
     private final ProductVirtualCardMapper cardMapper;
     private final MerchantStoreMapper storeMapper;
+    private final CategoryMapper categoryMapper;
     private final com.shop.b2b2c.service.CardAssetService cardAssets;
 
     // ==========================================
@@ -85,6 +88,7 @@ public class ProductController {
     public static class CreateProductDTO {
         private String title;
         private String subTitle;
+        private String serviceDesc;
         private Long categoryId;
         private Integer goodsType; // 1-实物, 2-虚拟
         private String mainImage;
@@ -109,10 +113,17 @@ public class ProductController {
         if (dto.getTitle() == null || dto.getTitle().isBlank() || dto.getTitle().length() > 255
                 || dto.getMainImage() == null || dto.getMainImage().isBlank() || dto.getMainImage().length() > 255
                 || dto.getCategoryId() == null || dto.getCategoryId() <= 0
-                || dto.getSkus() == null || dto.getSkus().isEmpty()) throw new BusinessException(400, "商品必填项不完整");
+                || dto.getSkus() == null || dto.getSkus().isEmpty() || dto.getSkus().size() > 100) {
+            throw new BusinessException(400, "商品必填项不完整，且单次最多100个SKU");
+        }
+        ManagementGuards.text(dto.getSubTitle(), 255, false);
+        ManagementGuards.text(dto.getServiceDesc(), 10000, false);
         TradeGuards.requireGoodsType(dto.getGoodsType());
-        TradeGuards.requireMoney(dto.getMinPrice());
+        if (categoryMapper.findById(dto.getCategoryId()).isEmpty()) {
+            throw new BusinessException(400, "平台类目不存在");
+        }
         Set<String> codes = new HashSet<>();
+        BigDecimal calculatedMinPrice = null;
         for (SkuDTO sku : dto.getSkus()) {
             if (sku == null || sku.getSkuCode() == null || sku.getSkuCode().isBlank() || sku.getSkuCode().length() > 64
                     || !codes.add(sku.getSkuCode())) {
@@ -120,20 +131,24 @@ public class ProductController {
             }
             TradeGuards.requireMoney(sku.getPrice());
             TradeGuards.requireInitialStock(dto.getGoodsType(), sku.getStockQuantity());
+            if (calculatedMinPrice == null || sku.getPrice().compareTo(calculatedMinPrice) < 0) {
+                calculatedMinPrice = sku.getPrice();
+            }
             try {
-                if (sku.getSpecData() == null || !new com.fasterxml.jackson.databind.ObjectMapper().readTree(sku.getSpecData()).isObject()) {
+                if (sku.getSpecData() == null || sku.getSpecData().length() > 255 || !new com.fasterxml.jackson.databind.ObjectMapper().readTree(sku.getSpecData()).isObject()) {
                     throw new IllegalArgumentException();
                 }
-            } catch (Exception e) { throw new BusinessException(400, "规格须为JSON对象"); }
+            } catch (Exception e) { throw new BusinessException(400, "规格须为合法JSON对象且不超过255字符"); }
         }
         Product product = new Product();
         product.setMerchantId(merchantId);
         product.setCategoryId(dto.getCategoryId());
         product.setTitle(dto.getTitle());
         product.setSubTitle(dto.getSubTitle());
+        product.setServiceDesc(dto.getServiceDesc());
         product.setGoodsType(dto.getGoodsType() != null ? dto.getGoodsType() : 1);
         product.setMainImage(dto.getMainImage());
-        product.setMinPrice(dto.getMinPrice());
+        product.setMinPrice(calculatedMinPrice != null ? calculatedMinPrice : dto.getMinPrice());
         product.setStatus(1);
         product = productMapper.save(product);
 

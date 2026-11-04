@@ -48,8 +48,8 @@
               <span class="text-xl">🏪</span>
               <span class="font-bold text-xs text-slate-900">{{ store.storeName }}</span>
             </div>
-            <span class="px-2 py-0.5 rounded bg-emerald-100 text-emerald-800 font-semibold text-[10px]">
-              官方合规认证
+            <span class="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold text-[10px]">
+              已核验店铺
             </span>
           </div>
           <p class="text-[11px] text-slate-500 line-clamp-2">{{ store.notice || '源头直供，品质售后保障。' }}</p>
@@ -68,25 +68,20 @@
           <h1 class="text-lg md:text-xl font-black text-slate-900 leading-snug">{{ product.title }}</h1>
           <p class="text-xs text-slate-500 mt-1.5">{{ product.subTitle || '源头直发 · 一手批发底价' }}</p>
 
-          <!-- 16688 招牌：阶梯批发价格区间表 (Tier Pricing) -->
+          <!-- 规格价格与可用库存展示卡片 -->
           <div class="mt-4 p-4 bg-orange-50/70 rounded-xl border border-orange-200/70">
-            <div class="grid grid-cols-3 gap-2 text-center divide-x divide-orange-200">
+            <div class="flex items-baseline justify-between">
               <div>
-                <div class="text-[11px] text-slate-500 font-medium">1 ~ 9 件 (样品起批)</div>
-                <div class="text-xl font-black text-orange-600 mt-1">￥{{ currentPrice(1) }}</div>
+                <span class="text-xs text-orange-600 font-bold">现价 ￥</span>
+                <span class="text-2xl font-black text-orange-600">{{ currentPrice() }}</span>
               </div>
-              <div>
-                <div class="text-[11px] text-slate-500 font-medium">10 ~ 49 件 (批量直采)</div>
-                <div class="text-xl font-black text-orange-600 mt-1">￥{{ currentPrice(10) }}</div>
-              </div>
-              <div>
-                <div class="text-[11px] text-slate-500 font-medium">≥ 50 件 (大客户底价)</div>
-                <div class="text-xl font-black text-orange-600 mt-1">￥{{ currentPrice(50) }}</div>
+              <div class="text-xs text-slate-500">
+                现货可用库存: <strong class="text-slate-800 font-bold">{{ currentSku?.stockQuantity || 0 }}</strong> 件
               </div>
             </div>
-            <div class="mt-3 pt-2.5 border-t border-orange-200/60 flex items-center justify-between text-xs text-slate-500">
-              <span>当前单件现价: <strong class="text-orange-600 text-sm">￥{{ currentSku?.price || product.minPrice }}</strong></span>
-              <span>现货可用总存量: <strong class="text-slate-800">{{ currentSku?.stockQuantity || 0 }}</strong> 件</span>
+            <div class="mt-2 pt-2 border-t border-orange-200/60 flex items-center justify-between text-xs text-slate-500">
+              <span>当前规格: <strong class="text-slate-700">{{ currentSku ? formatSpec(currentSku.specData) : '请选择规格' }}</strong></span>
+              <span>单价透明 · 实价成交</span>
             </div>
           </div>
 
@@ -414,7 +409,7 @@ import { receiptPath } from '../utils/buyerReceipt.mjs'
 import { createIdempotentSubmission } from '../utils/idempotency.mjs'
 const checkoutSubmission = createIdempotentSubmission()
 const peerSubmission = createIdempotentSubmission()
-import { ref, onMounted } from 'vue'
+import { ref, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
 
@@ -429,19 +424,14 @@ const quantity = ref(1)
 const buyerContact = ref('13912345678')
 const successResult = ref(null)
 
-const currentPrice = (qty) => {
+const currentPrice = () => {
   const base = currentSku.value?.price || product.value?.minPrice || 0
-  if (qty >= 50) return (base * 0.85).toFixed(2) // 大客户底价85折
-  if (qty >= 10) return (base * 0.92).toFixed(2) // 批量批发92折
   return Number(base).toFixed(2)
 }
 
 const calculateTotal = () => {
   const base = currentSku.value?.price || 0
-  let unit = base
-  if (quantity.value >= 50) unit = base * 0.85
-  else if (quantity.value >= 10) unit = base * 0.92
-  return (unit * quantity.value).toFixed(2)
+  return (base * (quantity.value || 1)).toFixed(2)
 }
 
 const formatSpec = (jsonStr) => {
@@ -453,10 +443,17 @@ const formatSpec = (jsonStr) => {
   }
 }
 
-const loadProduct = async () => {
+const loadProduct = async (id = route.params.id) => {
+  if (!id) return
   loading.value = true
+  product.value = null
+  skus.value = []
+  store.value = null
+  currentSku.value = null
+  successResult.value = null
+  peerPayResult.value = null
   try {
-    const res = await axios.get(`/api/v1/public/products/${route.params.id}`)
+    const res = await axios.get(`/api/v1/public/products/${id}`)
     product.value = res.data.data.product
     skus.value = res.data.data.skus
     store.value = res.data.data.store
@@ -469,6 +466,12 @@ const loadProduct = async () => {
     loading.value = false
   }
 }
+
+watch(() => route.params.id, (newId) => {
+  if (newId) {
+    loadProduct(newId)
+  }
+}, { immediate: true })
 
 const handleCheckout = async () => {
   if (!buyerContact.value.trim()) {
@@ -606,8 +609,4 @@ const copyOnlyLink = () => {
 }
 
 const copyPeerPayLink = copyOnlyLink
-
-onMounted(() => {
-  loadProduct()
-})
 </script>

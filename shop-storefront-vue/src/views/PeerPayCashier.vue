@@ -176,10 +176,14 @@
 
             <!-- 底部辅助链接 (自己付款 > · 查看买单海报 >) -->
             <div class="pt-1 flex items-center justify-center space-x-4 text-xs text-slate-400">
-              <button @click="$router.push(`/product/${detail.productId || 1}`)" class="hover:text-slate-600 transition">
+              <button 
+                v-if="detail.productId" 
+                @click="$router.push(`/product/${detail.productId}`)" 
+                class="hover:text-slate-600 transition"
+              >
                 自己付款 &gt;
               </button>
-              <span>·</span>
+              <span v-if="detail.productId">·</span>
               <button @click="showPosterModal = true" class="hover:text-slate-600 transition">
                 查看买单海报 &gt;
               </button>
@@ -237,13 +241,10 @@
               </div>
             </div>
 
-            <!-- 价格与原价划线 (对齐右上方) -->
+            <!-- 价格 (对齐右上方) -->
             <div class="text-right flex-shrink-0">
               <div class="text-sm font-bold text-slate-900">
                 ¥{{ Number(detail.payAmount).toFixed(0) === detail.payAmount ? Number(detail.payAmount).toFixed(0) : Number(detail.payAmount).toFixed(2) }}
-              </div>
-              <div class="text-[11px] text-slate-400 line-through mt-0.5">
-                ¥{{ (Number(detail.payAmount) * 1.38).toFixed(2) }}
               </div>
             </div>
           </div>
@@ -256,7 +257,7 @@
             <span v-else class="text-blue-700 font-medium">
               📦 实物包裹 · 极速快递发货
             </span>
-            <span>担保交易保障中</span>
+            <span>规范交易审核</span>
           </div>
 
         </div>
@@ -318,13 +319,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 
 const route = useRoute()
 const router = useRouter()
-const token = route.params.token
 
 const handleGoBack = () => {
   if (window.history.length > 1) {
@@ -434,9 +434,15 @@ const copyCardText = () => {
   copyToClipboard(text, '✅ 微信专属代付卡片已复制到剪贴板！\n\n您可以直接在微信聊天或群聊中粘贴发送，好友点开直接微信付款。')
 }
 
-const loadDetail = async () => {
+const loadDetail = async (currentToken = route.params.token) => {
+  if (!currentToken) return
+  if (timer) clearInterval(timer)
+  loading.value = true
+  errorMsg.value = ''
+  detail.value = null
+  isPaidSuccess.value = false
   try {
-    const res = await axios.get(`/api/v1/peer-pay/detail/${token}`)
+    const res = await axios.get(`/api/v1/peer-pay/detail/${currentToken}`)
     if (res.data.code === 200) {
       detail.value = res.data.data
       if (detail.value.productTitle) {
@@ -471,10 +477,12 @@ const quickPay = async () => {
   alert('支付通道暂未开放，当前账单不能付款，尚未扣款或交付商品。')
 }
 
-onMounted(() => {
-  loadDetail()
-  loadAdBanner()
-})
+watch(() => route.params.token, (newToken) => {
+  if (newToken) {
+    loadDetail(newToken)
+    loadAdBanner()
+  }
+}, { immediate: true })
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)

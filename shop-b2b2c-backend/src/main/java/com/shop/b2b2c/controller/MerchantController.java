@@ -6,6 +6,7 @@
 package com.shop.b2b2c.controller;
 
 import cn.dev33.satoken.secure.BCrypt;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.ManagementGuards;
@@ -228,6 +229,7 @@ public class MerchantController {
         MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
 
+        // 严格白名单列更新：仅允许修改展示公告与联系方式，绝不覆盖封禁状态、费率或系统资料
         if (updateDTO.getNotice() != null) store.setNotice(updateDTO.getNotice());
         if (updateDTO.getLogoUrl() != null) store.setLogoUrl(updateDTO.getLogoUrl());
         if (updateDTO.getContactPhone() != null) store.setContactPhone(updateDTO.getContactPhone());

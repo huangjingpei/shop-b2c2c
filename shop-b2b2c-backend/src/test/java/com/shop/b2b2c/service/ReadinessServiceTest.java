@@ -46,14 +46,14 @@ class ReadinessServiceTest {
         when(rows.next()).thenReturn(true); when(rows.getInt(1)).thenReturn(1);
         when(jdbc.execute(org.mockito.ArgumentMatchers.<ConnectionCallback<Boolean>>any())).thenAnswer(call -> {
             ConnectionCallback<Boolean> callback = call.getArgument(0);
-            return callback.doInConnection(database);
+            return callback != null ? callback.doInConnection(database) : null;
         });
         connection = mock(RedisConnection.class); commands = mock(RedisServerCommands.class);
         when(connection.ping()).thenReturn("PONG"); when(connection.serverCommands()).thenReturn(commands);
         when(commands.info("persistence")).thenReturn(healthy());
         when(redis.execute(org.mockito.ArgumentMatchers.<RedisCallback<Boolean>>any())).thenAnswer(call -> {
             RedisCallback<Boolean> callback = call.getArgument(0);
-            return callback.doInRedis(connection);
+            return callback != null ? callback.doInRedis(connection) : null;
         });
         service = new ReadinessService(jdbc, redis, 500, 60000);
     }

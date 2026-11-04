@@ -26,14 +26,15 @@ class PublicProductControllerTest {
                 var skus = mock(ProductSkuMapper.class);
                 var cards = mock(ProductVirtualCardMapper.class);
                 var stores = mock(MerchantStoreMapper.class);
+                var categories = mock(CategoryMapper.class);
                 var assets = mock(CardAssetService.class);
                 var rows = List.of(new PublicProductView(), new PublicProductView());
                 when(products.findPublicProducts(category, merchant)).thenReturn(rows);
-                var result = new ProductController(products, skus, cards, stores, assets)
+                var result = new ProductController(products, skus, cards, stores, categories, assets)
                         .listPublicProducts(category, merchant);
                 assertSame(rows, result.getData()); assertEquals(200, result.getCode());
                 verify(products).findPublicProducts(category, merchant);
-                verifyNoMoreInteractions(products); verifyNoInteractions(skus, cards, stores, assets);
+                verifyNoMoreInteractions(products); verifyNoInteractions(skus, cards, stores, categories, assets);
             }
         }
     }
@@ -42,7 +43,8 @@ class PublicProductControllerTest {
     void invalidFiltersAreRejectedBeforeAnyQuery() {
         var products = mock(ProductMapper.class);
         var controller = new ProductController(products, mock(ProductSkuMapper.class),
-                mock(ProductVirtualCardMapper.class), mock(MerchantStoreMapper.class), mock(CardAssetService.class));
+                mock(ProductVirtualCardMapper.class), mock(MerchantStoreMapper.class),
+                mock(CategoryMapper.class), mock(CardAssetService.class));
         for (Long invalid : new Long[] {0L, -1L, Long.MIN_VALUE}) {
             var categoryError = assertThrows(BusinessException.class, () -> controller.listPublicProducts(invalid, 1L));
             var merchantError = assertThrows(BusinessException.class, () -> controller.listPublicProducts(1L, invalid));

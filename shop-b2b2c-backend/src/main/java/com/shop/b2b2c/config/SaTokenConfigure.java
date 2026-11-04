@@ -49,7 +49,7 @@ public class SaTokenConfigure implements WebMvcConfigurer {
         registry.addMapping("/**")
                 .allowedOrigins(corsOrigins.allowedOrigins())
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")
-                .allowedHeaders("Authorization", "Content-Type", "Idempotency-Key")
+                .allowedHeaders("Authorization", "Content-Type", "Idempotency-Key", "X-Reservation-Token")
                 .allowCredentials(false)
                 .maxAge(3600);
     }

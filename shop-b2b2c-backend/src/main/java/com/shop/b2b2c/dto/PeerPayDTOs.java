@@ -36,6 +36,7 @@ public class PeerPayDTOs {
     public static class DetailResponse {
         private String token;
         private String orderSn;
+        private Long productId;
         private Integer goodsType; // 1-实物, 2-自动卡密, 3-定制服务
         private Integer peerPayType; // 1-买家求助, 2-卖家代客推单
         private String peerStatus; // INIT, RESERVED_LOCK, PAID, EXPIRED, CANCELLED

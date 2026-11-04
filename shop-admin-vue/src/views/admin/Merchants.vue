@@ -268,7 +268,7 @@ const handleCreate = async () => {
   submitLoading.value = true
   try {
     await request.post('/admin/merchants', form.value)
-    ElMessage.success('商户已开通，二级商户号已分配')
+    ElMessage.success('商户已开通（演示进件通道）')
     dialogVisible.value = false
     loadMerchants()
   } finally {

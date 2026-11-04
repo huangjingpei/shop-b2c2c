@@ -281,6 +281,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         }
 
         if (product != null) {
+            resp.setProductId(product.getId());
             resp.setProductTitle(product.getTitle());
             resp.setProductImage(product.getMainImage());
             resp.setServiceDesc(product.getServiceDesc());

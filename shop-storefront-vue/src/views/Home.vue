@@ -43,7 +43,7 @@
             <span class="text-orange-400">实物批发 & 虚拟数字权益秒发</span>
           </h1>
           <p class="mt-2.5 text-xs text-slate-300 leading-relaxed">
-            支持单件起批、一件代发、阶梯批发价与多规格变体；小微个人免营业执照开店，资金直通官方存管备付金专户（零二清）。
+            支持单件起订、多规格变体直发；小微商家自主入驻展示，规范交易与代付保障。
           </p>
 
           <div class="mt-6 flex flex-wrap gap-2.5">

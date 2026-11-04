@@ -5,6 +5,8 @@
  */
 package com.shop.b2b2c.controller;
 
+import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.ManagementGuards;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.entity.Category;
 import com.shop.b2b2c.mapper.CategoryMapper;
@@ -31,6 +33,16 @@ public class CategoryController {
     @Operation(summary = "【超管】新增平台统一商品类目")
     @PostMapping("/api/v1/admin/categories")
     public R<Category> createCategory(@RequestBody Category category) {
-        return R.ok("类目创建成功", categoryMapper.save(category));
+        if (category == null || category.getName() == null || category.getName().isBlank()) {
+            throw new BusinessException(400, "类目名称不能为空");
+        }
+        ManagementGuards.text(category.getName(), 64, true);
+        ManagementGuards.text(category.getIcon(), 64, false);
+        category.setId(null); // 明确新增语义：禁止携带ID覆盖既有类目
+        if (category.getParentId() == null || category.getParentId() < 0) {
+            category.setParentId(0L);
+        }
+        categoryMapper.insert(category);
+        return R.ok("类目创建成功", category);
     }
 }
