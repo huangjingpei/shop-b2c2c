@@ -42,10 +42,40 @@ public class GlobalExceptionHandler {
         return R.fail(400, "缺少必需请求头：" + e.getHeaderName());
     }
 
+    @ExceptionHandler(org.springframework.web.bind.MissingServletRequestParameterException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public R<Void> handleMissingServletRequestParameter(org.springframework.web.bind.MissingServletRequestParameterException e) {
+        return R.fail(400, "缺少必需查询参数：" + e.getParameterName());
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpRequestMethodNotSupportedException.class)
+    @ResponseStatus(HttpStatus.METHOD_NOT_ALLOWED)
+    public R<Void> handleMethodNotSupported(org.springframework.web.HttpRequestMethodNotSupportedException e) {
+        return R.fail(405, "不支持当前HTTP请求方法：" + e.getMethod());
+    }
+
+    @ExceptionHandler(org.springframework.web.HttpMediaTypeNotSupportedException.class)
+    @ResponseStatus(HttpStatus.UNSUPPORTED_MEDIA_TYPE)
+    public R<Void> handleMediaTypeNotSupported(org.springframework.web.HttpMediaTypeNotSupportedException e) {
+        return R.fail(415, "不支持的请求格式/媒体类型");
+    }
+
+    @ExceptionHandler(jakarta.validation.ConstraintViolationException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public R<Void> handleConstraintViolation(jakarta.validation.ConstraintViolationException e) {
+        return R.fail(400, "请求参数校验失败");
+    }
+
     @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public R<Void> handleMissingResource(Exception e) {
         return R.fail(404, "接口或资源不存在");
+    }
+
+    @ExceptionHandler(org.springframework.web.servlet.NoHandlerFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public R<Void> handleNoHandlerFound(Exception e) {
+        return R.fail(404, "接口不存在");
     }
 
     @ExceptionHandler(BusinessException.class)
@@ -68,13 +98,18 @@ public class GlobalExceptionHandler {
         return R.fail(403, "无访问权限，请确认当前账户角色");
     }
 
-    @ExceptionHandler(BindException.class)
-    public R<Void> handleBindException(BindException e) {
-        String msg = e.getBindingResult().getAllErrors().get(0).getDefaultMessage();
-        return R.fail(400, msg);
+    @ExceptionHandler({BindException.class, org.springframework.web.bind.MethodArgumentNotValidException.class})
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public R<Void> handleBindException(Exception e) {
+        org.springframework.validation.BindingResult result = (e instanceof org.springframework.web.bind.MethodArgumentNotValidException manve)
+                ? manve.getBindingResult()
+                : ((BindException) e).getBindingResult();
+        String msg = result.getAllErrors().isEmpty() ? "请求参数校验失败" : result.getAllErrors().get(0).getDefaultMessage();
+        return R.fail(400, msg != null ? msg : "请求参数校验失败");
     }
 
     @ExceptionHandler(Exception.class)
+    @ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)
     public R<Void> handleException(Exception e) {
         log.error("系统未知异常", e);
         return R.fail(500, "系统繁忙，请稍后再试");

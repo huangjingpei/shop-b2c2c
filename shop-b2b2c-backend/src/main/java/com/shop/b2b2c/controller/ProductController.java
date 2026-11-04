@@ -77,6 +77,9 @@ public class ProductController {
     @Operation(summary = "【公开】商品详情与 SKU 变体信息")
     @GetMapping("/api/v1/public/products/{id}")
     public R<Map<String, Object>> getProductDetail(@PathVariable Long id) {
+        if (id == null || id <= 0) {
+            throw new BusinessException(400, "商品编号不正确");
+        }
         Product product = productMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("商品不存在或已下架"));
 
@@ -107,6 +110,7 @@ public class ProductController {
         private String title;
         private String subTitle;
         private String serviceDesc;
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long categoryId;
         private Integer goodsType; // 1-实物, 2-虚拟
         private String mainImage;
@@ -236,6 +240,9 @@ public class ProductController {
         }
         List<ProductVirtualCard> result;
         if (skuId != null) {
+            if (skuId <= 0) {
+                throw new BusinessException(400, "SKU编号不正确");
+            }
             ProductSku sku = skuMapper.findById(skuId)
                     .orElseThrow(() -> new BusinessException("SKU不存在"));
             if (!merchantId.equals(sku.getMerchantId())) {
@@ -263,6 +270,9 @@ public class ProductController {
             jakarta.servlet.http.HttpServletResponse response) {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
+        }
+        if (id == null || id <= 0) {
+            throw new BusinessException(400, "卡密编号不正确");
         }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         try {

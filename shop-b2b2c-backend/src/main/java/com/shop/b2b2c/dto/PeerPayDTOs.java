@@ -13,8 +13,11 @@ public class PeerPayDTOs {
 
     @Data
     public static class BuyerCreateRequest {
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long merchantId;
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long productId;
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long skuId;
         private Integer quantity;
         private String buyerContact;
@@ -24,7 +27,9 @@ public class PeerPayDTOs {
 
     @Data
     public static class PushPayCreateRequest {
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long productId;
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long skuId;
         private Integer quantity;
         private BigDecimal negotiatedPrice;

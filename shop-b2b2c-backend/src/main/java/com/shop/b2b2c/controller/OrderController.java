@@ -46,8 +46,11 @@ public class OrderController {
 
     @Data
     public static class CheckoutDTO {
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long merchantId;
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long productId;
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
         private Long skuId;
         private Integer quantity;
         private String buyerContact; // 手机号或邮箱 (免密查单凭据)
@@ -239,6 +242,9 @@ public class OrderController {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
         }
+        if (id == null || id <= 0) {
+            throw new BusinessException(400, "订单编号不正确");
+        }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         TradeOrder order = orderMapper.findById(id)
                 .orElseThrow(() -> new BusinessException(404, "订单不存在"));
@@ -300,6 +306,9 @@ public class OrderController {
     @PostMapping("/api/v1/merchant/orders/{id}/deliver")
     @Transactional(rollbackFor = Exception.class)
     public R<Void> deliverOrder(@PathVariable Long id, @RequestBody DeliverDTO dto) {
+        if (id == null || id <= 0) {
+            throw new BusinessException(400, "订单编号不正确");
+        }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         TradeOrder order = Optional.ofNullable(orderMapper.lockById(id))
                 .orElseThrow(() -> new BusinessException("订单不存在"));
@@ -343,6 +352,9 @@ public class OrderController {
     @Operation(summary = "【商家】★ 线上服务录入交付凭证 (一经交付锁定退款仲裁)")
     @PostMapping("/api/v1/merchant/orders/{id}/fulfill-virtual")
     public R<Void> fulfillVirtualOrder(@PathVariable Long id, @RequestBody PeerPayDTOs.VirtualFulfillRequest req) {
+        if (id == null || id <= 0) {
+            throw new BusinessException(400, "订单编号不正确");
+        }
         try {
             if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
                 cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
@@ -425,6 +437,9 @@ public class OrderController {
             jakarta.servlet.http.HttpServletResponse response) {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
+        }
+        if (id == null || id <= 0) {
+            throw new BusinessException(400, "订单编号不正确");
         }
         try {
             if (cn.dev33.satoken.stp.StpUtil.isLogin()) {

@@ -38,6 +38,7 @@ import com.shop.b2b2c.entity.MerchantStore;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
@@ -2738,6 +2739,97 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.statistics.totalOrders").value(4))
                 .andExpect(jsonPath("$.data.orders[0].queryToken").doesNotExist())
                 .andExpect(jsonPath("$.data.orders[0].posterUrl").doesNotExist());
+    }
+
+    @Test
+    void r34UniformExceptionHandlingAndHttpStatusClassification() throws Exception {
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("SUPERADMIN", null);
+        String adminToken = loginToken();
+
+        // 1. Missing required query parameter -> HTTP 400 Bad Request
+        mvc.perform(put("/api/v1/admin/merchants/1/status")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("缺少必需查询参数")));
+
+        // 2. Unsupported HTTP method -> HTTP 405 Method Not Allowed
+        mvc.perform(delete("/api/v1/public/stores/1"))
+                .andExpect(status().isMethodNotAllowed())
+                .andExpect(jsonPath("$.code").value(405))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("不支持当前HTTP请求方法")));
+
+        // 3. Unreadable JSON body -> HTTP 400 Bad Request
+        mvc.perform(post("/api/v1/public/orders/checkout")
+                        .header("Idempotency-Key", "idemp-unreadable-body-test-123456")
+                        .contentType("application/json")
+                        .content("{\"badJson\": [}"))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+    }
+
+    @Test
+    void r35BigIntIdStringContractAndBoundaryEnforcement() throws Exception {
+        authUser("MERCHANT_ADMIN", 1L);
+        String token = loginToken();
+
+        // 1. Zero or negative ID in path variable -> BusinessException 400 "订单编号不正确"
+        mvc.perform(get("/api/v1/merchant/orders/0")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("订单编号不正确"));
+
+        mvc.perform(get("/api/v1/merchant/orders/-1")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("订单编号不正确"));
+
+        // 2. Type mismatch / Overflow ID beyond Long.MAX_VALUE in path -> HTTP 400 "请求参数格式不正确"
+        mvc.perform(get("/api/v1/merchant/orders/9223372036854775808")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400))
+                .andExpect(jsonPath("$.message").value("请求参数格式不正确"));
+
+        mvc.perform(get("/api/v1/merchant/orders/abc")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 3. JSON body with illegal ID (0, negative, leading-zero, or overflow) -> HTTP 400
+        var badCheckout = java.util.Map.of(
+                "merchantId", "0",
+                "productId", 1L,
+                "skuId", 1L,
+                "quantity", 1,
+                "buyerContact", "13800000000"
+        );
+        mvc.perform(post("/api/v1/public/orders/checkout")
+                        .header("Idempotency-Key", "idemp-r35-bad-id-1234567890")
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(badCheckout)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 4. JSON body with legal string ID parses properly
+        var goodCheckout = java.util.Map.of(
+                "merchantId", "1",
+                "productId", "1",
+                "skuId", "1",
+                "quantity", 1,
+                "buyerContact", "13800000000"
+        );
+        mvc.perform(post("/api/v1/public/orders/checkout")
+                        .header("Idempotency-Key", "idemp-r35-good-id-1234567890")
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(goodCheckout)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderSn").isNotEmpty());
     }
 
     private void race(int count, java.util.function.IntConsumer action) throws Exception {

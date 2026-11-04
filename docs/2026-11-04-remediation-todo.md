@@ -74,8 +74,8 @@
 | 待专项验证 | [R31](2026-11-04-project-diagnostic-report.md#r31) / A2 | D35/D39 | Windows备份可能假成功或产生错误编码 | 隔离导出工具夹具与PowerShell版本矩阵 |
 | 待处理 | [R32](2026-11-04-project-diagnostic-report.md#r32) / C2 | D21/D35/D39 | 备份旧默认目标、参数拆分及恢复证据不足 | 目标库/保留/RPO/RTO确认；隔离恢复，不连接业务库做测试 |
 | 待处理 | [R33](2026-11-04-project-diagnostic-report.md#r33) / V1 | D39 | 测试已增加但执行状态和持续回归不足 | 继续用户手动执行；CI/E2E接入单独授权排期 |
-| 待处理 | [R34](2026-11-04-project-diagnostic-report.md#r34) / C1 | D13/D24/D37 | 业务失败常返回HTTP200，缺参/错误方法分类不全 | 盘点HTTP/业务code消费方，ready保持HTTP503 |
-| 待专项验证 | [R35](2026-11-04-project-diagnostic-report.md#r35) / C1 | D13/D30/D32 | BIGINT/Long和JS安全整数契约未统一 | ID字符串契约全端兼容，不能只改海报工具 |
+| 已修复 | [R34](2026-11-04-project-diagnostic-report.md#r34) / C1 | D13/D24/D37 | 业务失败常返回HTTP200，缺参/错误方法分类不全 | 盘点HTTP/业务code消费方，ready保持HTTP503 |
+| 已修复 | [R35](2026-11-04-project-diagnostic-report.md#r35) / C1 | D13/D30/D32 | BIGINT/Long和JS安全整数契约未统一 | ID字符串契约全端兼容，不能只改海报工具 |
 
 ## 4. 每项任务的最小回归场景
 
