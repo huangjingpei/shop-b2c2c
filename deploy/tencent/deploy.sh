@@ -101,16 +101,8 @@ ssh "${SSH_OPTS[@]}" "${REMOTE_HOST}" \
 # ---------------- 打包源码并上传 ----------------
 upload_source() {
   local tar_file="/tmp/shop-src-$(date +%Y%m%d-%H%M%S).tar.gz"
-  log "打包工程源码（排除 node_modules / target / dist / 日志）..."
-  tar -czf "${tar_file}" \
-    --exclude='node_modules' \
-    --exclude='target' \
-    --exclude='.git' \
-    --exclude='.idea' \
-    --exclude='.vscode' \
-    --exclude='dist' \
-    --exclude='*.log' \
-    -C "${LOCAL_ROOT}" shop-b2b2c-backend shop-admin-vue shop-storefront-vue
+  log "打包工程源码（校验三端必需源码与锁文件）..."
+  bash "${SCRIPT_DIR}/package-source.sh" "${LOCAL_ROOT}" "${tar_file}"
   local size; size=$(du -h "${tar_file}" | cut -f1)
   log "源码包大小: ${size}"
 

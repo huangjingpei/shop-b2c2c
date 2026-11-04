@@ -25,7 +25,7 @@ list_releases() {
   local current
   current="$(basename "$(readlink -f "${RELEASES_DIR}/latest")" 2>/dev/null || echo '')"
   (ls -1dt "${RELEASES_DIR}"/[0-9]* 2>/dev/null || true) | while read -r d; do
-    if [[ -z "${d}" ]]; then continue; fi
+    if [[ -z "${d}" || -f "${d}/BUILD_FAILED" ]]; then continue; fi
     b="$(basename "$d")"
     mark=" "
     if [[ "$b" == "$current" ]]; then mark="*"; fi
@@ -40,7 +40,10 @@ esac
 TARGET="${1:-}"
 if [[ -z "${TARGET}" ]]; then
   CURRENT="$(basename "$(readlink -f "${RELEASES_DIR}/latest")" 2>/dev/null || echo '')"
-  TARGET="$( (ls -1dt "${RELEASES_DIR}"/[0-9]* 2>/dev/null || true) | while read -r d; do basename "$d"; done | grep -v "^${CURRENT}$" | head -1 || true)"
+  TARGET="$( (ls -1dt "${RELEASES_DIR}"/[0-9]* 2>/dev/null || true) | while read -r d; do
+    if [[ -z "${d}" || -f "${d}/BUILD_FAILED" ]]; then continue; fi
+    basename "$d"
+  done | grep -v "^${CURRENT}$" | head -1 || true)"
   [[ -n "${TARGET}" ]] || die "没有可回滚的历史版本"
 fi
 
