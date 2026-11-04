@@ -106,14 +106,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setPeerMessage(req.getPeerMessage() != null && !req.getPeerMessage().trim().isEmpty() 
                 ? req.getPeerMessage().trim() : "好心人帮我买个单呗，谢谢老铁！");
 
-        // 生成 9:16 微信裂变防封海报
-        String cashierUrl = storefrontUrl + "/peer-pay/" + peerPayToken;
-        String goodsTypeName = product.getGoodsType() == 3 ? "定制服务" : product.getGoodsType() == 2 ? "自动卡密" : "实物商品";
-        String posterBase64 = PosterUtils.generatePeerPayPoster(
-                cashierUrl, store.getStoreName(), product.getTitle(), totalAmount, order.getPeerMessage(), goodsTypeName
-        );
-        order.setPosterUrl(posterBase64);
-
+        // 保存订单主表
         order = orderMapper.save(order);
 
         // 创建订单明细
@@ -129,6 +122,14 @@ public class PeerPayServiceImpl implements PeerPayService {
         item.setQuantity(req.getQuantity());
         item.setSubtotal(totalAmount);
         itemMapper.save(item);
+
+        // 生成 9:16 微信裂变防封海报并单字段回写，避免大实体写回竞争
+        String cashierUrl = storefrontUrl + "/peer-pay/" + peerPayToken;
+        String goodsTypeName = product.getGoodsType() == 3 ? "定制服务" : product.getGoodsType() == 2 ? "自动卡密" : "实物商品";
+        String posterBase64 = PosterUtils.generatePeerPayPoster(
+                cashierUrl, store.getStoreName(), product.getTitle(), totalAmount, order.getPeerMessage(), goodsTypeName
+        );
+        orderMapper.updatePosterUrl(order.getId(), posterBase64);
 
         String wechatShareText = String.format("【%s】\n🎁 好友求助代付：%s\n💰 代付金额：￥%s\n👉 微信直接点开付款：%s\n（免注册免登录，微信内直接打开即可完成支付）",
                 order.getPeerMessage(), product.getTitle(), totalAmount.toPlainString(), cashierUrl);
@@ -208,13 +209,6 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setPeerMessage(req.getSellerNote() != null && !req.getSellerNote().isBlank() 
                 ? req.getSellerNote().trim() : "这是商家为您定制的支付账单，请查收完成付款");
 
-        String cashierUrl = storefrontUrl + "/peer-pay/" + peerPayToken;
-        String goodsTypeName = product.getGoodsType() == 3 ? "定制服务" : product.getGoodsType() == 2 ? "自动卡密" : "实物商品";
-        String posterBase64 = PosterUtils.generatePeerPayPoster(
-                cashierUrl, store.getStoreName(), product.getTitle(), totalAmount, order.getPeerMessage(), goodsTypeName
-        );
-        order.setPosterUrl(posterBase64);
-
         order = orderMapper.save(order);
 
         TradeOrderItem item = new TradeOrderItem();
@@ -229,6 +223,13 @@ public class PeerPayServiceImpl implements PeerPayService {
         item.setQuantity(req.getQuantity());
         item.setSubtotal(totalAmount);
         itemMapper.save(item);
+
+        String cashierUrl = storefrontUrl + "/peer-pay/" + peerPayToken;
+        String goodsTypeName = product.getGoodsType() == 3 ? "定制服务" : product.getGoodsType() == 2 ? "自动卡密" : "实物商品";
+        String posterBase64 = PosterUtils.generatePeerPayPoster(
+                cashierUrl, store.getStoreName(), product.getTitle(), totalAmount, order.getPeerMessage(), goodsTypeName
+        );
+        orderMapper.updatePosterUrl(order.getId(), posterBase64);
 
         String wechatShareText = String.format("【%s · 专属定制账单】\n尊贵的客户您好，这是为您定制的专属订单，请查收：\n📦 商品：%s\n💰 协议专享价：￥%s\n👉 微信点开直接付款：%s\n（微信内打开直接支付，无需加购选规格）",
                 store.getStoreName(), product.getTitle(), totalAmount.toPlainString(), cashierUrl);
@@ -247,12 +248,13 @@ public class PeerPayServiceImpl implements PeerPayService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public PeerPayDTOs.DetailResponse getPeerPayDetail(String token) {
-        TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
+        if (token == null || token.isBlank()) {
+            throw new BusinessException(400, "代付凭证不能为空");
+        }
+        // R26: 无锁只读查询订单，不持 FOR UPDATE 行锁，避免公开详情页拉长事务并阻塞付款
+        TradeOrder order = orderMapper.findByPeerPayToken(token)
                 .orElseThrow(() -> new BusinessException("代付账单不存在或已失效"));
-
-        expireIfNecessary(order);
 
         List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
         TradeOrderItem firstItem = items.isEmpty() ? null : items.get(0);
@@ -268,7 +270,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         resp.setOrderStatus(order.getOrderStatus());
         resp.setPayAmount(order.getPayAmount());
         resp.setPeerMessage(order.getPeerMessage());
-        resp.setPosterUrl(order.getPosterUrl());
+        resp.setPosterUrl(null); // R26: 详情接口减载海报大字段，改由前端按需调用 /api/v1/peer-pay/poster/{token}
         resp.setCreatedAt(order.getCreatedAt());
 
         if (store != null) {
@@ -310,13 +312,17 @@ public class PeerPayServiceImpl implements PeerPayService {
             resp.setLockSecondsRemaining(0L);
         } else if (PeerStatus.RESERVED_LOCK.equals(order.getPeerStatus()) && order.getLockExpireTime() != null) {
             long remaining = Duration.between(now, order.getLockExpireTime()).getSeconds();
-            resp.setLockSecondsRemaining(Math.max(0, remaining));
-            resp.setLockExpireTime(order.getLockExpireTime());
+            if (remaining <= 0) {
+                resp.setPeerStatus(PeerStatus.EXPIRED);
+                resp.setLockSecondsRemaining(0L);
+            } else {
+                resp.setLockSecondsRemaining(remaining);
+                resp.setLockExpireTime(order.getLockExpireTime());
+            }
         } else if (PeerStatus.INIT.equals(order.getPeerStatus()) && order.getCreatedAt() != null) {
             LocalDateTime orderExpireAt = order.getCreatedAt().plusMinutes(15);
             if (now.isAfter(orderExpireAt)) {
-                order.setPeerStatus(PeerStatus.EXPIRED);
-                orderMapper.save(order);
+                orderMapper.markInitExpired(order.getId());
                 resp.setPeerStatus(PeerStatus.EXPIRED);
                 resp.setLockSecondsRemaining(0L);
             } else {
@@ -530,10 +536,19 @@ public class PeerPayServiceImpl implements PeerPayService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public String regeneratePoster(String token) {
-        TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
-                .orElseThrow(() -> new BusinessException("代付单不存在"));
+        if (token == null || token.isBlank()) {
+            throw new BusinessException(400, "代付凭证不能为空");
+        }
+        // 1. 优先读取已存海报，重试不重复生成，避免CPU重复光栅化 (R26)
+        String storedPoster = orderMapper.findStoredPosterByToken(token);
+        if (storedPoster != null && !storedPoster.isBlank()) {
+            return storedPoster;
+        }
+
+        // 2. 无锁只读查询订单基础元数据，绝不持有 FOR UPDATE 行锁 (R26)
+        TradeOrder order = orderMapper.findByPeerPayToken(token)
+                .orElseThrow(() -> new BusinessException(404, "代付单不存在"));
 
         MerchantStore store = storeMapper.findById(order.getMerchantId()).orElse(null);
         List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
@@ -544,11 +559,13 @@ public class PeerPayServiceImpl implements PeerPayService {
         String goodsTypeName = order.getGoodsType() == 3 ? "定制服务" : order.getGoodsType() == 2 ? "自动卡密" : "实物商品";
         String cashierUrl = storefrontUrl + "/peer-pay/" + order.getPeerPayToken();
 
+        // 3. 事务外执行耗时渲染，绝不阻塞并发支付与预占释放 (R26)
         String posterBase64 = PosterUtils.generatePeerPayPoster(
                 cashierUrl, storeName, productTitle, order.getPayAmount(), order.getPeerMessage(), goodsTypeName
         );
-        order.setPosterUrl(posterBase64);
-        orderMapper.save(order);
+
+        // 4. 单字段更新 poster_url，绝不回写并覆盖已被并发支付更新的订单状态 (R26)
+        orderMapper.updatePosterUrl(order.getId(), posterBase64);
         return posterBase64;
     }
 }

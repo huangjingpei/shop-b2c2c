@@ -66,7 +66,7 @@
 | 已修复 | [R23](2026-11-04-project-diagnostic-report.md#r23) / A2 | D33/F10 | 服务费免收截止日不能清空 | 显式清除协议兼容Sprint17，收费政策另确认 |
 | 已修复 | [R24](2026-11-04-project-diagnostic-report.md#r24) / C1 | D30/D32/D38 | 全量列表、N+1明细及内存统计残留 | 保留OrderStatistics及列表消费方兼容 |
 | 已修复 | [R25](2026-11-04-project-diagnostic-report.md#r25) / B2 | F12/D30 | 导入每次全扫全店历史明文且锁商户 | 与R05同一数据迁移设计，先唯一约束再缩锁 |
-| 待处理 | [R26](2026-11-04-project-diagnostic-report.md#r26) / C1 | D38/D30 | 海报事务渲染、公开大字段与幂等副本仍在 | 延续Sprint22本店读取权限，勿破坏付款与释放锁 |
+| 已修复 | [R26](2026-11-04-project-diagnostic-report.md#r26) / C1 | D38/D30 | 海报事务渲染、公开大字段与幂等副本仍在 | 延续Sprint22本店读取权限，勿破坏付款与释放锁 |
 | 待处理 | [R27](2026-11-04-project-diagnostic-report.md#r27) / C2 | D30/D32/F12/F13 | 私密幂等快照与历史数据缺保留策略 | 清理前确认晚重试语义及永久业务去重 |
 | 待处理 | [R28](2026-11-04-project-diagnostic-report.md#r28) / A2 | D34/D35 | 腾讯构建仍可缺端成功、依赖与latest不稳 | 复用Sprint18产物契约，腾讯消费者联动 |
 | 待处理 | [R29](2026-11-04-project-diagnostic-report.md#r29) / A2 | D35/D37 | 部署先覆盖线上且吞SQL错误，失败无整套恢复 | R28及阿里产物契约；迁移/网关/回滚一起验证 |

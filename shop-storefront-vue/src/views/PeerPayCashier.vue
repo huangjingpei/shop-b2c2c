@@ -184,7 +184,7 @@
                 自己付款 &gt;
               </button>
               <span v-if="detail.productId">·</span>
-              <button @click="showPosterModal = true" class="hover:text-slate-600 transition">
+              <button @click="openPosterModal" class="hover:text-slate-600 transition">
                 查看买单海报 &gt;
               </button>
             </div>
@@ -276,12 +276,14 @@
           ✕
         </button>
         <h4 class="text-xs font-bold text-slate-800 text-center">9:16 微信裂变防封买单海报</h4>
-        <div class="rounded-xl overflow-hidden border border-slate-200 max-h-[60vh] overflow-y-auto">
-          <img :src="detail?.posterUrl" alt="海报" class="w-full object-contain" />
+        <div v-if="posterLoading" class="py-12 text-center text-xs text-slate-500 font-medium">海报加载中，请稍候...</div>
+        <div v-else-if="posterBase64 || detail?.posterUrl" class="rounded-xl overflow-hidden border border-slate-200 max-h-[60vh] overflow-y-auto">
+          <img :src="posterBase64 || detail?.posterUrl" alt="海报" class="w-full object-contain" />
         </div>
+        <div v-else class="py-12 text-center text-xs text-slate-400">未能加载海报图片</div>
         <div class="flex space-x-2 pt-1">
           <a 
-            :href="detail?.posterUrl" 
+            :href="posterBase64 || detail?.posterUrl" 
             download="微信买单海报.png" 
             class="flex-1 py-2 text-center rounded-xl bg-[#FFD101] text-slate-900 text-xs font-bold hover:bg-[#FFC300]"
           >
@@ -345,6 +347,8 @@ const errorMsg = ref('')
 const detail = ref(null)
 const selectedChannel = ref('WECHAT')
 const showPosterModal = ref(false)
+const posterLoading = ref(false)
+const posterBase64 = ref('')
 const isPaidSuccess = ref(false)
 const adBanner = ref(null)
 
@@ -432,6 +436,28 @@ const copyCardText = () => {
   const url = window.location.href
   const text = `Hi~你和我的距离只差一份好物～\n来帮我代付吧！\n🎁 商品：${detail.value.productTitle}\n💰 需付款：¥${Number(detail.value.payAmount).toFixed(2)}\n👉 微信直接点开付款：${url}\n（免注册免登录，微信内直接打开即可完成支付）`
   copyToClipboard(text, '✅ 微信专属代付卡片已复制到剪贴板！\n\n您可以直接在微信聊天或群聊中粘贴发送，好友点开直接微信付款。')
+}
+
+const openPosterModal = async () => {
+  showPosterModal.value = true
+  if (posterBase64.value) return
+  if (detail.value?.posterUrl) {
+    posterBase64.value = detail.value.posterUrl
+    return
+  }
+  const token = route.params.token || detail.value?.token
+  if (!token) return
+  posterLoading.value = true
+  try {
+    const res = await axios.get(`/api/v1/peer-pay/poster/${token}`)
+    if (res.data?.code === 200 && res.data?.data) {
+      posterBase64.value = res.data.data
+    }
+  } catch (e) {
+    console.error('海报加载失败', e)
+  } finally {
+    posterLoading.value = false
+  }
 }
 
 const loadDetail = async (currentToken = route.params.token) => {

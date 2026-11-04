@@ -7,8 +7,10 @@ package com.shop.b2b2c.service;
 
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.mapper.IdempotencyMapper;
+import com.shop.b2b2c.mapper.TradeOrderMapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.*;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -16,16 +18,22 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Supplier;
 
 @Service
 public class OrderIdempotencyService {
     private final IdempotencyMapper mapper;
+    private final ObjectProvider<TradeOrderMapper> orderMapperProvider;
     private final ObjectMapper json;
     private final TransactionTemplate transaction;
-    public OrderIdempotencyService(IdempotencyMapper mapper, ObjectMapper json, PlatformTransactionManager manager) {
+    public OrderIdempotencyService(IdempotencyMapper mapper,
+                                  ObjectProvider<TradeOrderMapper> orderMapperProvider,
+                                  ObjectMapper json,
+                                  PlatformTransactionManager manager) {
         this.mapper = mapper;
+        this.orderMapperProvider = orderMapperProvider;
         this.json = json.copy().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
                 .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
                 .configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true);
@@ -52,10 +60,30 @@ public class OrderIdempotencyService {
                     if (!requestHash.equals(record.getRequestHash())) throw new BusinessException(409, "同一幂等键不能用于不同的建单参数");
                     String response = record.getResponseJson();
                     if (response == null) {
-                        response = encode(action.get());
+                        Map<String, Object> result = action.get();
+                        // R26: 剥离海报大字段 Base64 避免幂等表体积膨胀与重复存储
+                        Map<String, Object> storable = new LinkedHashMap<>(result);
+                        storable.remove("posterBase64");
+                        response = encode(storable);
                         if (mapper.complete(storageKey, response) != 1) throw new IllegalStateException("幂等响应保存失败");
                     }
-                    try { return json.readValue(response, new TypeReference<Map<String,Object>>() {}); }
+                    try {
+                        Map<String, Object> replayed = json.readValue(response, new TypeReference<Map<String,Object>>() {});
+                        // R26: 统一从 trade_order 补齐海报 Base64，保持初次与重放响应契约及字段顺序完全一致
+                        if (replayed.containsKey("peerPayToken") && !replayed.containsKey("posterBase64")) {
+                            String token = (String) replayed.get("peerPayToken");
+                            if (token != null && !token.isBlank()) {
+                                TradeOrderMapper orders = orderMapperProvider.getIfAvailable();
+                                if (orders != null) {
+                                    String poster = orders.findStoredPosterByToken(token);
+                                    if (poster != null) {
+                                        replayed.put("posterBase64", poster);
+                                    }
+                                }
+                            }
+                        }
+                        return replayed;
+                    }
                     catch (Exception e) { throw new IllegalStateException("幂等响应读取失败", e); }
                 });
             } catch (DuplicateKeyException e) {

@@ -28,6 +28,7 @@ import org.springframework.test.web.servlet.MockMvc;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -2830,6 +2831,111 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data.orderSn").isNotEmpty());
+    }
+
+    @Test
+    void r26SlowPosterRenderingDoesNotBlockConcurrentPaymentOrReservationRelease() throws Exception {
+        // 1. 创建待付订单并原子持有预占
+        TradeOrder order = intent("r26-concurrency");
+        order.setPosterUrl(null);
+        orders.save(order);
+        var held = payments.preLockInventory("r26-concurrency");
+        assertEquals("RESERVED_LOCK", held.getPeerStatus());
+
+        // 2. 模拟耗时海报渲染（事务外运行，不持有行锁）
+        // 在海报渲染或执行期间，并发进行支付回调
+        CountDownLatch renderingStarted = new CountDownLatch(1);
+        CountDownLatch paymentCompleted = new CountDownLatch(1);
+
+        Future<String> posterFuture = Executors.newSingleThreadExecutor().submit(() -> {
+            renderingStarted.countDown();
+            try {
+                // 等待支付完成以证明无锁渲染不阻塞支付，且后续更新不会覆盖支付状态
+                paymentCompleted.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return payments.regeneratePoster("r26-concurrency");
+        });
+
+        assertTrue(renderingStarted.await(5, TimeUnit.SECONDS));
+
+        // 3. 并发完成支付通知（必须立刻成功，不被海报查询或渲染阻塞）
+        TradeOrder paidOrder = payments.notifyPaymentSuccess("r26-concurrency", "payer-concurrent", "trade-concurrency-999", "WECHAT");
+        assertEquals("PAID", paidOrder.getPeerStatus());
+        assertEquals("COMPLETED", paidOrder.getOrderStatus());
+        paymentCompleted.countDown();
+
+        String posterBase64 = posterFuture.get(10, TimeUnit.SECONDS);
+        assertNotNull(posterBase64);
+        assertTrue(posterBase64.startsWith("data:image/png;base64,"));
+
+        // 4. 关键验证：海报更新后，订单状态依然为 PAID 与 COMPLETED，绝未被旧内存快照覆盖成 UNPAID/RESERVED_LOCK
+        TradeOrder afterOrder = orders.findById(order.getId()).orElseThrow();
+        assertEquals("PAID", afterOrder.getPeerStatus());
+        assertEquals("COMPLETED", afterOrder.getOrderStatus());
+        assertEquals("trade-concurrency-999", afterOrder.getPayTradeNo());
+        assertEquals(posterBase64, orders.findStoredPosterByToken("r26-concurrency"));
+    }
+
+    @Test
+    void r26PosterIdempotencyDeduplicationAndZeroDbLockInDetail() throws Exception {
+        // 1. 发起买家代付建单
+        String key = "idemp-r26-dedup-12345678";
+        String body = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"13812345678\"}";
+        String first = mvc.perform(post("/api/v1/peer-pay/buyer/create")
+                        .header("Idempotency-Key", key)
+                        .contentType("application/json")
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.posterBase64").isNotEmpty())
+                .andReturn().getResponse().getContentAsString();
+
+        Map<?, ?> firstMap = json.readValue(first, Map.class);
+        Map<?, ?> firstData = (Map<?, ?>) firstMap.get("data");
+        String token = (String) firstData.get("peerPayToken");
+        String originalPoster = (String) firstData.get("posterBase64");
+        assertNotNull(token);
+        assertNotNull(originalPoster);
+
+        // 2. 检查 order_idempotency 表存储：证明 Base64 大字段已被剥离减载
+        String idempotencyJson = jdbc.queryForObject("SELECT response_json FROM order_idempotency WHERE response_json LIKE ?",
+                String.class, "%" + token + "%");
+        assertNotNull(idempotencyJson);
+        assertFalse(idempotencyJson.contains("posterBase64"), "order_idempotency must not store large posterBase64 blob");
+        assertTrue(idempotencyJson.length() < 2000, "Idempotency JSON must be compact without large poster");
+
+        // 3. 幂等重放：证明重放时能从 trade_order 恢复海报 Base64，响应契约完全一致且不重复光栅化渲染
+        String second = mvc.perform(post("/api/v1/peer-pay/buyer/create")
+                        .header("Idempotency-Key", key)
+                        .contentType("application/json")
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn().getResponse().getContentAsString();
+        assertEquals(first, second, "Idempotent replay must return identical response payload");
+
+        // 4. 公开详情接口减载：GET /detail/{token} 不返回海报大字段，轻量快速
+        mvc.perform(get("/api/v1/peer-pay/detail/" + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderSn").isNotEmpty())
+                .andExpect(jsonPath("$.data.posterUrl").doesNotExist());
+
+        // 5. 按需公开海报接口：GET /poster/{token} 返回已保存海报且不重新渲染
+        mvc.perform(get("/api/v1/peer-pay/poster/" + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(originalPoster));
+
+        // 6. 买家查单与常用查询投影减载：底层不加载 poster_url 大字段
+        TradeOrder queried = orders.findByPeerPayToken(token).orElseThrow();
+        assertNull(queried.getPosterUrl(), "findByPeerPayToken must project out posterUrl");
+        TradeOrder queriedBySn = orders.findByOrderSn(queried.getOrderSn()).orElseThrow();
+        assertNull(queriedBySn.getPosterUrl(), "findByOrderSn must project out posterUrl");
+        TradeOrder queriedByContact = orders.findByOrderSnAndBuyerContact(queried.getOrderSn(), "13812345678").orElseThrow();
+        assertNull(queriedByContact.getPosterUrl(), "findByOrderSnAndBuyerContact must project out posterUrl");
     }
 
     private void race(int count, java.util.function.IntConsumer action) throws Exception {

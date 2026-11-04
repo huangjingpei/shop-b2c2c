@@ -36,9 +36,12 @@ public class PeerPayController {
         return R.ok("求助代付发起成功", res);
     }
 
-    @Operation(summary = "【公开/免登录】查询代付详情 (含自愈到期、隐私脱敏)")
+    @Operation(summary = "【公开/免登录】查询代付详情 (含自愈到期、隐私脱敏、海报减载)")
     @GetMapping("/detail/{token}")
     public R<PeerPayDTOs.DetailResponse> getPeerPayDetail(@PathVariable String token) {
+        if (token == null || token.isBlank()) {
+            throw new com.shop.b2b2c.common.BusinessException(400, "代付凭证不能为空");
+        }
         PeerPayDTOs.DetailResponse detail = peerPayService.getPeerPayDetail(token);
         return R.ok("获取代付账单成功", detail);
     }
@@ -66,10 +69,13 @@ public class PeerPayController {
         return R.ok("获取广告位成功", ad);
     }
 
-    @Operation(summary = "【公开】重新生成微信防封海报")
+    @Operation(summary = "【公开】按需获取/重新生成微信防封海报")
     @GetMapping("/poster/{token}")
     public R<String> regeneratePoster(@PathVariable String token) {
+        if (token == null || token.isBlank()) {
+            throw new com.shop.b2b2c.common.BusinessException(400, "代付凭证不能为空");
+        }
         String base64 = peerPayService.regeneratePoster(token);
-        return R.ok("海报生成成功", base64);
+        return R.ok("海报获取成功", base64);
     }
 }

@@ -21,6 +21,16 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
     String findStoredPoster(@org.apache.ibatis.annotations.Param("id") Long id,
                            @org.apache.ibatis.annotations.Param("merchantId") Long merchantId);
 
+    @org.apache.ibatis.annotations.Select("SELECT poster_url FROM trade_order WHERE peer_pay_token = #{token}")
+    String findStoredPosterByToken(@org.apache.ibatis.annotations.Param("token") String token);
+
+    @org.apache.ibatis.annotations.Update("UPDATE trade_order SET poster_url = #{posterUrl} WHERE id = #{id}")
+    int updatePosterUrl(@org.apache.ibatis.annotations.Param("id") Long id,
+                        @org.apache.ibatis.annotations.Param("posterUrl") String posterUrl);
+
+    @org.apache.ibatis.annotations.Update("UPDATE trade_order SET peer_status = '" + PeerStatus.EXPIRED + "' WHERE id = #{id} AND peer_status = '" + PeerStatus.INIT + "'")
+    int markInitExpired(@org.apache.ibatis.annotations.Param("id") Long id);
+
     // Serialize all order writers so stale detail/expiry writes cannot undo payment.
     @org.apache.ibatis.annotations.Select("SELECT * FROM trade_order WHERE peer_pay_token = #{token} FOR UPDATE")
     TradeOrder lockByPeerPayToken(@org.apache.ibatis.annotations.Param("token") String token);
@@ -73,17 +83,20 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
 
     default Optional<TradeOrder> findByOrderSn(String orderSn) {
         return Optional.ofNullable(selectOne(new LambdaQueryWrapper<TradeOrder>()
+                .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
                 .eq(TradeOrder::getOrderSn, orderSn)));
     }
 
     default Optional<TradeOrder> findByOrderSnAndBuyerContact(String orderSn, String buyerContact) {
         return Optional.ofNullable(selectOne(new LambdaQueryWrapper<TradeOrder>()
+                .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
                 .eq(TradeOrder::getOrderSn, orderSn)
                 .eq(TradeOrder::getBuyerContact, buyerContact)));
     }
 
     default Optional<TradeOrder> findByPeerPayToken(String peerPayToken) {
         return Optional.ofNullable(selectOne(new LambdaQueryWrapper<TradeOrder>()
+                .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
                 .eq(TradeOrder::getPeerPayToken, peerPayToken)));
     }
 
