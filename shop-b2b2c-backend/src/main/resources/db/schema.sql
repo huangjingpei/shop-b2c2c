@@ -435,3 +435,23 @@ CREATE TABLE IF NOT EXISTS card_import_item (
   CONSTRAINT fk_card_import_item_batch FOREIGN KEY (batch_id) REFERENCES card_import_batch(id),
   CONSTRAINT fk_card_import_item_card FOREIGN KEY (card_id) REFERENCES product_virtual_card(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='导入批次成员，不复制卡密正文';
+
+-- 19. 支付渠道到账事件流水表 (解耦外部资金事实与本地履约)
+CREATE TABLE IF NOT EXISTS `payment_event` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `channel` VARCHAR(32) NOT NULL COMMENT '支付渠道: WECHAT, ALIPAY, STRIPE, MOCK',
+  `pay_trade_no` VARCHAR(128) NOT NULL COMMENT '第三方支付交易流水号',
+  `order_sn` VARCHAR(64) NOT NULL COMMENT '关联内部订单号',
+  `merchant_id` BIGINT NOT NULL COMMENT '商户ID',
+  `pay_amount` DECIMAL(10,2) NOT NULL COMMENT '实付金额',
+  `currency` VARCHAR(16) NOT NULL DEFAULT 'CNY' COMMENT '交易币种',
+  `payer_id` VARCHAR(128) NULL COMMENT '付款人渠道标识',
+  `event_status` VARCHAR(32) NOT NULL COMMENT 'SUCCESS, AMOUNT_MISMATCH, CURRENCY_MISMATCH, MERCHANT_MISMATCH, LATE_PAYMENT, FULFILLMENT_FAILED',
+  `error_message` VARCHAR(512) NULL COMMENT '异常描述',
+  `raw_payload` TEXT NULL COMMENT '渠道回调原始报文快照',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_channel_trade_no` (`channel`, `pay_trade_no`),
+  KEY `idx_order_sn` (`order_sn`),
+  KEY `idx_merchant_event` (`merchant_id`, `event_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付渠道到账事件流水';

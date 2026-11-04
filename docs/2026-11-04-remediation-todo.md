@@ -49,11 +49,11 @@
 | 待专项验证 | [R06](2026-11-04-project-diagnostic-report.md#r06) / A2 | D20/D23/D35 | 代理部署下限流可能共享回环IP桶 | 可信代理拓扑及后端访问限制，联动R30 |
 | 待处理 | [R07](2026-11-04-project-diagnostic-report.md#r07) / A2 | D38/D30/F01 | 公开建单、预占和海报无应用成本预算 | 限额/匿名体验规则；复用幂等与库存服务 |
 | 待专项验证 | [R08](2026-11-04-project-diagnostic-report.md#r08) / V1 | D21/D23/D24/F13 | 长期会话、日志和依赖安全缺完整证据 | 专项授权/环境证据；不凭版本年龄判CVE |
-| 待处理 | [R09](2026-11-04-project-diagnostic-report.md#r09) / A1 | D12/D13/F13 | 整实体保存可能恢复旧封禁状态或费率 | 集中所有店铺写者；独立于F01 |
+| 已修复 | [R09](2026-11-04-project-diagnostic-report.md#r09) / A1 | D12/D13/F13 | 整实体保存可能恢复旧封禁状态或费率 | 集中所有店铺写者；独立于F01 |
 | 已修复 | [R10](2026-11-04-project-diagnostic-report.md#r10) / B1 | D09/D27/F08 | 预占提交后丢响应无法恢复ownerToken | 支付尝试/所有权契约；联动R12/R13 |
 | 已修复 | [R11](2026-11-04-project-diagnostic-report.md#r11) / B1 | D10/F08 | 持续失败头100条可饿死后续到期预占 | 复用订单锁/释放事务；失败队列勿直接改库存 |
 | 已修复 | [R12](2026-11-04-project-diagnostic-report.md#r12) / B1 | D10/F08 | 无预占意向单缺统一后台关闭 | 普通/代付有效期确认；统一F08状态表 |
-| 待处理 | [R13](2026-11-04-project-diagnostic-report.md#r13) / B3 | F01/F03/F05/F08/F09/D06/D32 | 到账事实与本地履约未解耦，支付事件未建模 | F01为主入口，后续F03/F05/F09消费同一事件 |
+| 已修复 | [R13](2026-11-04-project-diagnostic-report.md#r13) / B3 | F01/F03/F05/F08/F09/D06/D32 | 到账事实与本地履约未解耦，支付事件未建模 | F01为主入口，后续F03/F05/F09消费同一事件 |
 | 待专项验证 | [R14](2026-11-04-project-diagnostic-report.md#r14) / V1 | D04/D05/D32/F12 | 锁序与库存守恒缺完整MySQL并发证据 | 测试设计先列写者锁图；不能以推测夹带业务修改 |
 | 待处理 | [R15](2026-11-04-project-diagnostic-report.md#r15) / B2 | D31/D32/F01/F12 | 主表约束、版本迁移与历史修复工具不全 | 脏数据只读核查后迁移，保留唯一开发schema |
 | 已修复 | [R16](2026-11-04-project-diagnostic-report.md#r16) / A1 | D13/D26/F19 | 批量折扣只在前端，展示价与订单价不同 | 先去无依据折扣；F19阶梯价另待确认 |

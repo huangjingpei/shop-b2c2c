@@ -36,6 +36,7 @@ import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
 /** Real mapper SQL and Spring transactions; no external MySQL/Redis needed. */
@@ -86,11 +87,14 @@ class Sprint1SecurityIntegrationTest {
     @Autowired com.shop.b2b2c.service.CardImportBatchService batchQueries;
     @MockBean StringRedisTemplate redis;
     @SpyBean com.shop.b2b2c.service.ReadinessService readiness;
+    @Autowired MerchantStoreMapper stores;
+    @Autowired com.shop.b2b2c.service.PaymentEventService paymentEventService;
+    @Autowired com.shop.b2b2c.mapper.PaymentEventMapper paymentEvents;
 
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
+        for (String table : List.of("payment_event", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -1337,6 +1341,224 @@ class Sprint1SecurityIntegrationTest {
 
         // 未满 15 分钟的意向单保持 UNPAID
         assertEquals("UNPAID", orders.selectById(freshUnpaid.getId()).getOrderStatus());
+    }
+
+    @Test
+    void r09MerchantProfileUpdateDoesNotOverwriteBannedStatusOrPlatformCommission() throws Exception {
+        // 1. 初始化：店铺1为正常营业 (1)，平台抽成为 3.00%
+        jdbc.update("UPDATE merchant_store SET status=1, commission_rate=3.00, notice='old notice' WHERE id=1");
+
+        // 2. 超管将店铺封禁 (status=3) 并调整费率为 5.00%
+        authUser("SUPERADMIN", null);
+        String adminToken = loginToken();
+        mvc.perform(put("/api/v1/admin/merchants/1/status?status=3")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk());
+        mvc.perform(put("/api/v1/admin/merchants/1/commission?rate=5.00")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk());
+
+        // 登出超管并清理会话与用户记录，准备切换为商家身份
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+
+        // 3. 商家登录修改自己店铺的展示公告与电话
+        authUser("MERCHANT_ADMIN", 1L);
+        String merchantToken = loginToken();
+        mvc.perform(put("/api/v1/merchant/profile")
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType("application/json")
+                        .content("{\"notice\":\"new notice\",\"contactPhone\":\"13900001111\"}"))
+                .andExpect(status().isOk());
+
+        // 4. 验证：公告与电话被成功更新，但超管设置的封禁状态 (3) 和平台费率 (5.00%) 绝未被冲刷回滚！
+        var store = stores.findById(1L).orElseThrow();
+        assertEquals("new notice", store.getNotice());
+        assertEquals("13900001111", store.getContactPhone());
+        assertEquals(3, store.getStatus(), "R09: 商家资料更新绝不能覆盖超管设置的封禁状态");
+        assertEquals(new java.math.BigDecimal("5.00"), store.getCommissionRate(), "R09: 商家资料更新绝不能覆盖超管设置的平台抽成比例");
+    }
+
+    @Test
+    void r13PaymentEventProcessingHappyPathAndIdempotency() {
+        TradeOrder order = unpaid("r13-happy", 1);
+        var event = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel("WECHAT")
+                .payTradeNo("TX_HAPPY_001")
+                .orderSn(order.getOrderSn())
+                .merchantId(1L)
+                .payAmount(new java.math.BigDecimal("10.00"))
+                .currency("CNY")
+                .payerId("wx_happy_user")
+                .rawPayload("{\"appid\":\"wx123\"}")
+                .build();
+
+        // 1. 初次到账核验与履约
+        var result = paymentEventService.processPaymentEvent(event);
+        assertTrue(result.getSuccess());
+        assertEquals("SUCCESS", result.getEventStatus());
+        assertEquals("COMPLETED", result.getOrderStatus());
+
+        // 2. 检查流水表与订单履约
+        var pe = paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_HAPPY_001");
+        assertNotNull(pe);
+        assertEquals("SUCCESS", pe.getEventStatus());
+        assertEquals(1L, pe.getMerchantId());
+        assertEquals(new java.math.BigDecimal("10.00"), pe.getPayAmount());
+
+        TradeOrder updatedOrder = orders.findById(order.getId()).orElseThrow();
+        assertEquals("COMPLETED", updatedOrder.getOrderStatus());
+        assertEquals("TX_HAPPY_001", updatedOrder.getPayTradeNo());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        assertEquals(1, cards.selectById(1).getStatus()); // 卡密已分配
+
+        // 3. 幂等重放相同到账事件：直接返回成功，不重复扣库存，不产生二次发卡
+        var replayResult = paymentEventService.processPaymentEvent(event);
+        assertTrue(replayResult.getSuccess());
+        assertEquals("SUCCESS", replayResult.getEventStatus());
+        assertEquals("COMPLETED", replayResult.getOrderStatus());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    void r13DuplicateChannelTradeNoForDifferentOrderRejected() {
+        TradeOrder orderA = unpaid("r13-dup-a", 1);
+        TradeOrder orderB = unpaid("r13-dup-b", 1);
+
+        var eventA = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel("ALIPAY")
+                .payTradeNo("ALI_DUP_001")
+                .orderSn(orderA.getOrderSn())
+                .merchantId(1L)
+                .payAmount(new java.math.BigDecimal("10.00"))
+                .currency("CNY")
+                .payerId("alipay_user_a")
+                .build();
+        paymentEventService.processPaymentEvent(eventA);
+
+        var eventB = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel("ALIPAY")
+                .payTradeNo("ALI_DUP_001")
+                .orderSn(orderB.getOrderSn())
+                .merchantId(1L)
+                .payAmount(new java.math.BigDecimal("10.00"))
+                .currency("CNY")
+                .payerId("alipay_user_b")
+                .build();
+
+        var ex = assertThrows(BusinessException.class, () -> paymentEventService.processPaymentEvent(eventB));
+        assertTrue(ex.getMessage().contains("已被其他订单使用"));
+        assertEquals("UNPAID", orders.selectById(orderB.getId()).getOrderStatus());
+    }
+
+    @Test
+    void r13AmountMismatchRecordedAndRejected() {
+        TradeOrder order = unpaid("r13-amount", 1);
+        var event = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel("WECHAT")
+                .payTradeNo("TX_AMOUNT_ERR")
+                .orderSn(order.getOrderSn())
+                .merchantId(1L)
+                .payAmount(new java.math.BigDecimal("9.99"))
+                .currency("CNY")
+                .payerId("wx_payer")
+                .build();
+
+        var ex = assertThrows(BusinessException.class, () -> paymentEventService.processPaymentEvent(event));
+        assertTrue(ex.getMessage().contains("实付金额与订单应付金额不符"));
+
+        var pe = paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_AMOUNT_ERR");
+        assertNotNull(pe);
+        assertEquals("AMOUNT_MISMATCH", pe.getEventStatus());
+        assertTrue(pe.getErrorMessage().contains("实付金额"));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals(0, cards.selectById(1).getStatus()); // 卡密未被发放
+    }
+
+    @Test
+    void r13CurrencyMismatchRecordedAndRejected() {
+        TradeOrder order = unpaid("r13-currency", 1);
+        var event = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel("STRIPE")
+                .payTradeNo("TX_CURRENCY_ERR")
+                .orderSn(order.getOrderSn())
+                .merchantId(1L)
+                .payAmount(new java.math.BigDecimal("10.00"))
+                .currency("USD")
+                .payerId("stripe_customer")
+                .build();
+
+        var ex = assertThrows(BusinessException.class, () -> paymentEventService.processPaymentEvent(event));
+        assertTrue(ex.getMessage().contains("交易币种不符"));
+
+        var pe = paymentEvents.findByChannelAndTradeNo("STRIPE", "TX_CURRENCY_ERR");
+        assertNotNull(pe);
+        assertEquals("CURRENCY_MISMATCH", pe.getEventStatus());
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
+    void r13MerchantMismatchRecordedAndRejected() {
+        TradeOrder order = unpaid("r13-merchant", 1); // merchantId = 1
+        var event = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel("WECHAT")
+                .payTradeNo("TX_MERCHANT_ERR")
+                .orderSn(order.getOrderSn())
+                .merchantId(2L) // mismatched merchant ID
+                .payAmount(new java.math.BigDecimal("10.00"))
+                .currency("CNY")
+                .payerId("wx_payer")
+                .build();
+
+        var ex = assertThrows(BusinessException.class, () -> paymentEventService.processPaymentEvent(event));
+        assertTrue(ex.getMessage().contains("支付事件商户与订单商户不一致"));
+
+        var pe = paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_MERCHANT_ERR");
+        assertNotNull(pe);
+        assertEquals("MERCHANT_MISMATCH", pe.getEventStatus());
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
+    void r13LatePaymentOnClosedOrderIsIsolatedWithoutDeliveringAssets() {
+        TradeOrder order = unpaid("r13-late", 1);
+        order.setOrderStatus("CLOSED");
+        order.setPeerStatus("EXPIRED");
+        orders.save(order);
+
+        var event = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel("WECHAT")
+                .payTradeNo("TX_LATE_001")
+                .orderSn(order.getOrderSn())
+                .merchantId(1L)
+                .payAmount(new java.math.BigDecimal("10.00"))
+                .currency("CNY")
+                .payerId("wx_late_payer")
+                .build();
+
+        var ex = assertThrows(BusinessException.class, () -> paymentEventService.processPaymentEvent(event));
+        assertTrue(ex.getMessage().contains("订单已超时关闭，支付资金已进入自动退款与补偿流程"));
+
+        var pe = paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_LATE_001");
+        assertNotNull(pe);
+        assertEquals("LATE_PAYMENT", pe.getEventStatus());
+        assertEquals("CLOSED", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals(0, cards.selectById(1).getStatus()); // 绝对不可向超时关单发放数字卡密
+    }
+
+    @Test
+    void r13PeerPayNotifyPaymentSuccessDelegatesToPaymentEventService() {
+        TradeOrder order = intent("r13-peer-adapter");
+        payments.preLockInventory("r13-peer-adapter");
+
+        TradeOrder paidOrder = payments.notifyPaymentSuccess("r13-peer-adapter", "verified_peer_payer", "TX_PEER_ADAPTER_123", "WECHAT");
+        assertEquals("COMPLETED", paidOrder.getOrderStatus());
+        assertEquals("TX_PEER_ADAPTER_123", paidOrder.getPayTradeNo());
+
+        var pe = paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_PEER_ADAPTER_123");
+        assertNotNull(pe);
+        assertEquals("SUCCESS", pe.getEventStatus());
+        assertEquals("verified_peer_payer", pe.getPayerId());
     }
 
     @Test

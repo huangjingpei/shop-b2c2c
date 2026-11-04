@@ -38,6 +38,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     private final ProductSkuMapper skuMapper;
     private final ProductVirtualCardMapper cardMapper;
     private final PlatformAdConfigMapper adConfigMapper;
+    private final com.shop.b2b2c.service.PaymentEventService paymentEventService;
 
     @Value("${app.frontend.storefront-url:http://localhost:3002}")
     private String storefrontUrl;
@@ -474,82 +475,20 @@ public class PeerPayServiceImpl implements PeerPayService {
                 || !("WECHAT".equals(channel) || "ALIPAY".equals(channel))) {
             throw new BusinessException("缺少可信支付结果");
         }
-        if (orderMapper.markPaidIfUnpaid(order.getId(), payerId, payTradeNo, channel) != 1) {
-            throw new BusinessException("订单状态或支付预占已失效");
-        }
-        order.setOrderStatus("PAID");
 
-        List<TradeOrderItem> items = itemMapper.findByOrderSn(order.getOrderSn());
-        if (items.size() != 1) {
-            throw new BusinessException("当前支付仅支持单商品订单");
-        }
-
-        Product payableProduct = productMapper.findById(items.get(0).getProductId())
-                .orElseThrow(() -> new BusinessException("商品不存在"));
-        TradeGuards.requirePurchasable(payableProduct, storeMapper.findById(order.getMerchantId()).orElse(null));
-        if (!payableProduct.getGoodsType().equals(order.getGoodsType())) {
-            throw new BusinessException("商品交付类型已变化，禁止继续交付");
-        }
-
-        InventoryReservation held = reservationMapper.find(order.getId());
-        if (held != null) {
-            TradeOrderItem item = items.get(0);
-            if (!"HELD".equals(held.getStatus()) || !held.getSkuId().equals(item.getSkuId())
-                    || !held.getProductId().equals(item.getProductId()) || !held.getMerchantId().equals(order.getMerchantId())
-                    || !held.getQuantity().equals(item.getQuantity()) || !held.getExpiresAt().isAfter(LocalDateTime.now())
-                    || reservationMapper.transition(order.getId(), "CONSUMED") != 1) {
-                throw new BusinessException("库存预占已失效");
-            }
-        } else {
-            // Compatibility for pre-upgrade locks: they did not deduct stock.
-            for (TradeOrderItem item : items) {
-                if (item.getQuantity() == null || item.getQuantity() <= 0
-                        || skuMapper.deductStock(item.getSkuId(), item.getProductId(), order.getMerchantId(), item.getQuantity()) != 1) {
-                    throw new BusinessException("商品库存不足或SKU归属异常");
-                }
-            }
-        }
-
-        // 绑定三方完整对账角色 <卖家, 买家, 付款人>
-        order.setPeerStatus(PeerStatus.PAID);
-        order.setPeerPayerId(payerId);
-        order.setPayTradeNo(payTradeNo);
-        order.setPaymentChannel(channel);
-        order.setLockExpireTime(null);
-
-        // 如果是虚拟卡密，自动发放分配卡密库
-        if (order.getGoodsType() == 2) {
-            TradeOrderItem firstItem = items.get(0);
-            List<ProductVirtualCard> availableCards = cardMapper.lockAvailableCards(firstItem.getSkuId(), firstItem.getProductId(), order.getMerchantId(), firstItem.getQuantity());
-            if (availableCards.size() >= firstItem.getQuantity()) {
-                List<String> deliveredCards = new ArrayList<>();
-                for (int i = 0; i < firstItem.getQuantity(); i++) {
-                    ProductVirtualCard card = availableCards.get(i);
-                    if (cardMapper.claimCard(card.getId(), order.getMerchantId(), firstItem.getSkuId(), order.getOrderSn()) != 1) {
-                        throw new BusinessException("卡密已被分配，请重试");
-                    }
-                    deliveredCards.add(card.getCardContent());
-                }
-                firstItem.setCardDetails(String.join("\n", deliveredCards));
-                itemMapper.save(firstItem);
-
-                order.setOrderStatus("COMPLETED");
-                order.setSharingStatus("PENDING");
-                order.setServiceVoucher("系统卡密秒级自动交付: " + String.join(" | ", deliveredCards));
-                order.setFinishTime(LocalDateTime.now());
-            } else {
-                throw new BusinessException("卡密库存不足，不能转为人工服务");
-            }
-        } else {
-            // 实物商品：标记待发货
-            order.setOrderStatus("PAID");
-            order.setSharingStatus("PENDING");
-        }
-
-        order = orderMapper.save(order);
-        log.info("代付单 [{}] 支付落账完成，商户ID={}", order.getOrderSn(), order.getMerchantId());
-
-        return order;
+        // R13: 接入统一到账事件处理服务 (持久化唯一支付事件流水、资金要素核对与解耦本地履约)
+        com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent event = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel(channel)
+                .payTradeNo(payTradeNo)
+                .orderSn(order.getOrderSn())
+                .merchantId(order.getMerchantId())
+                .payAmount(order.getPayAmount())
+                .currency("CNY")
+                .payerId(payerId)
+                .rawPayload("InternalAdapter:" + channel + ":" + payTradeNo)
+                .build();
+        paymentEventService.processPaymentEvent(event);
+        return orderMapper.findById(order.getId()).orElse(order);
     }
 
     @Override

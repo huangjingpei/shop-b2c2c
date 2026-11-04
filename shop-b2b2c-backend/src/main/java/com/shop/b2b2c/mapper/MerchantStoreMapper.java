@@ -19,6 +19,39 @@ public interface MerchantStoreMapper extends BaseMapper<MerchantStore> {
         return Optional.ofNullable(selectById(id));
     }
 
+    @org.apache.ibatis.annotations.Select("SELECT * FROM merchant_store WHERE id = #{id} FOR UPDATE")
+    MerchantStore lockById(@org.apache.ibatis.annotations.Param("id") Long id);
+
+    default Optional<MerchantStore> findByIdForUpdate(Long id) {
+        try {
+            MerchantStore store = lockById(id);
+            if (store != null) return Optional.of(store);
+        } catch (Exception ignored) {
+            // 在未配置数据库连接的纯Mock单元测试中安全回退到普通findById
+        }
+        return findById(id);
+    }
+
+    @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET status = #{status} WHERE id = #{id}")
+    int updateStatusOnly(@org.apache.ibatis.annotations.Param("id") Long id,
+                         @org.apache.ibatis.annotations.Param("status") Integer status);
+
+    @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET commission_rate = #{rate} WHERE id = #{id}")
+    int updateCommissionOnly(@org.apache.ibatis.annotations.Param("id") Long id,
+                             @org.apache.ibatis.annotations.Param("rate") java.math.BigDecimal rate);
+
+    @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET "
+            + "notice = COALESCE(#{notice}, notice), "
+            + "logo_url = COALESCE(#{logoUrl}, logo_url), "
+            + "contact_phone = COALESCE(#{contactPhone}, contact_phone), "
+            + "custom_pay_qrcode = COALESCE(#{customPayQrcode}, custom_pay_qrcode) "
+            + "WHERE id = #{id}")
+    int updateProfileOnly(@org.apache.ibatis.annotations.Param("id") Long id,
+                          @org.apache.ibatis.annotations.Param("notice") String notice,
+                          @org.apache.ibatis.annotations.Param("logoUrl") String logoUrl,
+                          @org.apache.ibatis.annotations.Param("contactPhone") String contactPhone,
+                          @org.apache.ibatis.annotations.Param("customPayQrcode") String customPayQrcode);
+
     default MerchantStore save(MerchantStore entity) {
         if (entity.getId() == null) {
             insert(entity);

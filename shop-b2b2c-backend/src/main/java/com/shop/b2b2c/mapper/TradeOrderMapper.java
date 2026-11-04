@@ -33,13 +33,21 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
     TradeOrder lockById(@org.apache.ibatis.annotations.Param("id") Long id);
 
     @org.apache.ibatis.annotations.Update("UPDATE trade_order SET order_status = 'PAID', peer_status = '" + PeerStatus.PAID + "', "
-            + "peer_payer_id = #{payerId}, pay_trade_no = #{tradeNo}, payment_channel = #{channel} "
+            + "peer_payer_id = #{payerId}, pay_trade_no = #{tradeNo}, payment_channel = #{channel}, lock_expire_time = NULL "
             + "WHERE id = #{id} AND order_status = 'UNPAID' AND peer_status = '" + PeerStatus.RESERVED_LOCK + "' "
             + "AND lock_expire_time > CURRENT_TIMESTAMP")
     int markPaidIfUnpaid(@org.apache.ibatis.annotations.Param("id") Long id,
                         @org.apache.ibatis.annotations.Param("payerId") String payerId,
                         @org.apache.ibatis.annotations.Param("tradeNo") String tradeNo,
                         @org.apache.ibatis.annotations.Param("channel") String channel);
+
+    @org.apache.ibatis.annotations.Update("UPDATE trade_order SET order_status = 'PAID', peer_status = '" + PeerStatus.PAID + "', "
+            + "peer_payer_id = #{payerId}, pay_trade_no = #{tradeNo}, payment_channel = #{channel}, lock_expire_time = NULL "
+            + "WHERE id = #{id} AND order_status = 'UNPAID' AND (lock_expire_time IS NULL OR lock_expire_time > CURRENT_TIMESTAMP)")
+    int markOrderPaidIfUnpaid(@org.apache.ibatis.annotations.Param("id") Long id,
+                              @org.apache.ibatis.annotations.Param("payerId") String payerId,
+                              @org.apache.ibatis.annotations.Param("tradeNo") String tradeNo,
+                              @org.apache.ibatis.annotations.Param("channel") String channel);
 
     @org.apache.ibatis.annotations.Select("SELECT id FROM trade_order "
             + "WHERE order_status = 'UNPAID' "

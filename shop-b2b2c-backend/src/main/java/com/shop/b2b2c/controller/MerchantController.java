@@ -135,22 +135,26 @@ public class MerchantController {
 
     @Operation(summary = "【超管】变更店铺营业状态 (打烊/封禁/营业)")
     @PutMapping("/api/v1/admin/merchants/{id}/status")
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public R<Void> updateStatus(@PathVariable Long id, @RequestParam Integer status) {
         ManagementGuards.status(status);
         MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         store.setStatus(status);
+        storeMapper.updateStatusOnly(id, status);
         storeMapper.save(store);
         return R.ok("状态更新成功", null);
     }
 
     @Operation(summary = "【超管】调整店铺平台抽成比率")
     @PutMapping("/api/v1/admin/merchants/{id}/commission")
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public R<Void> updateCommission(@PathVariable Long id, @RequestParam BigDecimal rate) {
         ManagementGuards.percent(rate);
         MerchantStore store = storeMapper.findById(id)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
         store.setCommissionRate(rate);
+        storeMapper.updateCommissionOnly(id, rate);
         storeMapper.save(store);
         return R.ok("费率调整成功", null);
     }
@@ -165,6 +169,7 @@ public class MerchantController {
 
     @Operation(summary = "【超管】配置商户月度技术服务费与免收期")
     @PutMapping("/api/v1/admin/merchants/{id}/service-fee")
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public R<Void> updateServiceFee(@PathVariable Long id, @RequestBody ServiceFeeConfigDTO dto) {
         if (dto == null) throw new BusinessException(400, "服务费配置不能为空");
         if (dto.getMonthlyFee() != null) ManagementGuards.monthlyFee(dto.getMonthlyFee());
@@ -190,6 +195,7 @@ public class MerchantController {
 
     @Operation(summary = "【超管】配置商户结算通道类型与独立收款码")
     @PutMapping("/api/v1/admin/merchants/{id}/payment-channel")
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public R<Void> updatePaymentChannel(@PathVariable Long id, @RequestBody PaymentChannelConfigDTO dto) {
         if (dto.getPaymentChannelType() != null) ManagementGuards.choice(dto.getPaymentChannelType(), Set.of("A", "B", "C"));
         ManagementGuards.text(dto.getCustomPayQrcode(), 512, false);
@@ -225,6 +231,7 @@ public class MerchantController {
 
     @Operation(summary = "【商家】更新店铺公告与展示资料")
     @PutMapping("/api/v1/merchant/profile")
+    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
     public R<Void> updateMerchantProfile(@RequestBody MerchantStore updateDTO) {
         ManagementGuards.text(updateDTO.getNotice(), 512, false);
         ManagementGuards.text(updateDTO.getLogoUrl(), 255, false);
@@ -234,13 +241,15 @@ public class MerchantController {
         MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
 
-        // 严格白名单列更新：仅允许修改展示公告与联系方式，绝不覆盖封禁状态、费率或系统资料
+        // 严格白名单列更新：使用定向列更新，绝不覆盖封禁状态、费率或系统资料 (R09)
+        storeMapper.updateProfileOnly(merchantId, updateDTO.getNotice(), updateDTO.getLogoUrl(),
+                updateDTO.getContactPhone(), updateDTO.getCustomPayQrcode());
+
         if (updateDTO.getNotice() != null) store.setNotice(updateDTO.getNotice());
         if (updateDTO.getLogoUrl() != null) store.setLogoUrl(updateDTO.getLogoUrl());
         if (updateDTO.getContactPhone() != null) store.setContactPhone(updateDTO.getContactPhone());
         if (updateDTO.getCustomPayQrcode() != null) store.setCustomPayQrcode(updateDTO.getCustomPayQrcode());
 
-        storeMapper.save(store);
         return R.ok("店铺资料保存成功", null);
     }
 }

@@ -299,3 +299,21 @@ CREATE TABLE IF NOT EXISTS card_import_item (
   CONSTRAINT fk_card_import_item_batch FOREIGN KEY (batch_id) REFERENCES card_import_batch(id),
   CONSTRAINT fk_card_import_item_card FOREIGN KEY (card_id) REFERENCES product_virtual_card(id)
 );
+
+-- 19. 支付渠道到账事件流水表 (解耦外部资金事实与本地履约)
+CREATE TABLE IF NOT EXISTS payment_event (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  channel VARCHAR(32) NOT NULL,
+  pay_trade_no VARCHAR(128) NOT NULL,
+  order_sn VARCHAR(64) NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  pay_amount DECIMAL(10,2) NOT NULL,
+  currency VARCHAR(16) NOT NULL DEFAULT 'CNY',
+  payer_id VARCHAR(128) NULL,
+  event_status VARCHAR(32) NOT NULL,
+  error_message VARCHAR(512) NULL,
+  raw_payload TEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_channel_trade_no UNIQUE (channel, pay_trade_no)
+);
