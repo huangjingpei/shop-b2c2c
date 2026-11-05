@@ -100,7 +100,8 @@ class _DeployFixture(unittest.TestCase):
             printf 'systemctl %s\\n' "$*" >> "$DEPLOY_TEST_LOG"
             case "${1:-}" in
               is-active) echo active; exit 0 ;;
-              daemon-reload|enable|reload|restart) exit 0 ;;
+              reload) [[ "${SYSTEMCTL_RELOAD_FAIL:-no}" != "yes" ]] || exit 1; exit 0 ;;
+              daemon-reload|enable|restart) exit 0 ;;
               *) exit 0 ;;
             esac
             """))
@@ -141,6 +142,22 @@ class _DeployFixture(unittest.TestCase):
         p = self.bin / name
         p.write_text(script, encoding="utf-8")
         p.chmod(0o755)
+
+    def _install_cert(self):
+        """写入伪造证书，让部署直接走正式站点切换路径（跳过引导站点申请流程）。"""
+        cert_dir = self.root / "certs/fake"
+        cert_dir.mkdir(parents=True, exist_ok=True)
+        (cert_dir / "fullchain.pem").write_text("FAKE CERT\n", encoding="utf-8")
+        (cert_dir / "privkey.pem").write_text("FAKE KEY\n", encoding="utf-8")
+
+    def _prepare_existing_nginx_site(self):
+        """模拟已有线上站点：sites-available 内容 + sites-enabled 软链。"""
+        avail = self.nginx_avail_dir / "shop"
+        avail.write_text("# OLD SITE\n", encoding="utf-8")
+        enabled = self.nginx_enabled_dir / "shop"
+        if enabled.is_symlink() or enabled.exists():
+            enabled.unlink()
+        enabled.symlink_to(avail)
 
     def _make_release(self, *, jar=True, admin=True, storefront=True,
                       schema=True, build_failed=False, jar_empty=False):
@@ -318,6 +335,52 @@ class TencentDeployLifecycleTest(_DeployFixture):
         # 回滚后旧 JAR 应恢复
         self.assertEqual(old_jar.read_bytes(), b"OLD JAR",
                          "Nginx 失败后回滚应恢复旧 app.jar")
+
+    def test_nginx_first_deploy_failure_leaves_no_site(self):
+        """T20：首次部署 Nginx 校验失败时，不应残留半配置站点，且旧产物不丢。"""
+        old_jar = self.app / "app.jar"
+        old_jar.write_bytes(b"OLD JAR")
+        self._make_release()
+        self._install_cert()
+        result = self._run(extra_env={"NGINX_FAIL": "yes", "MYSQL_TABLE_COUNT": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        avail = self.nginx_avail_dir / "shop"
+        enabled = self.nginx_enabled_dir / "shop"
+        self.assertFalse(avail.exists(), "首次部署失败后不应残留 sites-available 站点")
+        self.assertFalse(enabled.exists() or enabled.is_symlink(),
+                         "首次部署失败后不应残留 sites-enabled 软链")
+        self.assertFalse((self.nginx_avail_dir / "shop.candidate").exists(),
+                         "候选配置文件不应残留")
+        self.assertEqual(old_jar.read_bytes(), b"OLD JAR", "失败回滚应保留旧 app.jar")
+
+    def test_nginx_failure_restores_previous_site(self):
+        """T20：已有站点时 Nginx 校验失败，应恢复旧站点内容与启用软链。"""
+        self._prepare_existing_nginx_site()
+        self._make_release()
+        self._install_cert()
+        result = self._run(extra_env={"NGINX_FAIL": "yes", "MYSQL_TABLE_COUNT": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        avail = self.nginx_avail_dir / "shop"
+        enabled = self.nginx_enabled_dir / "shop"
+        self.assertEqual(avail.read_text(encoding="utf-8"), "# OLD SITE\n",
+                         "失败后应恢复旧站点配置内容")
+        self.assertTrue(enabled.is_symlink(), "失败后应保留 sites-enabled 软链")
+
+    def test_nginx_reload_failure_rolls_back_previous_site(self):
+        """T20：nginx -t 通过但 reload 失败时，应先回滚旧配置再重载并终止部署。"""
+        self._prepare_existing_nginx_site()
+        old_jar = self.app / "app.jar"
+        old_jar.write_bytes(b"OLD JAR")
+        self._make_release()
+        self._install_cert()
+        result = self._run(extra_env={"SYSTEMCTL_RELOAD_FAIL": "yes",
+                                      "MYSQL_TABLE_COUNT": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        avail = self.nginx_avail_dir / "shop"
+        self.assertEqual(avail.read_text(encoding="utf-8"), "# OLD SITE\n",
+                         "reload 失败后应恢复旧站点配置内容")
+        self.assertEqual(old_jar.read_bytes(), b"OLD JAR", "reload 失败应触发整套回滚")
+        self.assertIn("已回滚并重载切换前的 Nginx 配置", result.stdout + result.stderr)
 
     def test_health_check_failure_triggers_rollback(self):
         """R29 烟测：健康检查失败（curl 返回非 200）时，应回滚旧产物。"""

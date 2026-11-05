@@ -163,14 +163,22 @@ rollback_on_failure() {
       log "已恢复旧版商城前端"
     fi
 
-    # 3. 恢复 Nginx
+    # 3. 恢复 Nginx；首次部署则移除本次新建站点，避免留下半配置
     if [[ "${HAD_NGINX}" == "yes" && -f "${CURRENT_BACKUP}/nginx.conf" ]]; then
       cp "${CURRENT_BACKUP}/nginx.conf" "${NGINX_AVAIL}"
       ln -sfn "${NGINX_AVAIL}" "${NGINX_ENABLED}"
       if nginx -t >/dev/null 2>&1; then
         systemctl reload nginx || systemctl restart nginx || true
         log "已恢复旧版 Nginx 配置并重载"
+      else
+        warn "旧版 Nginx 配置未通过 nginx -t，请人工核查 ${NGINX_AVAIL}"
       fi
+    else
+      rm -f "${NGINX_ENABLED}" "${NGINX_AVAIL}"
+      if nginx -t >/dev/null 2>&1; then
+        systemctl reload nginx || systemctl restart nginx || true
+      fi
+      log "首次部署失败：已移除本次新建的 Nginx 站点 ${NGINX_AVAIL}"
     fi
 
     # 4. 重启旧版服务
@@ -245,16 +253,71 @@ render_site() {
 
 safe_nginx_switch() {
   local newconf="$1"
-  cp "${newconf}" "${NGINX_AVAIL}"
-  ln -sfn "${NGINX_AVAIL}" "${NGINX_ENABLED}"
+  local stamp snapshot_dir had_avail had_enabled enabled_is_link enabled_target
+  stamp="$(date +%Y%m%d-%H%M%S)-$$"
+  snapshot_dir="${BACKUP_DIR}/nginx-switch-${stamp}"
+  mkdir -p "${snapshot_dir}"
 
-  if ! nginx -t 2>/tmp/nginx-t.err; then
+  # 先快照旧站点文件与启用状态；回滚必须恢复软链本身，而不是只恢复内容。
+  had_avail="no"; had_enabled="no"; enabled_is_link="no"; enabled_target=""
+  if [[ -f "${NGINX_AVAIL}" ]]; then
+    cp -p "${NGINX_AVAIL}" "${snapshot_dir}/avail.conf"
+    had_avail="yes"
+  fi
+  if [[ -L "${NGINX_ENABLED}" ]]; then
+    enabled_target="$(readlink "${NGINX_ENABLED}" 2>/dev/null || true)"
+    had_enabled="yes"; enabled_is_link="yes"
+  elif [[ -f "${NGINX_ENABLED}" ]]; then
+    cp -p "${NGINX_ENABLED}" "${snapshot_dir}/enabled.conf"
+    had_enabled="yes"
+  fi
+
+  restore_nginx_snapshot() {
+    if [[ "${had_avail}" == "yes" ]]; then
+      cp -p "${snapshot_dir}/avail.conf" "${NGINX_AVAIL}"
+    else
+      rm -f "${NGINX_AVAIL}"
+    fi
+    if [[ "${had_enabled}" == "yes" ]]; then
+      if [[ "${enabled_is_link}" == "yes" ]]; then
+        if [[ -n "${enabled_target}" ]]; then ln -sfn "${enabled_target}" "${NGINX_ENABLED}"; fi
+      else
+        cp -p "${snapshot_dir}/enabled.conf" "${NGINX_ENABLED}"
+      fi
+    else
+      rm -f "${NGINX_ENABLED}"
+    fi
+  }
+
+  install -m 644 "${newconf}" "${NGINX_AVAIL}.candidate" \
+    || { rm -f "${NGINX_AVAIL}.candidate"; die "无法写入 Nginx 候选配置"; }
+  mv -f "${NGINX_AVAIL}.candidate" "${NGINX_AVAIL}" || die "无法安装 Nginx 站点配置"
+  ln -sfn "${NGINX_AVAIL}" "${NGINX_ENABLED}" || die "无法启用 Nginx 站点配置"
+
+  if ! nginx -t 2>"${snapshot_dir}/nginx-t.err"; then
     warn "Nginx 配置检测失败，错误信息："
-    sed 's/^/    /' /tmp/nginx-t.err
+    sed 's/^/    /' "${snapshot_dir}/nginx-t.err" || true
+    restore_nginx_snapshot
+    if nginx -t >/dev/null 2>&1; then
+      systemctl reload nginx || systemctl restart nginx || true
+      log "已恢复切换前的 Nginx 配置"
+    else
+      warn "切换前的 Nginx 配置同样无法通过 nginx -t，请人工核查（快照：${snapshot_dir}）"
+    fi
     die "Nginx 配置语法验证失败，中止上线"
   fi
 
-  systemctl reload nginx || systemctl restart nginx
+  if ! systemctl reload nginx; then
+    warn "Nginx reload 失败，回滚到切换前配置..."
+    restore_nginx_snapshot
+    if systemctl reload nginx || systemctl restart nginx; then
+      log "已回滚并重载切换前的 Nginx 配置（快照：${snapshot_dir}）"
+    else
+      warn "回滚后仍无法加载 Nginx，请人工处理（快照：${snapshot_dir}）"
+    fi
+    die "Nginx reload 失败，已回滚站点配置"
+  fi
+  log "Nginx 配置已校验并生效"
   return 0
 }
 
