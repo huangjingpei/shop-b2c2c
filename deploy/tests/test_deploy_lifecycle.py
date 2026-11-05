@@ -115,8 +115,26 @@ class _DeployFixture(unittest.TestCase):
             #!/usr/bin/env bash
             printf 'mysql %s\\n' "$*" >> "$DEPLOY_TEST_LOG"
             [[ "${MYSQL_FAIL:-no}" != "yes" ]] || { echo 'ERROR 1234 (00000): forced failure' >&2; exit 1; }
+            is_query="no"
+            for arg in "$@"; do [[ "${arg}" == "-e" ]] && is_query="yes"; done
+            if [[ "${is_query}" == "no" ]]; then
+              # schema 导入与备份恢复都走 stdin；用内容区分，便于只让迁移失败
+              payload="$(cat)"
+              if [[ "${MYSQL_FAIL_SCHEMA:-no}" == "yes" && "${payload}" == *"_test_migration"* ]]; then
+                echo 'ERROR 1050: forced schema failure' >&2
+                exit 1
+              fi
+              exit 0
+            fi
             # 返回 TABLE_COUNT 以模拟空库(0)或已有表
             echo "${MYSQL_TABLE_COUNT:-0}"
+            exit 0
+            """))
+        self._fake_tool("mysqldump", textwrap.dedent("""\
+            #!/usr/bin/env bash
+            printf 'mysqldump %s\\n' "$*" >> "$DEPLOY_TEST_LOG"
+            [[ "${MYSQLDUMP_FAIL:-no}" != "yes" ]] || { echo 'mysqldump: forced failure' >&2; exit 1; }
+            echo 'CREATE TABLE old_data (id INT);'
             exit 0
             """))
         self._fake_tool("java", textwrap.dedent("""\
@@ -324,6 +342,46 @@ class TencentDeployLifecycleTest(_DeployFixture):
                             "MySQL 失败时不应成功退出")
         self.assertEqual(old_jar.read_bytes(), b"OLD JAR",
                          "旧 app.jar 不应被覆盖：MySQL 失败应在切换前终止")
+
+    def test_migration_backs_up_before_schema_import(self):
+        """T21：需要迁移时，必须先完成 mysqldump 备份与 gzip 校验，再导入 schema。"""
+        self._make_release()
+        result = self._run(extra_env={"MYSQL_TABLE_COUNT": "0"})
+        self.assertEqual(result.returncode, 0, f"正常迁移应成功；stderr={result.stderr}")
+        backups = list(self.backups.glob("db-pre-migration-*.sql.gz"))
+        self.assertEqual(len(backups), 1, "迁移前应生成一份带时间戳的数据库备份")
+        self.assertGreater(backups[0].stat().st_size, 0, "备份文件应非空")
+        log_lines = (self.root / "calls.log").read_text(encoding="utf-8", errors="replace").splitlines()
+        dump_index = next(i for i, line in enumerate(log_lines) if line.startswith("mysqldump "))
+        import_index = max(i for i, line in enumerate(log_lines)
+                           if line.startswith("mysql ") and "-e" not in line)
+        self.assertLess(dump_index, import_index, "备份必须发生在 schema 导入之前")
+        self.assertIn("迁移前备份完成并通过 gzip 校验", result.stdout)
+
+    def test_migration_aborts_when_backup_fails(self):
+        """T21：备份失败必须中止，不得执行迁移，也不得留下半成品备份。"""
+        old_jar = self.app / "app.jar"
+        old_jar.write_bytes(b"OLD JAR")
+        self._make_release()
+        result = self._run(extra_env={"MYSQL_TABLE_COUNT": "0", "MYSQLDUMP_FAIL": "yes"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("迁移前数据库备份失败", result.stderr)
+        self.assertEqual(list(self.backups.glob("db-pre-migration-*")), [],
+                         "备份失败后不应残留未校验的 dump 文件")
+        combined = result.stdout + result.stderr
+        self.assertNotIn("数据库同步完毕", combined, "备份失败时不得继续迁移")
+        self.assertNotIn("执行数据库结构同步", combined, "备份失败时不得开始 schema 导入")
+        self.assertEqual(old_jar.read_bytes(), b"OLD JAR", "中止时不应改动线上产物")
+
+    def test_migration_failure_restores_from_backup(self):
+        """T21：迁移失败应自动从迁移前备份恢复数据库。"""
+        self._make_release()
+        result = self._run(extra_env={"MYSQL_TABLE_COUNT": "0", "MYSQL_FAIL_SCHEMA": "yes"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("正在从迁移前备份恢复数据库", result.stdout)
+        self.assertIn("数据库已恢复到迁移前状态", result.stdout)
+        self.assertEqual(len(list(self.backups.glob("db-pre-migration-*.sql.gz"))), 1,
+                         "迁移失败后应保留迁移前备份供人工复核")
 
     def test_nginx_failure_triggers_rollback(self):
         """R29 切换：Nginx 配置测试失败时，应回滚旧 app.jar（不留新产物）。"""

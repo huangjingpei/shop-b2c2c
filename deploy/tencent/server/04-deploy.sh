@@ -76,22 +76,104 @@ DB_PORT="${DB_PORT:-3306}"
 mkdir -p "${APP_DIR}" "${WWW_ADMIN_DIR}" "${WWW_STOREFRONT_DIR}" "${BACKUP_DIR}" "${SHOP_ROOT}/logs" "${SHOP_ROOT}/uploads"
 chmod 755 "${SHOP_ROOT}/uploads"
 
+DEPLOY_TS="$(date +%Y%m%d-%H%M%S)"
+DB_BACKUP_FILE=""
+MIGRATION_APPLIED="no"
+
+# 统一用临时 --defaults-extra-file 传递凭据，避免口令出现在进程参数；调用结束即删除。
+mysql_client() {
+  local defaults_file rc
+  defaults_file="$(mktemp)"
+  chmod 600 "${defaults_file}"
+  printf '[client]\nuser=%s\npassword=%s\nhost=%s\nport=%s\n' \
+    "${DB_USER}" "${DB_PASS}" "${DB_HOST}" "${DB_PORT}" > "${defaults_file}"
+  set +e
+  mysql --defaults-extra-file="${defaults_file}" "${DB_NAME}" "$@"
+  rc=$?
+  set -e
+  rm -f "${defaults_file}"
+  return "${rc}"
+}
+
+# 迁移前备份数据库；任何一步失败都返回非零，调用方必须中止且不得执行迁移。
+backup_database_before_migration() {
+  local target="$1" defaults_file rc
+  command -v mysqldump >/dev/null 2>&1 || { warn "缺少 mysqldump，拒绝在无备份的情况下迁移"; return 1; }
+  command -v gzip >/dev/null 2>&1 || { warn "缺少 gzip，拒绝在无备份校验的情况下迁移"; return 1; }
+  defaults_file="$(mktemp)"
+  chmod 600 "${defaults_file}"
+  printf '[client]\nuser=%s\npassword=%s\nhost=%s\nport=%s\n' \
+    "${DB_USER}" "${DB_PASS}" "${DB_HOST}" "${DB_PORT}" > "${defaults_file}"
+  set +e
+  mysqldump --defaults-extra-file="${defaults_file}" \
+    --single-transaction --quick --routines --triggers --no-tablespaces \
+    --default-character-set=utf8mb4 "${DB_NAME}" 2>"${target}.err" | gzip -9 > "${target}"
+  rc=${PIPESTATUS[0]}
+  set -e
+  rm -f "${defaults_file}"
+  if [[ "${rc}" -ne 0 ]]; then
+    warn "mysqldump 执行失败（exit ${rc}），错误摘要："
+    tail -n 20 "${target}.err" 2>/dev/null || true
+    rm -f "${target}" "${target}.err"
+    return 1
+  fi
+  if [[ ! -s "${target}" ]] || ! gzip -t "${target}" 2>/dev/null; then
+    warn "迁移前备份文件为空或 gzip 校验失败: ${target}"
+    rm -f "${target}" "${target}.err"
+    return 1
+  fi
+  chmod 600 "${target}"
+  rm -f "${target}.err"
+  return 0
+}
+
+# 仅当本次已执行迁移时，才允许从迁移前备份恢复；失败时打印可执行的手工恢复命令。
+restore_database_from_backup() {
+  [[ "${MIGRATION_APPLIED}" == "yes" ]] || return 0
+  if [[ -z "${DB_BACKUP_FILE}" || ! -f "${DB_BACKUP_FILE}" ]]; then
+    warn "没有可用的迁移前备份，无法自动恢复数据库"
+    return 1
+  fi
+  log "正在从迁移前备份恢复数据库: ${DB_BACKUP_FILE}"
+  if gunzip -c "${DB_BACKUP_FILE}" | mysql_client; then
+    log "数据库已恢复到迁移前状态"
+    MIGRATION_APPLIED="restored"
+    return 0
+  fi
+  warn "数据库自动恢复失败，请手工执行：gunzip -c '${DB_BACKUP_FILE}' | mysql -u'${DB_USER}' -p -h'${DB_HOST}' -P'${DB_PORT}' '${DB_NAME}'"
+  return 1
+}
+
 # ================================================================
-# 阶段 2：兼容迁移（在动线上文件和服务前执行，SQL 失败立即终止）
+# 阶段 2：数据库结构同步（先备份后迁移；失败即恢复并终止）
 # ================================================================
 log "阶段 2/4：数据库结构同步检查..."
 NEED_MIGRATE="no"
-TABLE_COUNT=$(mysql -u"${DB_USER}" -p"${DB_PASS}" -h"${DB_HOST}" -P"${DB_PORT}" "${DB_NAME}" -N -e "SELECT count(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}'" 2>/dev/null || echo 0)
+TABLE_COUNT=$(mysql_client -N -e "SELECT count(*) FROM information_schema.tables WHERE table_schema='${DB_NAME}'" 2>/dev/null || echo 0)
 if [[ "${TABLE_COUNT}" -eq 0 || "${DO_MIGRATE}" == "yes" ]]; then
   NEED_MIGRATE="yes"
 fi
 
 if [[ "${NEED_MIGRATE}" == "yes" ]]; then
-  log "执行数据库结构与种子数据同步 ${RELEASE_DIR}/schema.sql ..."
-  if ! mysql -u"${DB_USER}" -p"${DB_PASS}" -h"${DB_HOST}" -P"${DB_PORT}" "${DB_NAME}" < "${RELEASE_DIR}/schema.sql"; then
-    die "数据库同步失败，中止部署！未修改任何正在运行的线上后端与前端产物。"
+  DB_BACKUP_FILE="${BACKUP_DIR}/db-pre-migration-${DEPLOY_TS}.sql.gz"
+  log "迁移前备份数据库 -> ${DB_BACKUP_FILE}"
+  if ! backup_database_before_migration "${DB_BACKUP_FILE}"; then
+    die "迁移前数据库备份失败，已中止：未执行任何结构变更"
   fi
-  log "数据库同步完毕"
+  log "迁移前备份完成并通过 gzip 校验: ${DB_BACKUP_FILE}"
+
+  MIGRATION_APPLIED="yes"
+  log "执行数据库结构同步（仅 schema，不含演示种子） ${RELEASE_DIR}/schema.sql ..."
+  if ! mysql_client < "${RELEASE_DIR}/schema.sql"; then
+    warn "数据库结构同步失败，正在从迁移前备份恢复..."
+    if restore_database_from_backup; then
+      warn "数据库已恢复到迁移前状态（备份保留在 ${DB_BACKUP_FILE}）"
+    else
+      warn "自动恢复未完成，请手工执行：gunzip -c '${DB_BACKUP_FILE}' | mysql -u'${DB_USER}' -p -h'${DB_HOST}' -P'${DB_PORT}' '${DB_NAME}'"
+    fi
+    die "数据库同步失败，部署中止！已尝试从迁移前备份恢复"
+  fi
+  log "数据库同步完毕（迁移前备份：${DB_BACKUP_FILE}）"
 else
   log "跳过数据库同步 (现有表数: ${TABLE_COUNT}，如需强刷请加 --migrate 参数)"
 fi
@@ -101,7 +183,6 @@ fi
 # ================================================================
 log "阶段 3/4：执行产物切换与网关配置..."
 
-DEPLOY_TS="$(date +%Y%m%d-%H%M%S)"
 CURRENT_BACKUP="${BACKUP_DIR}/deploy-${DEPLOY_TS}-$$"
 mkdir -p "${CURRENT_BACKUP}"
 
@@ -181,7 +262,16 @@ rollback_on_failure() {
       log "首次部署失败：已移除本次新建的 Nginx 站点 ${NGINX_AVAIL}"
     fi
 
-    # 4. 重启旧版服务
+    # 4. 恢复数据库（仅本次已实际执行迁移）；应用启动失败也属于“全成功或回滚 DB”边界
+    if [[ "${MIGRATION_APPLIED}" == "yes" ]]; then
+      if restore_database_from_backup; then
+        log "已从迁移前备份恢复数据库: ${DB_BACKUP_FILE}"
+      else
+        warn "数据库未能自动恢复，请手工执行：gunzip -c '${DB_BACKUP_FILE}' | mysql -u'${DB_USER}' -p -h'${DB_HOST}' -P'${DB_PORT}' '${DB_NAME}'"
+      fi
+    fi
+
+    # 5. 重启旧版服务
     if [[ "${HAD_JAR}" == "yes" ]]; then
       log "重启旧版服务 ${SERVICE_NAME} ..."
       systemctl restart "${SERVICE_NAME}" || true
