@@ -1190,7 +1190,8 @@ class Sprint1SecurityIntegrationTest {
         mvc.perform(post("/api/v1/auth/login").contentType("application/json")
                 .content(json.writeValueAsString(java.util.Map.of("username", "auth-fixture", "password",
                         scenario.equals("wrongPassword") ? "wrong-fixture-password" : AUTH_PASSWORD))))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(scenario.equals("unknownRole") ? 403 : 500))
+                .andExpect(status().is(scenario.equals("unknownRole") ? 403 : 500))
+                .andExpect(jsonPath("$.code").value(scenario.equals("unknownRole") ? 403 : 500))
                 .andExpect(jsonPath("$.data.token").doesNotExist());
     }
 
@@ -3173,7 +3174,7 @@ class Sprint1SecurityIntegrationTest {
                         .header("Authorization", "Bearer " + adminToken1)
                         .contentType("application/json")
                         .content(json.writeValueAsString(import1)))
-                .andExpect(status().isOk())
+                .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value(409));
 
         // 3. Duplicate within the same batch is REJECTED with 400
@@ -3186,7 +3187,7 @@ class Sprint1SecurityIntegrationTest {
                         .header("Authorization", "Bearer " + adminToken1)
                         .contentType("application/json")
                         .content(json.writeValueAsString(intraBatchDup)))
-                .andExpect(status().isOk())
+                .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));
 
         // 4. Cross-store isolation: store 2 CAN import the same cardCode
@@ -3370,13 +3371,13 @@ class Sprint1SecurityIntegrationTest {
         // 1. Zero or negative ID in path variable -> BusinessException 400 "订单编号不正确"
         mvc.perform(get("/api/v1/merchant/orders/0")
                         .header("Authorization", "Bearer " + token))
-                .andExpect(status().isOk())
+                .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.message").value("订单编号不正确"));
 
         mvc.perform(get("/api/v1/merchant/orders/-1")
                         .header("Authorization", "Bearer " + token))
-                .andExpect(status().isOk())
+                .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400))
                 .andExpect(jsonPath("$.message").value("订单编号不正确"));
 
@@ -3649,5 +3650,26 @@ class Sprint1SecurityIntegrationTest {
         } finally {
             pool.shutdownNow();
         }
+    }
+
+    @Test
+    void t18BusinessErrorCodesMapToHttpStatusAndBodyCode() throws Exception {
+        authUser("MERCHANT_ADMIN", 1L);
+        String token = loginToken();
+
+        mvc.perform(get("/api/v1/merchant/cards/0").header("Authorization", "Bearer " + token))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
+        mvc.perform(get("/api/v1/merchant/cards/999999").header("Authorization", "Bearer " + token))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404));
+
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_STAFF", 1L);
+        String staffToken = loginToken();
+        mvc.perform(get("/api/v1/merchant/cards").header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
     }
 }
