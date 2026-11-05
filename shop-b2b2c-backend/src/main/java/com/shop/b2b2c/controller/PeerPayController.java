@@ -5,6 +5,7 @@
  *  1. 建单强制 Idempotency-Key 并受应用成本限流预算；不提供 Mock 支付或未经验证的公开到账入口。
  *  2. 取消必须提交 X-Reservation-Token。分享 token 仅定位账单，不能替代预占所有者凭证。
  *  3. T10：Idempotency-Key 只作为尝试键；恢复预占必须回传服务端上次签发的 X-Reservation-Token，最多重发 3 次。
+ *  4. T36：建单、预占、海报限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。
  */
 package com.shop.b2b2c.controller;
 
@@ -32,6 +33,7 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class PeerPayController {
 
+    private final com.shop.b2b2c.service.ClientIpResolver ipResolver;
     private final PeerPayService peerPayService;
     private final OrderIdempotencyService idempotency;
     private final TradeCostLimiter costLimiter;
@@ -44,7 +46,7 @@ public class PeerPayController {
         if (req == null) {
             throw new BusinessException(400, "请求参数不能为空");
         }
-        costLimiter.checkOrderCreation(request != null ? request.getRemoteAddr() : null, req.getBuyerContact());
+        costLimiter.checkOrderCreation(request != null ? ipResolver.resolve(request) : null, req.getBuyerContact());
         Map<String, Object> res = idempotency.execute("buyer:guest", key, req, () -> peerPayService.createBuyerPeerPay(req));
         return R.ok("求助代付发起成功", res);
     }
@@ -68,7 +70,7 @@ public class PeerPayController {
         if (token == null || token.isBlank()) {
             throw new BusinessException(400, "代付凭证不能为空");
         }
-        costLimiter.checkPreLock(request != null ? request.getRemoteAddr() : null, token);
+        costLimiter.checkPreLock(request != null ? ipResolver.resolve(request) : null, token);
         PeerPayDTOs.PreLockResult result = peerPayService.preLockInventory(token, idempotencyKey, reservationToken);
         return R.ok(result.getMessage(), result);
     }
@@ -95,7 +97,7 @@ public class PeerPayController {
         if (token == null || token.isBlank()) {
             throw new BusinessException(400, "代付凭证不能为空");
         }
-        costLimiter.checkPosterGeneration(request != null ? request.getRemoteAddr() : null, token);
+        costLimiter.checkPosterGeneration(request != null ? ipResolver.resolve(request) : null, token);
         String base64 = peerPayService.regeneratePoster(token);
         return R.ok("海报获取成功", base64);
     }

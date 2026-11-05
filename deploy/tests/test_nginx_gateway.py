@@ -1,5 +1,6 @@
 # 文件：test_nginx_gateway.py
 # 用途：用真实Nginx、临时静态产物及本地假后端验证D35网关和D37探针透传，并锁定部署脚本探针契约。
+# T36/R06：另验证模板覆盖而非追加 X-Forwarded-For，以及两云登录限流 location 使用真实路径 /api/v1/auth/login。
 # 维护注意：Linux/WSL运行，随机回环端口且不改/etc或系统服务；缺Nginx跳过不算通过。
 # 假页面与后端不能证明真实Vue、Spring Boot、数据库/Redis或TLS已验收；只终止本用例创建的进程。
 import http.client
@@ -27,7 +28,8 @@ class BackendFixture(BaseHTTPRequestHandler):
         if self.path == "/api/v1/auth/ready" and not getattr(self.server, "ready", True):
             status = 503
         body = json.dumps({"code": status, "data": {"status": "UP" if status == 200 else "DOWN", "uri": self.path,
-                                                   "forwardedProto": self.headers.get("X-Forwarded-Proto")}}).encode()
+                                                   "forwardedProto": self.headers.get("X-Forwarded-Proto"),
+                                                   "forwardedFor": self.headers.get("X-Forwarded-For")}}).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         if self.path == "/api/v1/auth/ready":
@@ -118,10 +120,11 @@ http {{
             self.process.kill()
             self.process.communicate(timeout=3)
 
-    def request(self, path, user_agent="fixture-client"):
+    def request(self, path, user_agent="fixture-client", extra_headers=None):
         connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=3)
+        headers = {"User-Agent": user_agent, **(extra_headers or {})}
         try:
-            connection.request("GET", path, headers={"User-Agent": user_agent})
+            connection.request("GET", path, headers=headers)
             response = connection.getresponse()
             return response.status, dict((key.lower(), value) for key, value in response.getheaders()), response.read().decode()
         finally:
@@ -159,6 +162,13 @@ http {{
         self.assertEqual("http", data["forwardedProto"])
         self.assertEqual(401, self.request("/api/v1/protected")[0])
 
+    def test_forged_forwarded_for_is_overwritten_by_gateway(self):
+        """T36：外部伪造 X-Forwarded-For 不得透传，网关必须用直连地址覆盖。"""
+        status, _, body = self.request(
+            "/api/v1/public/products", extra_headers={"X-Forwarded-For": "203.0.113.5"})
+        self.assertEqual(200, status)
+        self.assertEqual("127.0.0.1", json.loads(body)["data"]["forwardedFor"])
+
     def test_health_uses_application_endpoint_instead_of_static_success(self):
         status, _, body = self.request("/healthz", "curl/8")
         self.assertEqual(200, status)
@@ -195,6 +205,24 @@ class ProbeScriptContractTest(unittest.TestCase):
         executable = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
         self.assertIsNone(re.search(r"config\s+set\s+stop-writes-on-bgsave-error\s+no", executable, re.I))
         self.assertIsNone(re.search(r"config\s+rewrite", executable, re.I))
+
+    def test_gateway_templates_override_forwarded_for(self):
+        for rel in ["nginx/nginx.prod.conf", "aliyun/server/nginx-gmall.conf",
+                    "aliyun/server/nginx-gmall-bootstrap.conf",
+                    "tencent/server/nginx-shop.conf", "tencent/server/nginx-shop-bootstrap.conf"]:
+            with self.subTest(rel=rel):
+                conf = (TEMPLATE.parents[1] / rel).read_text(encoding="utf-8")
+                self.assertNotIn("$proxy_add_x_forwarded_for", conf, "不得追加客户端可伪造的 XFF")
+                # 各模板对齐列宽不同，这里只锁定“用直连地址覆盖”的语义，不锁定空格数量。
+                self.assertRegex(conf, r"X-Forwarded-For\s+\$remote_addr")
+
+    def test_cloud_login_rate_limit_uses_real_path(self):
+        for rel in ["aliyun/server/nginx-gmall.conf", "aliyun/server/nginx-gmall-bootstrap.conf",
+                    "tencent/server/nginx-shop.conf", "tencent/server/nginx-shop-bootstrap.conf"]:
+            with self.subTest(rel=rel):
+                conf = (TEMPLATE.parents[1] / rel).read_text(encoding="utf-8")
+                self.assertIn("location = /api/v1/auth/login", conf)
+                self.assertNotIn("/api/admin/auth/login", conf)
 
     def test_tencent_deploy_uses_readiness_and_checks_http_failure(self):
         script = (TEMPLATE.parents[1] / "tencent/server/04-deploy.sh").read_text(encoding="utf-8")

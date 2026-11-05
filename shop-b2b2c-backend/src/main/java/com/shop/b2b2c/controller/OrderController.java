@@ -1,7 +1,7 @@
 /*
  * 文件：OrderController.java
  * 用途：待付款建单、免登录查单、商家发货、平台订单及统一状态统计入口；建单代付编码复用PeerStatus。
- * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入，退款及已结算指标不可用。分页/SQL聚合仍待D30处理。Q13-A（2026-11-06 口径澄清）：实物订单发货对店长与员工开放；推单/改价、资金操作、卡密明文与虚拟履约仍仅店长。
+ * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入，退款及已结算指标不可用。分页/SQL聚合仍待D30处理。Q13-A（2026-11-06 口径澄清）：实物订单发货对店长与员工开放；推单/改价、资金操作、卡密明文与虚拟履约仍仅店长。T36：建单/查单限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。
  */
 package com.shop.b2b2c.controller;
 
@@ -36,6 +36,7 @@ public class OrderController {
     /** T08/Q15：所有新订单统一 15 分钟数据库支付截止时间，不再依赖内存计时或 NULL 放行。 */
     private static final long ORDER_LOCK_MINUTES = 15L;
 
+    private final com.shop.b2b2c.service.ClientIpResolver ipResolver;
     private final TradeOrderMapper orderMapper;
     private final TradeOrderItemMapper itemMapper;
     private final MerchantStoreMapper storeMapper;
@@ -69,7 +70,7 @@ public class OrderController {
         if (dto == null) {
             throw new BusinessException(400, "请求参数不能为空");
         }
-        costLimiter.checkOrderCreation(request != null ? request.getRemoteAddr() : null, dto.getBuyerContact());
+        costLimiter.checkOrderCreation(request != null ? ipResolver.resolve(request) : null, dto.getBuyerContact());
         return R.ok("订单已创建，等待付款；支付通道暂未开放",
                 idempotency.execute("checkout:guest", key, dto, () -> checkout(dto).getData()));
     }
@@ -182,7 +183,7 @@ public class OrderController {
             @RequestBody com.shop.b2b2c.dto.BuyerLookupRequest request,
             jakarta.servlet.http.HttpServletRequest servletRequest, jakarta.servlet.http.HttpServletResponse response) {
         response.setHeader("Cache-Control", "no-store");
-        return R.ok("订单查询成功", buyerQueries.lookup(request, servletRequest.getRemoteAddr()));
+        return R.ok("订单查询成功", buyerQueries.lookup(request, ipResolver.resolve(servletRequest)));
     }
 
     // ==========================================

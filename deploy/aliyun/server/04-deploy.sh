@@ -511,7 +511,9 @@ if [[ "${DO_HEALTHCHECK}" == "yes" ]]; then
 
   if [[ "${HAVE_CERT}" == "yes" ]]; then
     log "执行 HTTPS 443 网关探测 (${SERVER_NAME})..."
-    if ! curl -fsS --max-time 8 --resolve "${SERVER_NAME}:443:127.0.0.1" \
+    # 使用非爬虫 UA，避免被网关的自定义爬虫规则误拦；仍走真实 443 与证书校验。
+    if ! curl -fsS --max-time 8 -A "shop-deploy-healthcheck/1.0" \
+         --resolve "${SERVER_NAME}:443:127.0.0.1" \
          "https://${SERVER_NAME}/api/v1/auth/ready" 2>/dev/null | grep -q '"code":200'; then
       warn "HTTPS 443 探测失败，最近 Nginx 错误日志："
       tail -n 20 /var/log/nginx/error.log 2>/dev/null || true

@@ -12,6 +12,7 @@ import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import com.shop.b2b2c.mapper.SysUserMapper;
 import com.shop.b2b2c.service.AuthLoginLimiter;
 import com.shop.b2b2c.service.AuthSessionService;
+import com.shop.b2b2c.service.ClientIpResolver;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.*;
@@ -86,7 +87,7 @@ class AuthBoundaryTest {
         var redis = mock(StringRedisTemplate.class);
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenThrow(new IllegalStateException("private-redis-detail"));
         var users = mock(SysUserMapper.class);
-        var controller = new AuthController(users, mock(AuthSessionService.class), mock(MerchantStoreMapper.class), new AuthLoginLimiter(redis, 20, 100, 300));
+        var controller = new AuthController(users, mock(AuthSessionService.class), mock(MerchantStoreMapper.class), new AuthLoginLimiter(redis, 20, 100, 300), new ClientIpResolver("127.0.0.1,::1"));
         var dto = new AuthController.LoginDTO(); dto.setUsername("fixture"); dto.setPassword("fixture-password");
         var error = assertThrows(BusinessException.class, () -> controller.login(dto, new MockHttpServletRequest()));
         assertEquals(503, error.getCode()); assertFalse(error.getMessage().contains("private-redis-detail"));
@@ -114,7 +115,7 @@ class AuthBoundaryTest {
     @ValueSource(strings = {"nullBody", "nullUsername", "blankUsername", "longUsername", "nullPassword", "emptyPassword", "longPassword"})
     void malformedCredentialsAreRejectedBeforeAccountLookup(String scenario) {
         var limiter = mock(AuthLoginLimiter.class); var users = mock(SysUserMapper.class);
-        var controller = new AuthController(users, mock(AuthSessionService.class), mock(MerchantStoreMapper.class), limiter);
+        var controller = new AuthController(users, mock(AuthSessionService.class), mock(MerchantStoreMapper.class), limiter, new ClientIpResolver("127.0.0.1,::1"));
         var dto = new AuthController.LoginDTO(); dto.setUsername("fixture"); dto.setPassword("fixture-password");
         switch (scenario) {
             case "nullUsername" -> dto.setUsername(null);

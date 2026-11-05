@@ -1,7 +1,7 @@
 /*
  * 文件：AuthController.java
  * 用途：管理员和商家登录、退出、当前身份及存活探针接口。
- * 维护注意：密码用BCrypt验证；登录先限制连接IP，再校验参数并限制账号，Redis故障拒绝登录；退出撤销服务端会话；me校验账号状态和授权变化；health仅为存活响应，不代表数据库和Redis就绪。Q13-A：员工仅返回店名/编码/公告/Logo/电话白名单，身份证默认脱敏。
+ * 维护注意：密码用BCrypt验证；登录先限制连接IP，再校验参数并限制账号，Redis故障拒绝登录；退出撤销服务端会话；me校验账号状态和授权变化；health仅为存活响应，不代表数据库和Redis就绪。Q13-A：员工仅返回店名/编码/公告/Logo/电话白名单，身份证默认脱敏。T36：限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For，直连客户端自报头不生效。
  */
 package com.shop.b2b2c.controller;
 
@@ -33,6 +33,7 @@ public class AuthController {
     private final com.shop.b2b2c.service.AuthSessionService sessions;
     private final MerchantStoreMapper storeMapper;
     private final com.shop.b2b2c.service.AuthLoginLimiter loginLimiter;
+    private final com.shop.b2b2c.service.ClientIpResolver ipResolver;
 
     @Data
     public static class LoginDTO {
@@ -53,7 +54,7 @@ public class AuthController {
     @Operation(summary = "管理员/商家后台统一登录 (基于 Sa-Token 多端会话)")
     @PostMapping("/login")
     public R<Map<String, Object>> login(@RequestBody LoginDTO dto, jakarta.servlet.http.HttpServletRequest request) {
-        loginLimiter.checkAddress(request.getRemoteAddr());
+        loginLimiter.checkAddress(ipResolver.resolve(request));
         if (dto == null || dto.getUsername() == null || dto.getUsername().isBlank() || dto.getUsername().length() > 64
                 || dto.getPassword() == null || dto.getPassword().isEmpty() || dto.getPassword().length() > 1024) {
             throw new BusinessException(400, "请填写有效的账号和密码");
