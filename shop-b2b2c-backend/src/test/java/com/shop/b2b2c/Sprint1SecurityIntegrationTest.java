@@ -2079,6 +2079,59 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    @DisplayName("T08/Q15: 直购、买家代付、卖家推单建单时均写入约 15 分钟数据库支付截止时间")
+    void t08EveryNewOrderWritesDatabaseDeadline() {
+        String checkoutSn = (String) orderController.checkout(checkoutRequest()).getData().get("orderSn");
+        assertFifteenMinuteDeadline(orders.findByOrderSn(checkoutSn).orElseThrow());
+
+        PeerPayDTOs.BuyerCreateRequest buyer = new PeerPayDTOs.BuyerCreateRequest();
+        buyer.setProductId(1L); buyer.setSkuId(1L); buyer.setQuantity(1); buyer.setBuyerContact("buyer");
+        String buyerSn = (String) payments.createBuyerPeerPay(buyer).get("orderSn");
+        assertFifteenMinuteDeadline(orders.findByOrderSn(buyerSn).orElseThrow());
+
+        PeerPayDTOs.PushPayCreateRequest push = new PeerPayDTOs.PushPayCreateRequest();
+        push.setProductId(1L); push.setSkuId(1L); push.setQuantity(1);
+        String pushSn = (String) payments.createPushPayOrder(push, 1L).get("orderSn");
+        assertFifteenMinuteDeadline(orders.findByOrderSn(pushSn).orElseThrow());
+    }
+
+    private void assertFifteenMinuteDeadline(TradeOrder order) {
+        assertNotNull(order.getLockExpireTime());
+        long minutes = java.time.Duration.between(LocalDateTime.now(), order.getLockExpireTime()).toMinutes();
+        assertTrue(minutes >= 14 && minutes <= 15, "截止时间应约为 15 分钟，实际剩余分钟=" + minutes);
+    }
+
+    @Test
+    @DisplayName("T08: 普通订单超过数据库截止时间或截止时间为 NULL 时拒绝落账并记录 LATE_PAYMENT")
+    void t08ExpiredOrNullDeadlineOrderIsRejected() {
+        TradeOrder expired = unpaid("t08-expired", 1);
+        expired.setPeerPayToken(null);
+        expired.setPeerStatus("INIT");
+        expired.setLockExpireTime(LocalDateTime.now().minusSeconds(1));
+        orders.save(expired);
+        var expiredEvent = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel("WECHAT").payTradeNo("TX_T08_EXPIRED").orderSn(expired.getOrderSn())
+                .merchantId(1L).payAmount(java.math.BigDecimal.TEN).currency("CNY").payerId("payer").build();
+        var ex = assertThrows(BusinessException.class, () -> paymentEventService.processPaymentEvent(expiredEvent));
+        assertTrue(ex.getMessage().contains("超过 15 分钟"));
+        assertEquals("LATE_PAYMENT", paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T08_EXPIRED").getEventStatus());
+        assertEquals("UNPAID", orders.selectById(expired.getId()).getOrderStatus());
+
+        TradeOrder legacy = unpaid("t08-null", 1);
+        legacy.setPeerPayToken(null);
+        legacy.setPeerStatus("INIT");
+        legacy.setLockExpireTime(null);
+        orders.save(legacy);
+        var legacyEvent = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
+                .channel("WECHAT").payTradeNo("TX_T08_NULL").orderSn(legacy.getOrderSn())
+                .merchantId(1L).payAmount(java.math.BigDecimal.TEN).currency("CNY").payerId("payer").build();
+        assertThrows(BusinessException.class, () -> paymentEventService.processPaymentEvent(legacyEvent));
+        assertEquals("LATE_PAYMENT", paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T08_NULL").getEventStatus());
+        assertEquals("UNPAID", orders.selectById(legacy.getId()).getOrderStatus());
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
     void publicProductAndQuickSearchNeverExposePrivateStoreFields() throws Exception {
         unpaid("privacy", 1);
         for (var request : List.of(get("/api/v1/public/products/1"),

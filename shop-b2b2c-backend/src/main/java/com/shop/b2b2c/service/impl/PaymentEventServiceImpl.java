@@ -172,6 +172,11 @@ public class PaymentEventServiceImpl implements PaymentEventService {
             }
             // 同一事件重放且交付不完整：保留已支付事实，仅补交付，不再重复扣库存/CAS。
         } else {
+            // T08: 普通订单与代付订单统一以数据库 lock_expire_time 判定支付截止，NULL 不再放行。
+            if (order.getLockExpireTime() == null || !order.getLockExpireTime().isAfter(LocalDateTime.now())) {
+                reject(pe.getId(), "LATE_PAYMENT", "订单已超过 15 分钟支付截止时间，资金进入迟到支付处理");
+            }
+
             // 7. CAS原子更新订单为PAID
             int updated;
             if (order.getPeerPayToken() != null && !order.getPeerPayToken().isBlank()) {

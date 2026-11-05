@@ -1,7 +1,11 @@
 /*
  * 文件：TradeOrderMapper.java
  * 用途：订单查询、行锁和有效待付预占的支付CAS迁移；SQL代付编码复用PeerStatus。
- * 维护注意：列表/统计投影不读poster_url，不能将这些不完整实体当作订单全量快照；已存海报单独按ID和商户读取。所有写者须保持订单行锁顺序，支付CAS须检查影响行数，事务外FOR UPDATE无并发保护。
+ * 维护注意：
+ *  1. 列表/统计投影不读 poster_url，不能将这些不完整实体当作订单全量快照；已存海报单独按 ID 和商户读取。
+ *  2. 所有写者须保持订单行锁顺序，支付 CAS 须检查影响行数，事务外 FOR UPDATE 无并发保护。
+ *  3. T08 起普通订单支付 CAS 也必须校验 lock_expire_time > 当前时间，不再对 NULL 截止时间放行；
+ *     存量 UNPAID 的 NULL 截止时间由 V1 迁移按 created_at + 15 分钟回填。
  */
 package com.shop.b2b2c.mapper;
 
@@ -53,7 +57,7 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
 
     @org.apache.ibatis.annotations.Update("UPDATE trade_order SET order_status = 'PAID', peer_status = '" + PeerStatus.PAID + "', "
             + "peer_payer_id = #{payerId}, pay_trade_no = #{tradeNo}, payment_channel = #{channel}, lock_expire_time = NULL "
-            + "WHERE id = #{id} AND order_status = 'UNPAID' AND (lock_expire_time IS NULL OR lock_expire_time > CURRENT_TIMESTAMP)")
+            + "WHERE id = #{id} AND order_status = 'UNPAID' AND lock_expire_time > CURRENT_TIMESTAMP")
     int markOrderPaidIfUnpaid(@org.apache.ibatis.annotations.Param("id") Long id,
                               @org.apache.ibatis.annotations.Param("payerId") String payerId,
                               @org.apache.ibatis.annotations.Param("tradeNo") String tradeNo,

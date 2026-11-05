@@ -114,6 +114,10 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setPeerStatus(PeerStatus.INIT); // 两段式 Stage 1: 意向生成
         order.setPeerMessage(req.getPeerMessage() != null && !req.getPeerMessage().trim().isEmpty() 
                 ? req.getPeerMessage().trim() : "好心人帮我买个单呗，谢谢老铁！");
+        // T08/Q15：所有订单在创建时写数据库截止时间；预占成功后再由 preLock 刷新为预占到期时刻。
+        LocalDateTime createdAt = LocalDateTime.now();
+        order.setCreatedAt(createdAt);
+        order.setLockExpireTime(createdAt.plusMinutes(DEFAULT_LOCK_MINUTES));
 
         // 保存订单主表
         order = orderMapper.save(order);
@@ -217,6 +221,10 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setPeerStatus(PeerStatus.INIT);
         order.setPeerMessage(req.getSellerNote() != null && !req.getSellerNote().isBlank() 
                 ? req.getSellerNote().trim() : "这是商家为您定制的支付账单，请查收完成付款");
+        // T08/Q15：推单同样写 15 分钟数据库截止时间，禁止依赖内存计时。
+        LocalDateTime createdAt = LocalDateTime.now();
+        order.setCreatedAt(createdAt);
+        order.setLockExpireTime(createdAt.plusMinutes(DEFAULT_LOCK_MINUTES));
 
         order = orderMapper.save(order);
 

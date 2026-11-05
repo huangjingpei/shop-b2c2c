@@ -33,6 +33,9 @@ import java.util.*;
 @RequiredArgsConstructor
 public class OrderController {
 
+    /** T08/Q15：所有新订单统一 15 分钟数据库支付截止时间，不再依赖内存计时或 NULL 放行。 */
+    private static final long ORDER_LOCK_MINUTES = 15L;
+
     private final TradeOrderMapper orderMapper;
     private final TradeOrderItemMapper itemMapper;
     private final MerchantStoreMapper storeMapper;
@@ -133,6 +136,10 @@ public class OrderController {
         order.setOrderStatus("UNPAID");
         order.setPeerStatus(PeerStatus.INIT);
         order.setQueryToken(queryToken);
+        // T08/Q15：普通直购单与代付单统一写入数据库截止时间，服务重启或内存任务丢失也不会越过 15 分钟。
+        LocalDateTime createdAt = LocalDateTime.now();
+        order.setCreatedAt(createdAt);
+        order.setLockExpireTime(createdAt.plusMinutes(ORDER_LOCK_MINUTES));
 
         order = orderMapper.save(order);
 
