@@ -1,12 +1,13 @@
 /*
  * 文件：MerchantController.java
  * 用途：平台商户配置及商家本店资料接口。
- * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效；进件账户仍为本地模拟，不能将PASSED视为真实渠道开通。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。
+ * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效；进件账户仍为本地模拟，不能将PASSED视为真实渠道开通。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。Q13-A：员工资料读取走白名单，身份证/银行卡默认脱敏，资料修改仅店长。
  */
 package com.shop.b2b2c.controller;
 
 import cn.dev33.satoken.secure.BCrypt;
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.PiiMasking;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.ManagementGuards;
 import com.shop.b2b2c.common.ServiceFeeStatus;
@@ -46,7 +47,9 @@ public class MerchantController {
     @Operation(summary = "【超管】全平台入驻店铺列表")
     @GetMapping("/api/v1/admin/merchants")
     public R<List<MerchantStore>> listAllMerchants() {
-        return R.ok(storeMapper.selectList(null));
+        List<MerchantStore> stores = storeMapper.selectList(null);
+        stores.forEach(store -> store.setIdCardNumber(PiiMasking.idCard(store.getIdCardNumber())));
+        return R.ok(stores);
     }
 
     @Data
@@ -129,6 +132,8 @@ public class MerchantController {
             paymentAccountMapper.save(account);
         }
 
+        // 响应体默认脱敏，数据库仍保存进件原件；超管需要原文时走受控审批流程，不复用列表接口。
+        store.setIdCardNumber(PiiMasking.idCard(store.getIdCardNumber()));
         return R.ok("商户开通成功", store);
     }
 
@@ -207,11 +212,19 @@ public class MerchantController {
         MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException("店铺不存在"));
 
-        MerchantPaymentAccount paymentAccount = paymentAccountMapper.findByMerchantId(merchantId).orElse(null);
-
         Map<String, Object> map = new HashMap<>();
-        map.put("store", store);
-        map.put("paymentAccount", paymentAccount);
+        if (com.shop.b2b2c.service.AuthSessionService.isManagementRole()) {
+            store.setIdCardNumber(PiiMasking.idCard(store.getIdCardNumber()));
+            map.put("store", store);
+            MerchantPaymentAccount paymentAccount = paymentAccountMapper.findByMerchantId(merchantId).orElse(null);
+            if (paymentAccount != null) {
+                paymentAccount.setBankAccountNumber(PiiMasking.bankAccount(paymentAccount.getBankAccountNumber()));
+            }
+            map.put("paymentAccount", paymentAccount);
+        } else {
+            // Q13-A：员工只能读取展示资料，不返回经营者姓名、身份证、费率与收款账户。
+            map.put("store", AuthController.staffStoreView(store));
+        }
         return R.ok(map);
     }
 
@@ -224,7 +237,7 @@ public class MerchantController {
         ManagementGuards.text(updateDTO.getLogoUrl(), 255, false);
         ManagementGuards.text(updateDTO.getContactPhone(), 32, false);
         ManagementGuards.text(updateDTO.getCustomPayQrcode(), 512, false);
-        cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         requireStore(merchantId);
         storeMapper.updateProfileOnly(merchantId, updateDTO.getNotice(), updateDTO.getLogoUrl(),

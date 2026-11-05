@@ -32,6 +32,10 @@ test('角色主页与未声明授权策略默认拒绝', () => {
   assert.equal(canEnter({ ...merchant, roleCode: 'UNKNOWN' }, merchantRoute), false)
   assert.equal(canEnter({ ...merchant, merchantId: null }, merchantRoute), false)
   assert.equal(canEnter(merchant, { path: '/future', meta: {} }), false)
+  // Q13-A：卡密库路由声明 role=MERCHANT_ADMIN，员工即使直接输入地址也不得进入。
+  const cardRoute = { path: '/merchant/cards', meta: { requiresMerchant: true, role: 'MERCHANT_ADMIN' } }
+  assert.equal(canEnter(merchant, cardRoute), true)
+  assert.equal(canEnter({ ...merchant, roleCode: 'MERCHANT_STAFF' }, cardRoute), false)
 })
 test('守卫采用服务端角色覆盖伪造缓存，拒绝商家平台路由', async () => {
   const s = storage()

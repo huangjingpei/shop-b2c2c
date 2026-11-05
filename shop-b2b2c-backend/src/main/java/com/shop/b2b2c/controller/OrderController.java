@@ -1,7 +1,7 @@
 /*
  * 文件：OrderController.java
  * 用途：待付款建单、免登录查单、商家发货、平台订单及统一状态统计入口；建单代付编码复用PeerStatus。
- * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入，退款及已结算指标不可用。分页/SQL聚合仍待D30处理。
+ * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入，退款及已结算指标不可用。分页/SQL聚合仍待D30处理。Q13-A：推单、发货、虚拟履约仅店长可调用，员工请求必须在接口层被拒绝。
  */
 package com.shop.b2b2c.controller;
 
@@ -328,6 +328,7 @@ public class OrderController {
         if (id == null || id <= 0) {
             throw new BusinessException(400, "订单编号不正确");
         }
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         TradeOrder order = Optional.ofNullable(orderMapper.lockById(id))
                 .orElseThrow(() -> new BusinessException("订单不存在"));
@@ -359,6 +360,7 @@ public class OrderController {
     @PostMapping("/api/v1/merchant/orders/push-pay")
     public R<Map<String, Object>> createPushPayOrder(@RequestBody PeerPayDTOs.PushPayCreateRequest req,
             @RequestHeader("Idempotency-Key") String key) {
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
         Long merchantId = SecurityUtils.getCurrentMerchantId();
         if (merchantId == null) {
             throw new BusinessException("仅限商家账号操作推单");
@@ -374,12 +376,7 @@ public class OrderController {
         if (id == null || id <= 0) {
             throw new BusinessException(400, "订单编号不正确");
         }
-        try {
-            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
-                cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
-            }
-        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
-        }
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
         Long merchantId = SecurityUtils.getCurrentMerchantId();
         if (merchantId == null) {
             throw new BusinessException("仅限商家账号履约交付");

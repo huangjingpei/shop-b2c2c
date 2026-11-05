@@ -53,7 +53,7 @@
         <router-link to="/merchant/products" class="link-btn">
           <el-icon><Plus /></el-icon> 发布新商品/变体
         </router-link>
-        <router-link to="/merchant/cards" class="link-btn highlight">
+        <router-link v-if="canManageCards" to="/merchant/cards" class="link-btn highlight">
           <el-icon><CreditCard /></el-icon> 批量导入虚拟卡密 (16688秒发)
         </router-link>
         <router-link to="/merchant/orders" class="link-btn">
@@ -77,6 +77,8 @@ const storeInfo = ref({})
 const productCount = ref('—')
 const stats = ref(statisticsView())
 const banner = computed(() => storeDisplay(storeInfo.value))
+// Q13-A：前端仅做入口隐藏，最终以路由守卫和后端接口拒绝为准。
+const canManageCards = computed(() => localStorage.getItem('roleCode') !== 'MERCHANT_STAFF')
 
 const loadData = async () => {
   try {

@@ -1,14 +1,16 @@
 /*
  * 文件：AuthController.java
  * 用途：管理员和商家登录、退出、当前身份及存活探针接口。
- * 维护注意：密码用BCrypt验证；登录先限制连接IP，再校验参数并限制账号，Redis故障拒绝登录；退出撤销服务端会话；me校验账号状态和授权变化；health仅为存活响应，不代表数据库和Redis就绪。员工细粒度权限尚待完善。
+ * 维护注意：密码用BCrypt验证；登录先限制连接IP，再校验参数并限制账号，Redis故障拒绝登录；退出撤销服务端会话；me校验账号状态和授权变化；health仅为存活响应，不代表数据库和Redis就绪。Q13-A：员工仅返回店名/编码/公告/Logo/电话白名单，身份证默认脱敏。
  */
 package com.shop.b2b2c.controller;
 
 import cn.dev33.satoken.secure.BCrypt;
 import cn.dev33.satoken.stp.StpUtil;
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.PiiMasking;
 import com.shop.b2b2c.common.R;
+import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.entity.SysUser;
 import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import com.shop.b2b2c.mapper.SysUserMapper;
@@ -113,7 +115,7 @@ public class AuthController {
     @GetMapping("/me")
     public R<Map<String, Object>> getProfile() {
         SysUser user = sessions.requireCurrentUser();
-
+        // Q13-A：角色快照已核对；员工仅返回展示资料白名单。
         Map<String, Object> res = new HashMap<>();
         res.put("id", user.getId());
         res.put("username", user.getUsername());
@@ -123,9 +125,47 @@ public class AuthController {
 
         if (user.getMerchantId() != null) {
             storeMapper.findById(user.getMerchantId()).ifPresent(store -> {
-                res.put("store", store);
+                res.put("store", com.shop.b2b2c.service.AuthSessionService.isManagementRole()
+                        ? maskedStore(store) : staffStoreView(store));
             });
         }
         return R.ok(res);
+    }
+
+    /** Q13-A：店长/超管可读店铺资料，但身份证等 PII 默认脱敏后返回。 */
+    private Map<String, Object> maskedStore(MerchantStore store) {
+        Map<String, Object> view = new HashMap<>();
+        view.put("id", store.getId());
+        view.put("storeCode", store.getStoreCode());
+        view.put("storeName", store.getStoreName());
+        view.put("logoUrl", store.getLogoUrl());
+        view.put("notice", store.getNotice());
+        view.put("merchantType", store.getMerchantType());
+        view.put("ownerName", store.getOwnerName());
+        view.put("idCardNumber", PiiMasking.idCard(store.getIdCardNumber()));
+        view.put("contactPhone", store.getContactPhone());
+        view.put("status", store.getStatus());
+        view.put("commissionRate", store.getCommissionRate());
+        view.put("monthlyFee", store.getMonthlyFee());
+        view.put("feeFreeUntil", store.getFeeFreeUntil());
+        view.put("feeStatus", store.getFeeStatus());
+        view.put("paymentChannelType", store.getPaymentChannelType());
+        view.put("customPayQrcode", store.getCustomPayQrcode());
+        view.put("createdAt", store.getCreatedAt());
+        view.put("updatedAt", store.getUpdatedAt());
+        return view;
+    }
+
+    /** Q13-A：员工只读展示资料，不含经营者姓名、身份证、费率与收款配置。 */
+    static Map<String, Object> staffStoreView(MerchantStore store) {
+        Map<String, Object> view = new HashMap<>();
+        view.put("id", store.getId());
+        view.put("storeCode", store.getStoreCode());
+        view.put("storeName", store.getStoreName());
+        view.put("logoUrl", store.getLogoUrl());
+        view.put("notice", store.getNotice());
+        view.put("contactPhone", store.getContactPhone());
+        view.put("status", store.getStatus());
+        return view;
     }
 }

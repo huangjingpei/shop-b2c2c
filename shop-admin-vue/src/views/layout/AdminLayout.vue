@@ -95,7 +95,7 @@
               <el-icon><Goods /></el-icon>
               <span>商品发布与多规格变体</span>
             </el-menu-item>
-            <el-menu-item index="/merchant/cards">
+            <el-menu-item v-if="roleCode !== 'MERCHANT_STAFF'" index="/merchant/cards">
               <el-icon><CreditCard /></el-icon>
               <span>16688 虚拟卡密库</span>
             </el-menu-item>

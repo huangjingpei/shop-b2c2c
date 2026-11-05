@@ -102,7 +102,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("payment_event", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_store")) {
+        for (String table : List.of("payment_event", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -1942,6 +1942,7 @@ class Sprint1SecurityIntegrationTest {
         dto.setLogisticsCompany("carrier"); dto.setTrackingNumber("tracking");
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
+            security.when(SecurityUtils::getCurrentRoleCode).thenReturn("MERCHANT_ADMIN");
             assertThrows(BusinessException.class, () -> orderController.deliverOrder(order.getId(), dto));
         }
         assertEquals("PAID", orders.selectById(order.getId()).getOrderStatus());
@@ -1956,6 +1957,7 @@ class Sprint1SecurityIntegrationTest {
         dto.setLogisticsCompany("carrier"); dto.setTrackingNumber("tracking");
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
+            security.when(SecurityUtils::getCurrentRoleCode).thenReturn("MERCHANT_ADMIN");
             assertThrows(BusinessException.class, () -> orderController.deliverOrder(order.getId(), dto));
             order.setGoodsType(1); orders.save(order);
             orderController.deliverOrder(order.getId(), dto);
@@ -1970,6 +1972,7 @@ class Sprint1SecurityIntegrationTest {
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
             security.when(SecurityUtils::getCurrentUserId).thenReturn(200L);
+            security.when(SecurityUtils::getCurrentRoleCode).thenReturn("MERCHANT_ADMIN");
             assertThrows(BusinessException.class, () -> products.listCards(2L));
             assertThrows(BusinessException.class, () -> products.importCards(dto));
             dto.setProductId(1L);
@@ -1987,6 +1990,7 @@ class Sprint1SecurityIntegrationTest {
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
             security.when(SecurityUtils::getCurrentUserId).thenReturn(200L);
+            security.when(SecurityUtils::getCurrentRoleCode).thenReturn("MERCHANT_ADMIN");
             products.importCards(dto);
         }
         assertEquals(2, skus.selectById(1).getStockQuantity());
@@ -2305,6 +2309,7 @@ class Sprint1SecurityIntegrationTest {
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::getCurrentMerchantId).thenReturn(1L);
             security.when(SecurityUtils::getCurrentUserId).thenReturn(11L);
+            security.when(SecurityUtils::getCurrentRoleCode).thenReturn("MERCHANT_ADMIN");
             var first = orderController.createPushPayOrder(push, "merchant-key-12345").getData();
             assertEquals(first, orderController.createPushPayOrder(push, "merchant-key-12345").getData());
             security.when(SecurityUtils::getCurrentUserId).thenReturn(12L);
@@ -2672,6 +2677,96 @@ class Sprint1SecurityIntegrationTest {
         mvc.perform(get("/api/v1/merchant/cards/1002")
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(jsonPath("$.code").value(404));
+    }
+
+    @Test
+    void q13StaffProfileAndPiiAreMinimizedWhileManagerSeesMaskedValues() throws Exception {
+        jdbc.update("UPDATE merchant_store SET id_card_number='110101199001011234' WHERE id=1");
+        jdbc.update("INSERT INTO merchant_payment_account(id,merchant_id,channel,sub_mchid,bank_account_name,bank_account_number,bank_name) " +
+                "VALUES(1,1,'WECHAT','sub-1','张三','6222021234567890123','招商银行')");
+
+        authUser("MERCHANT_STAFF", 1L);
+        String staffToken = loginToken();
+        mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.store.storeName").value("store1"))
+                .andExpect(jsonPath("$.data.store.storeCode").value("S1"))
+                .andExpect(jsonPath("$.data.store.idCardNumber").doesNotExist())
+                .andExpect(jsonPath("$.data.store.ownerName").doesNotExist())
+                .andExpect(jsonPath("$.data.store.commissionRate").doesNotExist());
+        String staffProfile = mvc.perform(get("/api/v1/merchant/profile").header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.store.storeName").value("store1"))
+                .andExpect(jsonPath("$.data.store.idCardNumber").doesNotExist())
+                .andExpect(jsonPath("$.data.paymentAccount").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+        assertFalse(staffProfile.contains("110101199001011234"));
+        assertFalse(staffProfile.contains("6222021234567890123"));
+
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_ADMIN", 1L);
+        String managerToken = loginToken();
+        String managerProfile = mvc.perform(get("/api/v1/merchant/profile").header("Authorization", "Bearer " + managerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.store.ownerName").value("owner"))
+                .andExpect(jsonPath("$.data.store.idCardNumber").value("1101**********1234"))
+                .andExpect(jsonPath("$.data.paymentAccount.bankAccountNumber").value("****0123"))
+                .andReturn().getResponse().getContentAsString();
+        assertFalse(managerProfile.contains("110101199001011234"));
+        assertFalse(managerProfile.contains("6222021234567890123"));
+    }
+
+    @Test
+    void q13StaffCannotPushDeliverOrFulfillButManagerCan() throws Exception {
+        physicalProduct();
+        authUser("MERCHANT_STAFF", 1L);
+        String staffToken = loginToken();
+
+        PeerPayDTOs.PushPayCreateRequest push = new PeerPayDTOs.PushPayCreateRequest();
+        push.setProductId(1L); push.setSkuId(1L); push.setQuantity(1);
+        mvc.perform(post("/api/v1/merchant/orders/push-pay")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .header("Idempotency-Key", "staff-push-1")
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(push)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM trade_order WHERE peer_pay_type=2", Integer.class));
+
+        TradeOrder physical = unpaid("staff-physical", 1);
+        physical.setGoodsType(1); physical.setOrderStatus("PAID"); orders.save(physical);
+        OrderController.DeliverDTO deliver = new OrderController.DeliverDTO();
+        deliver.setLogisticsCompany("carrier"); deliver.setTrackingNumber("tracking-staff");
+        mvc.perform(post("/api/v1/merchant/orders/" + physical.getId() + "/deliver")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(deliver)))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        assertEquals("PAID", orders.selectById(physical.getId()).getOrderStatus());
+
+        TradeOrder virtual = unpaid("staff-virtual", 1);
+        virtual.setGoodsType(2); virtual.setOrderStatus("PAID"); orders.save(virtual);
+        mvc.perform(post("/api/v1/merchant/orders/" + virtual.getId() + "/fulfill-virtual")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of("serviceVoucher", "staff-voucher"))))
+                .andExpect(status().isForbidden())
+                .andExpect(jsonPath("$.code").value(403));
+        assertNull(orders.selectById(virtual.getId()).getServiceVoucher());
+
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_ADMIN", 1L);
+        String managerToken = loginToken();
+        mvc.perform(post("/api/v1/merchant/orders/" + physical.getId() + "/deliver")
+                        .header("Authorization", "Bearer " + managerToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(deliver)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        assertEquals("SHIPPED", orders.selectById(physical.getId()).getOrderStatus());
     }
 
     @Test

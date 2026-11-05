@@ -211,12 +211,7 @@ public class ProductController {
     @Operation(summary = "【商家】本店卡密去重导入")
     @PostMapping("/api/v1/merchant/cards/import")
     public R<Map<String, Object>> importCards(@RequestBody BatchImportCardDTO dto) {
-        try {
-            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
-                cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
-            }
-        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
-        }
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
         if (dto == null) throw new BusinessException(400, "请输入卡密导入资料");
         return R.ok("卡密批量导入成功", cardAssets.importCards(SecurityUtils.requireCurrentMerchantId(),
                 SecurityUtils.getCurrentUserId(), dto.getProductId(), dto.getSkuId(), dto.getCardContents()));
@@ -234,13 +229,8 @@ public class ProductController {
             response.setHeader("Cache-Control", "no-store");
         }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
-        // R04: 敏感资产严格授权，仅店长与超管可批量查阅卡密库存；员工账号无权全量导出
-        try {
-            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
-                cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
-            }
-        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
-        }
+        // R04/Q13-A: 敏感资产严格授权，仅店长与超管可查阅卡密库存；员工在接口层直接拒绝。
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
         List<ProductVirtualCard> result;
         if (skuId != null) {
             if (skuId <= 0) {
@@ -278,12 +268,7 @@ public class ProductController {
             throw new BusinessException(400, "卡密编号不正确");
         }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
-        try {
-            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
-                cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
-            }
-        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
-        }
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
         ProductVirtualCard card = cardMapper.selectById(id);
         if (card == null || !merchantId.equals(card.getMerchantId())) {
             throw new BusinessException(404, "卡密不存在或无权访问");

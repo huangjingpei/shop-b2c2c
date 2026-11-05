@@ -76,7 +76,8 @@ const routes = [
         path: '/merchant/cards',
         name: 'MerchantCards',
         component: () => import('../views/merchant/Cards.vue'),
-        meta: { title: '16688 虚拟卡密库', requiresMerchant: true }
+        // Q13-A：卡密库仅店长可达；员工即使直接输入地址也会被路由守卫与后端接口双重拒绝。
+        meta: { title: '16688 虚拟卡密库', requiresMerchant: true, role: 'MERCHANT_ADMIN' }
       },
       {
         path: '/merchant/orders',
