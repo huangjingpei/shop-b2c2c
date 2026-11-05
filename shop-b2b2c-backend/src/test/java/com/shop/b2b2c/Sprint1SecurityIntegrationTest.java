@@ -2687,7 +2687,9 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data").isArray());
+                .andExpect(jsonPath("$.data.items").isArray())
+                .andExpect(jsonPath("$.data.items[0].maskedContent").isString())
+                .andExpect(jsonPath("$.data.items[0].cardContent").doesNotExist());
 
         // 3. Single card detail: own store works, other store returns 404
         mvc.perform(get("/api/v1/merchant/cards/1001")
@@ -2699,6 +2701,75 @@ class Sprint1SecurityIntegrationTest {
         mvc.perform(get("/api/v1/merchant/cards/1002")
                         .header("Authorization", "Bearer " + adminToken))
                 .andExpect(jsonPath("$.code").value(404));
+    }
+
+    @Test
+    void t15CardRevealIsSkuScopedAndLimitedWhileExportRequiresConfirmationAndAudit() throws Exception {
+        jdbc.update("DELETE FROM product_virtual_card WHERE merchant_id=1");
+        jdbc.update("DELETE FROM card_access_audit");
+        jdbc.update("INSERT INTO product_virtual_card(id, product_id, sku_id, merchant_id, card_content, status) " +
+                "VALUES(1003, 1, 1, 1, 'RAW-CARD-1003-PASS', 0)");
+        jdbc.update("INSERT INTO product_virtual_card(id, product_id, sku_id, merchant_id, card_content, status) " +
+                "VALUES(1004, 1, 1, 1, 'RAW-CARD-1004-PASS', 0)");
+
+        authUser("MERCHANT_ADMIN", 1L);
+        String adminToken = loginToken();
+
+        // 列表只给脱敏标识+指纹，绝不解密正文
+        mvc.perform(get("/api/v1/merchant/cards").param("skuId", "1")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items[0].maskedContent").isString())
+                .andExpect(jsonPath("$.data.items[0].cardContent").doesNotExist());
+
+        // 按 SKU 限量查看：limit=1 只返回一条明文
+        mvc.perform(get("/api/v1/merchant/cards/reveal").param("skuId", "1").param("limit", "1")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].cardContent").isString());
+
+        // 超上限直接拒绝，不静默截断
+        mvc.perform(get("/api/v1/merchant/cards/reveal").param("skuId", "1").param("limit", "51")
+                        .header("Authorization", "Bearer " + adminToken))
+                .andExpect(jsonPath("$.code").value(400));
+
+        // 未二次确认不得导出，也不写审计
+        mvc.perform(post("/api/v1/merchant/cards/export")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json")
+                        .content("{\"skuId\":1,\"confirm\":false,\"onlyAvailable\":false,\"limit\":2}"))
+                .andExpect(jsonPath("$.code").value(400));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM card_access_audit", Integer.class));
+
+        // 显式确认后导出明文并写审计（操作人/数量/时间）
+        mvc.perform(post("/api/v1/merchant/cards/export")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json")
+                        .content("{\"skuId\":1,\"confirm\":true,\"onlyAvailable\":false,\"limit\":2}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.count").value(2))
+                .andExpect(jsonPath("$.data.items[0].cardContent").isString());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM card_access_audit", Integer.class));
+        assertEquals(200L, jdbc.queryForObject("SELECT actor_id FROM card_access_audit", Long.class));
+        assertEquals(2, jdbc.queryForObject("SELECT card_count FROM card_access_audit", Integer.class));
+        assertEquals("EXPORT_PLAINTEXT", jdbc.queryForObject("SELECT action FROM card_access_audit", String.class));
+
+        // 员工在接口层被拒绝，不能靠前端隐藏
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_STAFF", 1L);
+        String staffToken = loginToken();
+
+        mvc.perform(get("/api/v1/merchant/cards/reveal").param("skuId", "1")
+                        .header("Authorization", "Bearer " + staffToken))
+                .andExpect(jsonPath("$.code").value(403));
+        mvc.perform(post("/api/v1/merchant/cards/export")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content("{\"skuId\":1,\"confirm\":true,\"onlyAvailable\":false,\"limit\":2}"))
+                .andExpect(jsonPath("$.code").value(403));
     }
 
     @Test

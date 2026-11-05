@@ -124,6 +124,18 @@ CREATE TABLE IF NOT EXISTS `product_virtual_card` (
   UNIQUE KEY `uk_merchant_fingerprint` (`merchant_id`, `card_fingerprint`)
 );
 
+-- 7.1 卡密明文访问审计表 (T15)
+CREATE TABLE IF NOT EXISTS `card_access_audit` (
+  `id` BIGINT  NOT NULL AUTO_INCREMENT,
+  `merchant_id` BIGINT  NOT NULL,
+  `actor_id` BIGINT  NOT NULL,
+  `action` VARCHAR(32) NOT NULL,
+  `sku_id` BIGINT  NOT NULL,
+  `card_count` INT NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+);
+
 -- 8. 交易订单主表 (含两段式代付字段)
 CREATE TABLE IF NOT EXISTS `trade_order` (
   `id` BIGINT  NOT NULL AUTO_INCREMENT,

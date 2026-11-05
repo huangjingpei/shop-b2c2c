@@ -62,6 +62,22 @@ public interface ProductVirtualCardMapper extends BaseMapper<ProductVirtualCard>
                 .eq(ProductVirtualCard::getMerchantId, merchantId));
     }
 
+    /**
+     * 商家卡密分页/限量读取：必须带 merchantId；beforeId 为 keyset 游标，limit 由调用方校验上限。
+     * 仅用于脱敏列表与店长授权查看/导出，不向公开接口暴露。
+     */
+    default List<ProductVirtualCard> findMerchantCards(Long merchantId, Long skuId, boolean onlyAvailable,
+                                                      Long beforeId, int limit) {
+        LambdaQueryWrapper<ProductVirtualCard> query = new LambdaQueryWrapper<ProductVirtualCard>()
+                .eq(ProductVirtualCard::getMerchantId, merchantId)
+                .eq(skuId != null, ProductVirtualCard::getSkuId, skuId)
+                .eq(onlyAvailable, ProductVirtualCard::getStatus, 0)
+                .lt(beforeId != null, ProductVirtualCard::getId, beforeId)
+                .orderByDesc(ProductVirtualCard::getId)
+                .last("LIMIT " + limit);
+        return selectList(query);
+    }
+
     default List<ProductVirtualCard> findByOrderSn(String orderSn) {
         return selectList(new LambdaQueryWrapper<ProductVirtualCard>()
                 .eq(ProductVirtualCard::getOrderSn, orderSn));

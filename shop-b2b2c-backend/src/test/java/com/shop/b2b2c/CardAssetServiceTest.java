@@ -33,8 +33,10 @@ class CardAssetServiceTest {
     final ProductVirtualCardMapper cards = mock(ProductVirtualCardMapper.class);
     final ProductSkuMapper skus = mock(ProductSkuMapper.class);
     final CardImportBatchMapper batches = mock(CardImportBatchMapper.class);
+    final CardAccessAuditMapper audits = mock(CardAccessAuditMapper.class);
     final PlatformTransactionManager manager = mock(PlatformTransactionManager.class);
-    final CardAssetService service = new CardAssetService(assets, products, inventory, cards, skus, batches, manager);
+    final CardAssetService service = new CardAssetService(assets, products, inventory, cards, skus, batches, manager,
+            new com.shop.b2b2c.service.CardCipherService(), audits);
     final Product product = new Product(); final ProductSku sku = new ProductSku(); final ProductVirtualCard card = new ProductVirtualCard();
     CardVoidRecord record;
     @BeforeEach void setup() {
@@ -54,6 +56,9 @@ class CardAssetServiceTest {
         when(skus.deductStock(1L, 1L, 1L, 1)).thenReturn(1);
         when(assets.insertVoid(any())).thenAnswer(call -> { record = call.getArgument(0); return 1; });
         when(assets.voidRecord(1L, 1L)).thenAnswer(call -> record);
+        when(skus.findById(1L)).thenReturn(Optional.of(sku));
+        when(cards.findMerchantCards(eq(1L), eq(1L), anyBoolean(), isNull(), anyInt())).thenReturn(List.of(card));
+        when(audits.insert(any(CardAccessAudit.class))).thenReturn(1);
     }
     @Test void validImportKeepsCaseAndAddsOnlyInsertedQuantity() {
         var result = service.importCards(1L, 9L, 1L, 1L, List.of(" item ", "ITEM"));
@@ -205,5 +210,40 @@ class CardAssetServiceTest {
     @Test void oldIntegerStringIdsRemainCompatible() throws Exception {
         var dto = new ObjectMapper().readValue("{\"productId\":\"9\",\"skuId\":\"12\"}", ProductController.BatchImportCardDTO.class);
         assertEquals(9L, dto.getProductId()); assertEquals(12L, dto.getSkuId());
+    }
+    @Test void revealIsLimitedBySkuAndReturnsPlaintextOnlyWhenAuthorized() {
+        var items = service.revealCards(1L, 1L, 1);
+        assertEquals(1, items.size());
+        assertEquals("fixture-private", items.get(0).getCardContent());
+        var masked = com.shop.b2b2c.dto.MerchantCardView.masked(card);
+        assertFalse(masked.getCardContent() != null);
+        verify(cards).findMerchantCards(1L, 1L, false, null, 1);
+    }
+    @ParameterizedTest @ValueSource(ints = {0, 51, -1})
+    void revealRejectsLimitsAboveCapInsteadOfTruncating(int limit) {
+        assertEquals(400, assertThrows(BusinessException.class, () -> service.revealCards(1L, 1L, limit)).getCode());
+        verify(cards, never()).findMerchantCards(any(), any(), anyBoolean(), any(), anyInt());
+    }
+    @Test void exportRequiresExplicitConfirmationAndWritesAudit() {
+        var result = service.exportCards(1L, 9L, 1L, true, false, 2);
+        assertEquals(1, result.get("count"));
+        var audit = org.mockito.ArgumentCaptor.forClass(com.shop.b2b2c.entity.CardAccessAudit.class);
+        verify(audits).insert(audit.capture());
+        assertEquals(1L, audit.getValue().getMerchantId());
+        assertEquals(9L, audit.getValue().getActorId());
+        assertEquals("EXPORT_PLAINTEXT", audit.getValue().getAction());
+        assertEquals(1L, audit.getValue().getSkuId());
+        assertEquals(1, audit.getValue().getCardCount());
+    }
+    @Test void exportWithoutConfirmationNeverReadsOrAudits() {
+        assertEquals(400, assertThrows(BusinessException.class, () -> service.exportCards(1L, 9L, 1L, false, false, 2)).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> service.exportCards(1L, 9L, 1L, null, false, 2)).getCode());
+        verifyNoInteractions(cards, audits);
+    }
+    @Test void exportRejectsForeignSkuBeforeReadingPlaintext() {
+        var foreign = new com.shop.b2b2c.entity.ProductSku(); foreign.setId(2L); foreign.setMerchantId(2L);
+        when(skus.findById(2L)).thenReturn(Optional.of(foreign));
+        assertEquals(403, assertThrows(BusinessException.class, () -> service.exportCards(1L, 9L, 2L, true, false, 2)).getCode());
+        verifyNoInteractions(cards, audits);
     }
 }

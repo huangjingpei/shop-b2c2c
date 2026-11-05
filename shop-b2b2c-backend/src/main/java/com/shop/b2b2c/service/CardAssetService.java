@@ -1,11 +1,12 @@
 /*
  * 文件：CardAssetService.java
- * 用途：本店卡密去重导入、成功批次记录、安全作废及自然幂等重放。
- * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，批次/成员/卡/库存同事务。T14：仅扫描本店 fingerprint IS NULL 的历史行，解密后内存计算摘要并补写指纹；拿不到明文/解密失败的行标记无法补算、计数并跳过，不中断导入，也不输出明文。密钥轮换与默认密钥回退仍待 T15/T21。作废拒绝HELD预占和数量不一致，不反向锁预占行。
+ * 用途：本店卡密去重导入、成功批次记录、安全作废、店长按SKU限量查看明文及导出审计。
+ * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，批次/成员/卡/库存同事务。T14：仅扫描本店 fingerprint IS NULL 的历史行，解密后内存计算摘要并补写指纹；拿不到明文/解密失败的行标记无法补算、计数并跳过，不中断导入，也不输出明文。密钥按当前单密钥假设处理，轮换不在本轮范围。T15：列表只返回脱敏标识+指纹，不解密；明文查看必须按SKU限量且仅店长/超管；导出必须显式二次确认并写入 card_access_audit，审计失败不得返回明文。作废拒绝HELD预占和数量不一致，不反向锁预占行。
  */
 package com.shop.b2b2c.service;
 
 import com.shop.b2b2c.common.*;
+import com.shop.b2b2c.dto.MerchantCardView;
 import com.shop.b2b2c.entity.*;
 import com.shop.b2b2c.mapper.*;
 import lombok.extern.slf4j.Slf4j;
@@ -19,25 +20,32 @@ import java.util.*;
 @Slf4j
 @Service
 public class CardAssetService {
+    /** 按 SKU 明文查看的默认/最大条数；超过上限必须拒绝，不能静默截断。 */
+    public static final int REVEAL_DEFAULT_LIMIT = 20;
+    public static final int REVEAL_MAX_LIMIT = 50;
+    /** 单次导出上限；导出必须显式二次确认。 */
+    public static final int EXPORT_MAX_LIMIT = 500;
+
     private final CardAssetMapper assets;
     private final ProductEditingMapper products;
     private final InventoryAdjustmentMapper inventory;
     private final ProductVirtualCardMapper cards;
     private final ProductSkuMapper skus;
     private final CardImportBatchMapper batches;
+    private final CardAccessAuditMapper audits;
     private final CardCipherService cipher;
     private final TransactionTemplate transaction;
     public CardAssetService(CardAssetMapper assets, ProductEditingMapper products, InventoryAdjustmentMapper inventory,
                             ProductVirtualCardMapper cards, ProductSkuMapper skus, CardImportBatchMapper batches, PlatformTransactionManager manager) {
-        this(assets, products, inventory, cards, skus, batches, manager, new CardCipherService());
+        this(assets, products, inventory, cards, skus, batches, manager, new CardCipherService(), null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public CardAssetService(CardAssetMapper assets, ProductEditingMapper products, InventoryAdjustmentMapper inventory,
                             ProductVirtualCardMapper cards, ProductSkuMapper skus, CardImportBatchMapper batches, PlatformTransactionManager manager,
-                            CardCipherService cipher) {
+                            CardCipherService cipher, CardAccessAuditMapper audits) {
         this.assets = assets; this.products = products; this.inventory = inventory; this.cards = cards; this.skus = skus;
-        this.batches = batches; this.cipher = cipher != null ? cipher : new CardCipherService();
+        this.batches = batches; this.cipher = cipher != null ? cipher : new CardCipherService(); this.audits = audits;
         transaction = new TransactionTemplate(manager); transaction.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
     }
 
@@ -132,6 +140,59 @@ public class CardAssetService {
             log.warn("卡密历史指纹补算跳过 {} 行：缺少明文或解密失败，已标记 fingerprint_unavailable=1", unavailable);
         }
         return null;
+    }
+
+    /**
+     * T15：店长/超管按 SKU 限量查看明文。limit 必须显式在 1..50；越界直接拒绝而不是截断。
+     * 调用方必须先通过接口层角色校验；本方法只负责租户归属与限量。
+     */
+    public List<MerchantCardView> revealCards(Long merchant, Long skuId, Integer limit) {
+        requireEntry(merchant);
+        int bounded = requireLimit(limit, REVEAL_DEFAULT_LIMIT, REVEAL_MAX_LIMIT);
+        requireOwnedSku(merchant, skuId);
+        return cards.findMerchantCards(merchant, skuId, false, null, bounded).stream()
+                .map(card -> MerchantCardView.reveal(card, cipher.decrypt(card.getCardContent())))
+                .toList();
+    }
+
+    /**
+     * T15：按 SKU 导出明文卡密，必须先显式二次确认并写审计。
+     * 审计与读取在同一事务内完成；审计写入失败直接抛错，不返回明文。
+     */
+    public Map<String,Object> exportCards(Long merchant, Long actor, Long skuId, Boolean confirm,
+                                          Boolean onlyAvailable, Integer limit) {
+        requireEntry(merchant);
+        if (actor == null || actor < 1) throw new BusinessException(401, "登录状态已失效");
+        if (skuId == null || skuId < 1) throw new BusinessException(400, "请选择需要导出的SKU");
+        if (!Boolean.TRUE.equals(confirm)) throw new BusinessException(400, "导出卡密明文需要二次确认");
+        int bounded = requireLimit(limit, EXPORT_MAX_LIMIT, EXPORT_MAX_LIMIT);
+        boolean unsoldOnly = onlyAvailable == null || Boolean.TRUE.equals(onlyAvailable);
+        return transaction.execute(status -> {
+            requireOwnedSku(merchant, skuId);
+            List<ProductVirtualCard> rows = cards.findMerchantCards(merchant, skuId, unsoldOnly, null, bounded);
+            List<MerchantCardView> items = rows.stream()
+                    .map(card -> MerchantCardView.reveal(card, cipher.decrypt(card.getCardContent())))
+                    .toList();
+            CardAccessAudit audit = new CardAccessAudit();
+            audit.setMerchantId(merchant); audit.setActorId(actor); audit.setAction("EXPORT_PLAINTEXT");
+            audit.setSkuId(skuId); audit.setCardCount(items.size());
+            if (audits == null || audits.insert(audit) != 1) throw new IllegalStateException("卡密导出审计写入失败");
+            Map<String,Object> result = new LinkedHashMap<>();
+            result.put("skuId", skuId); result.put("count", items.size()); result.put("items", items);
+            return result;
+        });
+    }
+
+    private int requireLimit(Integer limit, int defaultValue, int max) {
+        int value = limit == null ? defaultValue : limit;
+        if (value < 1 || value > max) throw new BusinessException(400, "查看/导出条数必须在1至" + max + "之间");
+        return value;
+    }
+
+    private void requireOwnedSku(Long merchant, Long skuId) {
+        if (skuId == null || skuId < 1) throw new BusinessException(400, "SKU编号不正确");
+        var sku = skus.findById(skuId).orElseThrow(() -> new BusinessException(404, "SKU不存在"));
+        if (!merchant.equals(sku.getMerchantId())) throw new BusinessException(403, "无权访问其他商户卡密");
     }
 
     public CardVoidRecord voidCard(Long merchant, Long actor, Long id, String reason) {

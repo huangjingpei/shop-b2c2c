@@ -61,6 +61,23 @@ class SchemaMigrationContractTest {
     }
 
     @Test
+    void cardAccessAuditMigrationIsIdempotentAndNonDestructive() throws Exception {
+        var resource = new ClassPathResource("db/migrations/V3__s2_card_access_audit.sql");
+        assertTrue(resource.exists(), "T15 必须提供 V3 卡密明文访问审计表脚本");
+        String sql = resource.getContentAsString(StandardCharsets.UTF_8);
+
+        assertTrue(sql.contains("CREATE TABLE IF NOT EXISTS"), "建表必须可重复执行");
+        assertTrue(sql.contains("card_access_audit"));
+        assertTrue(sql.contains("merchant_id") && sql.contains("actor_id") && sql.contains("sku_id")
+                && sql.contains("card_count") && sql.contains("created_at"), "审计必须记录操作人、数量与时间");
+        assertFalse(sql.contains("card_content"), "审计表不得保存卡密正文");
+
+        assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*(DROP\\s+TABLE|TRUNCATE|DELETE|USE)\\b")
+                .matcher(sql).find(), "迁移脚本不得包含删表、清空、删数据或切库语句");
+        assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*DROP\\s+DATABASE\\b").matcher(sql).find());
+    }
+
+    @Test
     void applicationConfigWiresEnabledVersionedMigration() {
         var yaml = new YamlPropertiesFactoryBean();
         yaml.setResources(new ClassPathResource("application.yml"));
@@ -102,6 +119,7 @@ class SchemaMigrationContractTest {
         assertFalse(versions.isEmpty());
         assertTrue(versions.get(0).startsWith("V1__"));
         assertTrue(versions.stream().anyMatch(version -> version.startsWith("V2__")), "T14 的 V2 必须被迁移执行器发现");
+        assertTrue(versions.stream().anyMatch(version -> version.startsWith("V3__")), "T15 的 V3 必须被迁移执行器发现");
         assertEquals(versions.stream().sorted().toList(), versions);
     }
 }

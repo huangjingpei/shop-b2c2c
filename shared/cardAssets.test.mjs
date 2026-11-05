@@ -1,11 +1,11 @@
 /*
  * 文件：cardAssets.test.mjs
- * 用途：卡密导入SKU选择、批内边界、批次游标参数及作废权限/状态规则测试。
- * 维护注意：只使用虚构文本，不使用真实卡密；服务端另测历史去重、事务、并发和预占拒绝。本地展示判断不能作为资产授权。
+ * 用途：卡密导入SKU选择、批内边界、批次/库存游标参数、导出确认载荷及作废权限/状态规则测试。
+ * 维护注意：只使用虚构文本，不使用真实卡密；服务端另测历史去重、事务、并发、限量查看与导出审计。本地展示判断不能作为资产授权，也不能替代接口层拒绝员工。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery } from '../shop-admin-vue/src/utils/cardAssets.mjs'
+import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery, cardListQuery, cardExportPayload } from '../shop-admin-vue/src/utils/cardAssets.mjs'
 const form = () => ({ productId: 9, skuId: 12, rawText: ' Code-A \r\n\nCode-b' })
 test('批次查询只包含有界游标参数，可清空SKU筛选', () => {
   assert.deepEqual(cardBatchQuery(' 12 ', 30), { skuId: 12, beforeId: 30, limit: 20 })
@@ -16,6 +16,20 @@ for (const value of [0, -1, 1.5, '1e3', true, 'not-an-id', Number.MAX_SAFE_INTEG
     assert.throws(() => cardBatchQuery(value, null)); assert.throws(() => cardBatchQuery(null, value))
   })
 }
+test('库存查询携带仅未售筛选与游标，空SKU不发送筛选', () => {
+  assert.deepEqual(cardListQuery('12', true, 30), { skuId: 12, onlyAvailable: true, beforeId: 30, limit: 20 })
+  assert.deepEqual(cardListQuery('', false, null), { skuId: undefined, onlyAvailable: false, beforeId: undefined, limit: 20 })
+})
+for (const value of [0, -1, 1.5, '1e3', true, 'not-an-id']) {
+  test(`库存查询拒绝无效SKU或游标：${String(value)}`, () => {
+    assert.throws(() => cardListQuery(value, false, null)); assert.throws(() => cardListQuery('', false, value))
+  })
+}
+test('导出载荷固定二次确认、条数有上限且必须选择SKU', () => {
+  assert.deepEqual(cardExportPayload('12'), { skuId: 12, confirm: true, onlyAvailable: true, limit: 500 })
+  assert.deepEqual(cardExportPayload(12, false), { skuId: 12, confirm: true, onlyAvailable: false, limit: 500 })
+  for (const value of ['', null, 0, -1, 1.5, '1e3', true, 'not-an-id']) assert.throws(() => cardExportPayload(value))
+})
 test('提交实际选定的商品与SKU，保留卡密大小写', () => {
   assert.deepEqual(cardImportPayload(form()), { productId: 9, skuId: 12, cardContents: ['Code-A', 'Code-b'] })
 })

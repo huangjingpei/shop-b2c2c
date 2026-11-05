@@ -1,7 +1,7 @@
 <!--
 文件：Cards.vue
-用途：本店卡密去重导入、成功批次/成员查询、库存浏览及安全作废。
-维护注意：批次/成员游标分别管理，查询不展示卡密正文，不伪造旧批次；选择真实商品/SKU。未确认作废结果保留原因供重试，权限由服务端核验，禁止把卡密或请求配置写日志。
+用途：本店卡密去重导入、成功批次/成员查询、脱敏库存浏览、店长按SKU限量查看明文、二次确认导出及安全作废。
+维护注意：列表只展示指纹尾号派生的脱敏标识，不保存也不打印明文；单条查看与导出必须先经确认弹窗，导出结果仅在内存生成下载，不写日志/本地缓存；权限由服务端接口层核验，前端隐藏按钮不是权限边界。批次/成员游标分别管理，不伪造旧批次；未确认作废结果保留原因供重试。
 -->
 <template>
   <div class="merchant-cards">
@@ -10,18 +10,32 @@
         <h2>16688 虚拟卡密库管理 (自动秒发)</h2>
         <p>按商品与SKU批量入库；重复卡密整批拒绝，到账确认后按订单自动发卡</p>
       </div>
-      <div><el-button :disabled="loading" @click="loadCards">刷新列表</el-button><el-button v-if="currentRole === 'MERCHANT_ADMIN' || currentRole === 'SUPERADMIN'" type="primary" icon="Upload" @click="dialogVisible = true">批量录入卡密</el-button></div>
+      <div><el-button :disabled="loading" @click="loadCards(false)">刷新列表</el-button><el-button v-if="currentRole === 'MERCHANT_ADMIN' || currentRole === 'SUPERADMIN'" type="primary" icon="Upload" @click="dialogVisible = true">批量录入卡密</el-button></div>
     </div>
 
     <!-- 卡密列表 -->
     <el-card shadow="never" class="table-card">
+      <div style="display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap;">
+        <el-input v-model="cardSku" :disabled="loading" placeholder="按SKU ID筛选，留空查询本店" style="width: 260px;" />
+        <el-checkbox v-model="onlyAvailable" :disabled="loading" @change="loadCards(false)">仅未售</el-checkbox>
+        <el-button :disabled="loading" @click="loadCards(false)">查询</el-button>
+        <el-button v-if="cardNext" :disabled="loading" @click="loadCards(true)">加载更多</el-button>
+      </div>
+      <div v-if="canExport" style="display: flex; gap: 12px; margin-bottom: 12px;">
+        <el-input v-model="exportSku" :disabled="exportLoading" placeholder="导出SKU ID（明文，最多500条）" style="width: 260px;" />
+        <el-button type="warning" :loading="exportLoading" :disabled="exportLoading" @click="handleExport">二次确认后导出明文</el-button>
+      </div>
       <el-table :data="cards" stripe style="width: 100%" v-loading="loading">
         <el-table-column prop="id" label="ID" width="70" />
         <el-table-column prop="skuId" label="关联SKU" width="100" />
-        <el-table-column prop="cardContent" label="卡密内容 (激活码/账号密码/提货链接)" min-width="260">
+        <el-table-column prop="maskedContent" label="卡密内容 (脱敏)" min-width="200">
           <template #default="{ row }">
-            <code>{{ row.cardContent }}</code>
+            <code>{{ row.maskedContent }}</code>
+            <el-button v-if="canReveal" link type="primary" :loading="revealLoading === row.id" @click="revealCard(row)">查看</el-button>
           </template>
+        </el-table-column>
+        <el-table-column prop="cardFingerprint" label="指纹" min-width="160">
+          <template #default="{ row }"><code v-if="row.cardFingerprint">{{ row.cardFingerprint }}</code><span v-else style="color:#94a3b8;">--</span></template>
         </el-table-column>
         <el-table-column label="库存售出状态" width="130">
           <template #default="{ row }">
@@ -114,15 +128,19 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
-import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery } from '../../utils/cardAssets.mjs'
+import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery, cardListQuery, cardExportPayload } from '../../utils/cardAssets.mjs'
 import { merchantProductRows } from '../../utils/merchantProducts.mjs'
 
 const loading = ref(false)
 const submitLoading = ref(false)
 const dialogVisible = ref(false)
 const cards = ref([])
+const cardSku = ref(''), onlyAvailable = ref(false), cardNext = ref(null), appliedCardSku = undefined
+const revealLoading = ref(null), exportSku = ref(''), exportLoading = ref(false)
 const importProducts = ref([]), importSkus = ref([]), skuLoading = ref(false), voidLoading = ref(null)
 const currentRole = localStorage.getItem('roleCode') || ''
+const canReveal = currentRole === 'MERCHANT_ADMIN' || currentRole === 'SUPERADMIN'
+const canExport = canReveal
 const pendingVoidReasons = new Map()
 const batches = ref([]), batchSku = ref(''), batchLoading = ref(false), batchNext = ref(null)
 const members = ref([]), memberLoading = ref(false), memberNext = ref(null), selectedBatch = ref(null), membersVisible = ref(false)
@@ -164,13 +182,60 @@ const importForm = ref({
   rawText: ''
 })
 
-const loadCards = async () => {
+const loadCards = async (more = false) => {
+  if (loading.value || (more && !cardNext.value)) return
+  let params
+  try {
+    params = cardListQuery(cardSku.value, onlyAvailable.value, more ? cardNext.value : null)
+    if (more && params.skuId !== appliedCardSku) { ElMessage.warning('筛选已变化，请先查询/刷新'); return }
+  } catch (error) { ElMessage.warning(error.message); return }
   loading.value = true
   try {
-    const res = await request.get('/merchant/cards')
-    cards.value = res.data
+    const { data } = await request.get('/merchant/cards', { params })
+    cards.value = more ? [...cards.value, ...data.items] : data.items
+    cardNext.value = data.nextBeforeId; appliedCardSku = params.skuId
   } catch { /* 请求层提示，不把错误当成空库存。 */ } finally {
     loading.value = false
+  }
+}
+
+const revealCard = async row => {
+  if (revealLoading.value !== null) return
+  try {
+    await ElMessageBox.confirm('将向后端申请本条卡密明文，操作会按接口权限校验。确认查看？', '查看卡密明文', {
+      confirmButtonText: '确认查看', cancelButtonText: '取消', type: 'warning'
+    })
+  } catch { return }
+  revealLoading.value = row.id
+  try {
+    const { data } = await request.get(`/merchant/cards/${row.id}`)
+    await ElMessageBox.alert(`卡密明文：${data.cardContent}`, '卡密明文（请勿复制到聊天或日志）')
+  } catch { /* 失败由请求层提示，不在前端记录明文。 */ } finally {
+    revealLoading.value = null
+  }
+}
+
+const handleExport = async () => {
+  if (exportLoading.value) return
+  let payload
+  try { payload = cardExportPayload(exportSku.value) } catch (error) { ElMessage.warning(error.message); return }
+  try {
+    await ElMessageBox.confirm(`将导出 SKU ${payload.skuId} 最多500条明文卡密，并记录操作人、数量与时间审计。确认导出？`, '导出明文卡密', {
+      confirmButtonText: '确认导出', cancelButtonText: '取消', type: 'warning'
+    })
+  } catch { return }
+  exportLoading.value = true
+  try {
+    const { data } = await request.post('/merchant/cards/export', payload)
+    const text = data.items.map(item => item.cardContent).join('\n')
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url; link.download = `cards-sku-${data.skuId}.txt`
+    link.click(); URL.revokeObjectURL(url)
+    ElMessage.success(`已导出 ${data.count} 条，审计已记录`)
+  } catch { /* 导出失败不生成文件，错误由请求层提示。 */ } finally {
+    exportLoading.value = false
   }
 }
 

@@ -1,7 +1,7 @@
 /*
  * 文件：ProductController.java
- * 用途：商品浏览、商家发布、本店卡密去重导入及成功批次记录入口。公开列表复用固定白名单单SQL组合查询。
- * 维护注意：自动卡密发布初始库存为0；导入委托独立READ_COMMITTED资产事务，禁止在入口加外层事务。先验证租户再去重增库存，公开详情验证交易资格和店铺白名单，类型3不走卡密导入。
+ * 用途：商品浏览、商家发布、本店卡密去重导入、成功批次记录、卡密脱敏列表、按SKU限量查看明文及导出审计入口。公开列表复用固定白名单单SQL组合查询。
+ * 维护注意：自动卡密发布初始库存为0；导入委托独立READ_COMMITTED资产事务，禁止在入口加外层事务。先验证租户再去重增库存，公开详情验证交易资格和店铺白名单，类型3不走卡密导入。T15：列表绝不解密正文，只返回指纹尾号派生的脱敏标识；明文查看/导出必须在接口层要求店长或超管，导出需显式 confirm 并由服务层写审计。脱敏仅是接口返回，不等于加密或密钥轮换。
  */
 package com.shop.b2b2c.controller;
 
@@ -217,13 +217,12 @@ public class ProductController {
                 SecurityUtils.getCurrentUserId(), dto.getProductId(), dto.getSkuId(), dto.getCardContents()));
     }
 
-    public R<List<ProductVirtualCard>> listCards(Long skuId) {
-        return listCards(skuId, null);
-    }
-
-    @Operation(summary = "【商家】查询虚拟卡密库存 (R04: 权限隔离与no-store)")
+    @Operation(summary = "【商家】查询虚拟卡密库存 (T15: 脱敏列表+分页, 不解密正文)")
     @GetMapping("/api/v1/merchant/cards")
-    public R<List<ProductVirtualCard>> listCards(@RequestParam(required = false) Long skuId,
+    public R<Map<String, Object>> listCards(@RequestParam(required = false) Long skuId,
+            @RequestParam(required = false) Boolean onlyAvailable,
+            @RequestParam(required = false) Long beforeId,
+            @RequestParam(required = false) Integer limit,
             jakarta.servlet.http.HttpServletResponse response) {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
@@ -231,26 +230,80 @@ public class ProductController {
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         // R04/Q13-A: 敏感资产严格授权，仅店长与超管可查阅卡密库存；员工在接口层直接拒绝。
         com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
-        List<ProductVirtualCard> result;
+        if (beforeId != null && beforeId < 1) throw new BusinessException(400, "分页游标不正确");
+        int bounded = limit == null ? 20 : limit;
+        if (bounded < 1 || bounded > 50) throw new BusinessException(400, "每页条数必须在1至50之间");
         if (skuId != null) {
-            if (skuId <= 0) {
-                throw new BusinessException(400, "SKU编号不正确");
-            }
-            ProductSku sku = skuMapper.findById(skuId)
-                    .orElseThrow(() -> new BusinessException("SKU不存在"));
-            if (!merchantId.equals(sku.getMerchantId())) {
-                throw new BusinessException(403, "无权访问其他商户卡密");
-            }
-            result = cardMapper.findAvailableForMerchant(skuId, merchantId);
-        } else {
-            result = cardMapper.findByMerchantId(merchantId);
+            requireOwnedSku(merchantId, skuId);
         }
-        for (ProductVirtualCard c : result) {
-            if (c.getCardContent() != null) {
-                c.setCardContent(cardCipher.decrypt(c.getCardContent()));
-            }
+        // 多取一条用于判断是否还有下一页；返回体不含 cardContent，也不逐条解密。
+        List<ProductVirtualCard> rows = cardMapper.findMerchantCards(merchantId, skuId,
+                Boolean.TRUE.equals(onlyAvailable), beforeId, bounded + 1);
+        boolean hasMore = rows.size() > bounded;
+        if (hasMore) {
+            rows = rows.subList(0, bounded);
         }
+        List<com.shop.b2b2c.dto.MerchantCardView> items = rows.stream()
+                .map(com.shop.b2b2c.dto.MerchantCardView::masked).toList();
+        Map<String, Object> page = new LinkedHashMap<>();
+        page.put("items", items);
+        page.put("nextBeforeId", hasMore && !items.isEmpty() ? items.get(items.size() - 1).getId() : null);
+        return R.ok(page);
+    }
+
+    /** 仅用于兼容旧单元测试的便捷入口；响应同样只含脱敏标识。 */
+    public R<List<com.shop.b2b2c.dto.MerchantCardView>> listCards(Long skuId) {
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
+        if (skuId != null) requireOwnedSku(merchantId, skuId);
+        return R.ok(cardMapper.findMerchantCards(merchantId, skuId, false, null, 20).stream()
+                .map(com.shop.b2b2c.dto.MerchantCardView::masked).toList());
+    }
+
+    @Operation(summary = "【商家】按 SKU 限量查看卡密明文 (店长/超管, limit≤50)")
+    @GetMapping("/api/v1/merchant/cards/reveal")
+    public R<Map<String, Object>> revealCards(@RequestParam Long skuId,
+            @RequestParam(required = false) Integer limit,
+            jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
+        List<com.shop.b2b2c.dto.MerchantCardView> items = cardAssets.revealCards(merchantId, skuId, limit);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("skuId", skuId); result.put("items", items);
         return R.ok(result);
+    }
+
+    @Data
+    public static class ExportCardsDTO {
+        @com.fasterxml.jackson.databind.annotation.JsonDeserialize(using = com.shop.b2b2c.common.StrictIdDeserializer.class)
+        private Long skuId;
+        private Boolean confirm;
+        private Boolean onlyAvailable;
+        private Integer limit;
+    }
+
+    @Operation(summary = "【商家】导出 SKU 卡密明文 (二次确认+审计, 店长/超管)")
+    @PostMapping("/api/v1/merchant/cards/export")
+    public R<Map<String, Object>> exportCards(@RequestBody ExportCardsDTO dto,
+            jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        // 导出属于明文批量外带，权限必须在接口层拒绝员工，不能靠前端隐藏。
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
+        if (dto == null) throw new BusinessException(400, "请选择需要导出的SKU");
+        return R.ok("卡密导出完成", cardAssets.exportCards(merchantId, SecurityUtils.getCurrentUserId(),
+                dto.getSkuId(), dto.getConfirm(), dto.getOnlyAvailable(), dto.getLimit()));
+    }
+
+    private void requireOwnedSku(Long merchantId, Long skuId) {
+        if (skuId == null || skuId <= 0) throw new BusinessException(400, "SKU编号不正确");
+        ProductSku sku = skuMapper.findById(skuId).orElseThrow(() -> new BusinessException("SKU不存在"));
+        if (!merchantId.equals(sku.getMerchantId())) throw new BusinessException(403, "无权访问其他商户卡密");
     }
 
     public R<ProductVirtualCard> getCardDetail(Long id) {

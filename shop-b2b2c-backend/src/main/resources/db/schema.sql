@@ -131,6 +131,20 @@ CREATE TABLE IF NOT EXISTS `product_virtual_card` (
   KEY `idx_sku_status` (`sku_id`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='虚拟商品卡密库存表';
 
+-- 7.1 卡密明文访问审计表 (T15: 导出等明文外带操作留痕；只追加，不保存卡密正文/指纹)
+CREATE TABLE IF NOT EXISTS `card_access_audit` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '所属店铺ID',
+  `actor_id` BIGINT UNSIGNED NOT NULL COMMENT '操作人用户ID（取自已校验会话）',
+  `action` VARCHAR(32) NOT NULL COMMENT '动作: EXPORT_PLAINTEXT',
+  `sku_id` BIGINT UNSIGNED NOT NULL COMMENT '明文涉及的SKU',
+  `card_count` INT NOT NULL COMMENT '本次返回的明文条数',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_audit_merchant_created` (`merchant_id`, `created_at`),
+  KEY `idx_audit_sku_created` (`sku_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='卡密明文访问审计表';
+
 -- 8. 交易订单主表 (含两段式代付字段)
 CREATE TABLE IF NOT EXISTS `trade_order` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
