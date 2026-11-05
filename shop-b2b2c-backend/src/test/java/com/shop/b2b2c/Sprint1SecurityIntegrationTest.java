@@ -2132,6 +2132,29 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    @DisplayName("T09/Q16: HELD 预占阻止下架；已下架商品不得先 CAS 为 PAID 再校验可购性")
+    void t09HeldReservationBlocksOffShelfAndPaymentRejectsUnpurchasable() {
+        TradeOrder order = intent("t09-held");
+        payments.preLockInventory("t09-held");
+        String revision = editing.get(1L, 1L).revision();
+
+        var offShelf = assertThrows(BusinessException.class, () -> editing.changeStatus(1L, 1L,
+                new com.shop.b2b2c.dto.ProductEditingDTOs.Status(revision, 0)));
+        assertEquals(409, offShelf.getCode());
+        assertEquals(1, jdbc.queryForObject("SELECT status FROM product WHERE id=1", Integer.class));
+
+        // 绕过商家接口直接制造“已下架”状态，验证支付侧不会先落 PAID。
+        jdbc.update("UPDATE product SET status=0 WHERE id=1");
+        var payment = assertThrows(BusinessException.class, () -> payments.notifyPaymentSuccess(
+                "t09-held", "payer", "TX_T09_OFFLINE", "WECHAT",
+                java.math.BigDecimal.TEN, "CNY", 1L));
+        assertTrue(payment.getMessage().contains("下架"));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals("FULFILLMENT_FAILED",
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T09_OFFLINE").getEventStatus());
+    }
+
+    @Test
     void publicProductAndQuickSearchNeverExposePrivateStoreFields() throws Exception {
         unpaid("privacy", 1);
         for (var request : List.of(get("/api/v1/public/products/1"),

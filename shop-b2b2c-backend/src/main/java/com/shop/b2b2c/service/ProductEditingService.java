@@ -1,7 +1,10 @@
 /*
  * 文件：ProductEditingService.java
  * 用途：本店商品资料、全量既有SKU售价及上下架的事务维护与旧版本冲突检测。
- * 维护注意：商品后SKU的行锁序列和内容摘要共同防并发覆盖；摘要排除可售库存/时间字段，库存变动不要求重填资料。SQL只更新白名单列，禁止复用整实体保存；历史订单快照不改，违规下架不能由商家自行恢复。
+ * 维护注意：
+ *  1. 商品后 SKU 的行锁序列和内容摘要共同防并发覆盖；摘要排除可售库存/时间字段，库存变动不要求重填资料。
+ *  2. SQL 只更新白名单列，禁止复用整实体保存；历史订单快照不改，违规下架不能由商家自行恢复。
+ *  3. T09/Q16：存在未到期 HELD 库存预占时禁止商家下架商品，防止支付回调先成功后无法履约。
  */
 package com.shop.b2b2c.service;
 
@@ -23,6 +26,7 @@ public class ProductEditingService {
     private final ProductEditingMapper mapper;
     private final CategoryMapper categories;
     private final MerchantStoreMapper stores;
+    private final InventoryReservationMapper reservations;
     private final ObjectMapper json;
 
     @Transactional
@@ -86,6 +90,11 @@ public class ProductEditingService {
             }
             TradeGuards.requireGoodsType(current.product().getGoodsType());
             current.skus().forEach(sku -> TradeGuards.requireMoney(sku.getPrice()));
+        }
+        if (change.status() == 0 && !Integer.valueOf(0).equals(current.product().getStatus())
+                && reservations.countActiveHeldByProduct(id) > 0) {
+            // T09/Q16：预占有效期 15 分钟；必须等待预占核销或释放/到期后才能下架。
+            throw new BusinessException(409, "商品存在未到期的库存预占，暂不能下架");
         }
         if (!Objects.equals(current.product().getStatus(), change.status()) && mapper.updateStatus(id, merchant, change.status()) != 1) {
             throw new BusinessException(409, "商品已变化，请刷新后重试");

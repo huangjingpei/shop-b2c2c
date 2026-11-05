@@ -112,6 +112,9 @@ public class PaymentEventServiceImpl implements PaymentEventService {
             throw new BusinessException("无法锁定订单行: " + orderSn);
         }
         List<TradeOrderItem> items = itemMapper.findByOrderSn(orderSn);
+        if (items.isEmpty()) {
+            throw new BusinessException("订单未包含明细商品");
+        }
 
         // 3. 支付到账事件与业务写入共用同一事务；外层回滚时不会残留 SUCCESS
         PaymentEvent pe = existing != null ? existing : new PaymentEvent();
@@ -172,6 +175,14 @@ public class PaymentEventServiceImpl implements PaymentEventService {
             }
             // 同一事件重放且交付不完整：保留已支付事实，仅补交付，不再重复扣库存/CAS。
         } else {
+            // T09: 先校验商品可购与交付类型，再执行 CAS；已下架/关店/类型变化不得先落 PAID。
+            Product payableProduct = productMapper.findById(items.get(0).getProductId())
+                    .orElseThrow(() -> new BusinessException("商品不存在"));
+            TradeGuards.requirePurchasable(payableProduct, storeMapper.findById(order.getMerchantId()).orElse(null));
+            if (!payableProduct.getGoodsType().equals(order.getGoodsType())) {
+                reject(pe.getId(), STATUS_FULFILLMENT_FAILED, "商品交付类型已变化，禁止继续交付");
+            }
+
             // T08: 普通订单与代付订单统一以数据库 lock_expire_time 判定支付截止，NULL 不再放行。
             if (order.getLockExpireTime() == null || !order.getLockExpireTime().isAfter(LocalDateTime.now())) {
                 reject(pe.getId(), "LATE_PAYMENT", "订单已超过 15 分钟支付截止时间，资金进入迟到支付处理");
@@ -197,18 +208,7 @@ public class PaymentEventServiceImpl implements PaymentEventService {
             order.setLockExpireTime(null);
         }
 
-        // 8. 校验商品与本地履约发货/发卡
-        if (items.isEmpty()) {
-            reject(pe.getId(), STATUS_FULFILLMENT_FAILED, "订单未包含明细商品");
-        }
-
-        Product payableProduct = productMapper.findById(items.get(0).getProductId())
-                .orElseThrow(() -> new BusinessException("商品不存在"));
-        TradeGuards.requirePurchasable(payableProduct, storeMapper.findById(order.getMerchantId()).orElse(null));
-        if (!payableProduct.getGoodsType().equals(order.getGoodsType())) {
-            reject(pe.getId(), STATUS_FULFILLMENT_FAILED, "商品交付类型已变化，禁止继续交付");
-        }
-
+        // 8. 本地履约发货/发卡（商品可购性已在 CAS 前校验）
         // 9. 首次落账核销库存预占/扣减物理库存；补交付重放不得重复扣减
         if (!alreadyPaid) {
             InventoryReservation held = reservationMapper.find(order.getId());

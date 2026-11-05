@@ -1,6 +1,6 @@
 /*
  * 文件：ProductEditingServiceTest.java
- * 用途：商品维护参数边界、修订冲突、租户查询和SKU价格白名单的纯单元测试。
+ * 用途：商品维护参数边界、修订冲突、租户查询、SKU价格白名单及下架预占拦截的纯单元测试。
  * 维护注意：Mock持久化仅检查调用契约；事务回滚及并发必须由Spring/H2与独立MySQL验证，不能把单元测试当成数据库锁验收。
  */
 package com.shop.b2b2c;
@@ -23,7 +23,8 @@ class ProductEditingServiceTest {
     final ProductEditingMapper mapper = mock(ProductEditingMapper.class);
     final CategoryMapper categories = mock(CategoryMapper.class);
     final MerchantStoreMapper stores = mock(MerchantStoreMapper.class);
-    final ProductEditingService editing = new ProductEditingService(mapper, categories, stores, new ObjectMapper());
+    final InventoryReservationMapper reservations = mock(InventoryReservationMapper.class);
+    final ProductEditingService editing = new ProductEditingService(mapper, categories, stores, reservations, new ObjectMapper());
     Product product; ProductSku sku;
 
     @BeforeEach void setup() {
@@ -91,6 +92,19 @@ class ProductEditingServiceTest {
         assertNotNull(editing.changeStatus(1L, 1L, new Status(revision(), 0)));
         verify(mapper).updateStatus(1L, 1L, 0);
     }
+    @Test void activeHeldReservationBlocksOffShelfButExpiredReservationDoesNot() {
+        when(reservations.countActiveHeldByProduct(1L)).thenReturn(1);
+        var blocked = assertThrows(BusinessException.class,
+                () -> editing.changeStatus(1L, 1L, new Status(revision(), 0)));
+        assertEquals(409, blocked.getCode());
+        verify(mapper, never()).updateStatus(any(), any(), anyInt());
+
+        when(reservations.countActiveHeldByProduct(1L)).thenReturn(0);
+        when(mapper.updateStatus(1L, 1L, 0)).thenReturn(1);
+        assertNotNull(editing.changeStatus(1L, 1L, new Status(revision(), 0)));
+        verify(mapper).updateStatus(1L, 1L, 0);
+    }
+
     @Test void nullFieldsAndDuplicateSkuAreRejected() {
         assertThrows(BusinessException.class, () -> editing.update(1L, 1L, null));
         assertThrows(BusinessException.class, () -> editing.update(1L, 1L, new Update("a".repeat(64), 1L, " ", null, "image", null, List.of(new Price(1L, BigDecimal.ONE)))));
