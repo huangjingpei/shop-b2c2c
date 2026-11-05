@@ -343,7 +343,7 @@
 | 修复要点 | 补齐 `APP_FRONTEND_STOREFRONT_URL=https://${GMALL_SERVER_NAME}/m/`；统一 `useUnicode` 与 `REDIS_DB`；删除真实 Redis 口令默认值，缺失即失败；与腾讯模板对齐并加契约断言。 |
 | 依赖/冲突 | 与 T04 同文件、同一次模板修改；与 T03 的凭据治理同批；不得只改阿里云而留下腾讯漂移。 |
 | 回归要点 | 合法：阿里云部署后代付短链/海报指向公网 `/m/`，Redis 使用预期库。非法：缺必填键时部署脚本失败而非静默回退。失败后数据不变：部署失败不覆盖现有发布。 |
-| 状态 | 待修复 |
+| 状态 | 已实现·待人工验证（提交 ff8bc1a；两云 `02-init-infra.sh`/`04-deploy.sh`/`env.example.sh`/顶层 `deploy.sh` 已改，契约用例见 `deploy/tests/test_release_credentials.py`；未运行脚本与测试） |
 
 #### T20 Nginx 首次部署校验顺序与回滚边界
 

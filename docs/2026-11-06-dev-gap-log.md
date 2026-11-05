@@ -115,6 +115,14 @@
 - 保留（不属于兼容补丁）：`CardCipherService` 的明文透明返回与默认种子属密钥行为，按用户指令不动，仍在 G09 待上线前确认；`fingerprint_unavailable` 列保留，用于解密失败防御性标记。
 - 未验证：未运行 mvn/编译/测试/构建/连库；MySQL 外键需用户在真实库执行 `schema.sql` 验证。状态“已实现·待人工验证”。
 
+## G12 T19 之后：仓库内 env.sh 仍含真实 Redis 口令
+
+- 发现位置：[deploy/aliyun/env.sh](file:///e:/shop-b2b2c/deploy/aliyun/env.sh)、[deploy/tencent/env.sh](file:///e:/shop-b2b2c/deploy/tencent/env.sh)。
+- 现象：两云 `env.sh` 为实际环境配置且已被 Git 跟踪，其中 `REDIS_PASS` 为真实口令；脚本默认值已在 `ff8bc1a` 移除，但这两个文件是显式配置，不属于“回退默认值”。
+- 不属本卡范围的原因：T19 只处理模板与脚本；直接改用户现有环境配置可能破坏其部署参数，且真实口令轮换需环境负责人执行。
+- 建议归属：上线前安全评审；由环境负责人轮换 Redis 口令并确认 `env.sh` 是否应移出版本库。
+- 影响面：仓库读者可见历史真实口令；不改变脚本“缺失即终止”的行为。
+
 ## S1 环境核对待办（由环境负责人执行）
 
 - 存量 MySQL 升级前先备份（T21 未在 S1 实现）；将 `db/migrations/V1__s1_order_lifecycle.sql` 纳入发布包，确认 `app.schema-migration.enabled=true`。
