@@ -371,7 +371,7 @@
 | 修复要点 | 迁移前强制带时间戳 `mysqldump`（含 routines/triggers）；迁移与应用启动合并为“全成功或回滚 DB”边界；失败时输出恢复命令；演示种子从 schema 拆到显式 seed。 |
 | 依赖/冲突 | 依赖 T12 迁移机制；与 T20/T22 同脚本，须串行；与 T23（备份可信度）共享 dump 参数与密钥交付约定。 |
 | 回归要点 | 合法：迁移前备份存在且可恢复；成功路径应用启动。非法：备份失败即中止迁移。失败后数据不变：迁移失败可恢复到迁移前结构与数据。 |
-| 状态 | 待修复 |
+| 状态 | 已实现·待人工验证（提交 6445357）。**可执行步骤**（脚本只写不跑，须在目标机人工执行）：①部署前确认 `mysqldump`/`gzip` 存在；`04-deploy.sh` 需要迁移时自动执行 `mysqldump --defaults-extra-file=<600临时文件> --single-transaction --quick --routines --triggers --no-tablespaces --default-character-set=utf8mb4 <DB_NAME> \| gzip -9 > backups/db-pre-migration-<ts>.sql.gz`，随后 `gzip -t` 校验，任一失败立即中止且不迁移；②迁移失败或后续应用启动/切换失败时，脚本自动 `gunzip -c <备份> \| mysql --defaults-extra-file=<临时文件> <DB_NAME>` 恢复；③若自动恢复失败，按日志打印命令手工恢复：`gunzip -c 'backups/db-pre-migration-<ts>.sql.gz' \| mysql -u'$DB_USER' -p -h'$DB_HOST' -P'$DB_PORT' '$DB_NAME'`；④确需回滚代码时再执行对应 `05-rollback.sh`，DB 已由备份恢复，不重复倒灌。**未验证**：未运行脚本、未连接真实 MySQL；新增 37 个外键与恢复路径只能在真实 MySQL 演练确认。 |
 
 #### T22 证书失败被吞 / HTTP 降级当成功
 

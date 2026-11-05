@@ -115,6 +115,13 @@
 - 保留（不属于兼容补丁）：`CardCipherService` 的明文透明返回与默认种子属密钥行为，按用户指令不动，仍在 G09 待上线前确认；`fingerprint_unavailable` 列保留，用于解密失败防御性标记。
 - 未验证：未运行 mvn/编译/测试/构建/连库；MySQL 外键需用户在真实库执行 `schema.sql` 验证。状态“已实现·待人工验证”。
 
+## G13 T21 备份/恢复路径仅在脚本与夹具层验证
+
+- 已实现（`6445357`）：两云 `04-deploy.sh` 迁移前强制 `mysqldump` + `gzip -t`，失败不迁移；迁移/启动失败自动 `gunzip | mysql` 恢复并打印手工命令；凭据走临时 600 `--defaults-extra-file`。
+- 未验证：未连接真实 MySQL，未执行 `schema.sql` 的 37 个外键、未演练“迁移中途失败→恢复”与大数据量 dump 耗时/磁盘占用。H2 通过不能替代 MySQL。
+- 上线前必须由环境负责人在预发库演练并记录：备份文件大小、`gzip -t` 结果、恢复耗时、恢复后表数/外键数核对；并确认 `BACKUP_DIR` 有足够空间与保留策略。
+- 残留口径：脚本不做自动回滚代码，数据库恢复与 `05-rollback.sh` 是两条独立路径；应用启动失败时 EXIT 回滚会先恢复 DB 再重启旧 jar。
+
 ## G12 T19 之后：仓库内 env.sh 仍含真实 Redis 口令
 
 - 发现位置：[deploy/aliyun/env.sh](file:///e:/shop-b2b2c/deploy/aliyun/env.sh)、[deploy/tencent/env.sh](file:///e:/shop-b2b2c/deploy/tencent/env.sh)。
