@@ -71,11 +71,16 @@ class SchemaMySqlTest {
                 try (ResultSet result = statement.executeQuery("SHOW TABLES")) {
                     while (result.next()) tables.add(result.getString(1));
                 }
-                assertEquals(18, tables.size());
+                assertEquals(20, tables.size());
                 try (ResultSet indexes = statement.executeQuery("SHOW INDEX FROM inventory_reservation WHERE Key_name='idx_reservation_expiry'")) {
                     List<String> columns = new ArrayList<>();
                     while (indexes.next()) columns.add(indexes.getString("Column_name"));
-                    assertEquals(List.of("status", "expires_at"), columns);
+                    assertEquals(List.of("status", "expires_at", "order_id"), columns);
+                }
+                try (ResultSet foreignKeys = statement.executeQuery(
+                        "SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_TYPE='FOREIGN KEY'")) {
+                    assertTrue(foreignKeys.next());
+                    assertTrue(foreignKeys.getInt(1) >= 25, "开发期基线应写入完整外键约束");
                 }
                 try (ResultSet seed = statement.executeQuery("SELECT goods_type FROM product WHERE id=6")) {
                     assertTrue(seed.next()); assertEquals(3, seed.getInt(1));
@@ -91,7 +96,7 @@ class SchemaMySqlTest {
                 try (PreparedStatement audit = connection.prepareStatement("INSERT INTO inventory_adjustment(merchant_id,product_id,sku_id,actor_id,request_key,delta,before_stock,after_stock,reason) VALUES(1,1,1,1,?,1,776,777,'retention-fixture')")) {
                     audit.setString(1, "c".repeat(64)); audit.executeUpdate();
                 }
-                statement.executeUpdate("INSERT INTO virtual_card_void(card_id,merchant_id,product_id,sku_id,actor_id,reason,before_stock,after_stock) VALUES(999999999,1,1,1,1,'retention-fixture',1,0)");
+                statement.executeUpdate("INSERT INTO virtual_card_void(card_id,merchant_id,product_id,sku_id,actor_id,reason,before_stock,after_stock) VALUES(1,1,1,1,1,'retention-fixture',1,0)");
                 statement.executeUpdate("INSERT INTO product_virtual_card(id,merchant_id,product_id,sku_id,card_content,status) VALUES(900000000,1,1,1,'batch-retention-fixture',2)");
                 statement.executeUpdate("INSERT INTO card_import_batch(id,merchant_id,product_id,sku_id,actor_id,imported_count,before_stock,after_stock) VALUES(900000000,1,1,1,1,1,0,1)");
                 statement.executeUpdate("INSERT INTO card_import_item(card_id,batch_id) VALUES(900000000,900000000)");

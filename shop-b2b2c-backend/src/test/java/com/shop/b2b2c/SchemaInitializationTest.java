@@ -67,6 +67,26 @@ class SchemaInitializationTest {
     }
 
     @Test
+    void baselineDeclaresCompleteReferentialConstraints() throws Exception {
+        String sql = new ClassPathResource("db/schema.sql").getContentAsString(StandardCharsets.UTF_8);
+        for (String constraint : new String[]{
+                "fk_payment_account_merchant", "fk_user_merchant", "fk_product_merchant", "fk_product_category",
+                "fk_sku_product", "fk_sku_merchant", "fk_card_product", "fk_card_sku", "fk_card_merchant",
+                "fk_audit_merchant", "fk_audit_sku", "fk_audit_actor", "fk_order_merchant", "fk_item_order",
+                "fk_item_product", "fk_item_sku", "fk_statement_merchant", "fk_complaint_order", "fk_complaint_merchant",
+                "fk_reservation_order", "fk_reservation_sku", "fk_reservation_product", "fk_reservation_merchant",
+                "fk_adjustment_merchant", "fk_adjustment_product", "fk_adjustment_sku", "fk_adjustment_actor",
+                "fk_card_void_card", "fk_card_void_merchant", "fk_card_void_product", "fk_card_void_sku", "fk_card_void_actor",
+                "fk_card_batch_merchant", "fk_card_batch_product", "fk_card_batch_sku", "fk_card_batch_actor",
+                "fk_card_import_item_batch", "fk_card_import_item_card", "fk_payment_event_merchant"}) {
+            assertTrue(sql.contains("CONSTRAINT " + constraint + " FOREIGN KEY"),
+                    "开发期基线缺少外键约束: " + constraint);
+        }
+        assertTrue(sql.contains("`payment_channel` VARCHAR(32) NOT NULL DEFAULT 'WECHAT'"),
+                "订单支付渠道应非空并带默认值");
+    }
+
+    @Test
     void baselineNeverDeletesDataOrChangesTheConfiguredDatabase() throws Exception {
         String sql = new ClassPathResource("db/schema.sql").getContentAsString(StandardCharsets.UTF_8);
         String commands = sql.replaceAll("(?m)^\\s*--.*$", "");
