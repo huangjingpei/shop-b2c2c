@@ -1,13 +1,14 @@
 /*
  * 文件：CardAssetService.java
  * 用途：本店卡密去重导入、成功批次记录、安全作废及自然幂等重放。
- * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，批次/成员/卡/库存同事务。历史扫描仅在内存计算摘要，不补存明文日志；唯一指纹、加密和存量修复仍待完善。作废拒绝HELD预占和数量不一致，不反向锁预占行。
+ * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，批次/成员/卡/库存同事务。T14：仅扫描本店 fingerprint IS NULL 的历史行，解密后内存计算摘要并补写指纹；拿不到明文/解密失败的行标记无法补算、计数并跳过，不中断导入，也不输出明文。密钥轮换与默认密钥回退仍待 T15/T21。作废拒绝HELD预占和数量不一致，不反向锁预占行。
  */
 package com.shop.b2b2c.service;
 
 import com.shop.b2b2c.common.*;
 import com.shop.b2b2c.entity.*;
 import com.shop.b2b2c.mapper.*;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.*;
 import org.springframework.transaction.support.*;
@@ -15,6 +16,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.*;
 
+@Slf4j
 @Service
 public class CardAssetService {
     private final CardAssetMapper assets;
@@ -62,14 +64,9 @@ public class CardAssetService {
             }
             // R25: 优先通过数据库索引指纹直接查找，避免全店历史明文全量读入内存
             String existing = assets.findExistingFingerprint(merchant, fingerprints);
-            if (existing == null && assets.historyContents(merchant) != null) {
-                // 兼容未生成指纹的历史遗留卡密或Mock夹具
-                for (String previous : assets.historyContents(merchant)) {
-                    if (previous != null && fingerprints.contains(cipher.fingerprint(previous.trim()))) {
-                        existing = cipher.fingerprint(previous.trim());
-                        break;
-                    }
-                }
+            if (existing == null) {
+                // T14: 仅补算仍无指纹的历史行，使其参与本次去重
+                existing = backfillAndMatch(merchant, fingerprints);
             }
             if (existing != null) {
                 throw new BusinessException(409, "卡密已存在于本店历史记录，整批未导入；请核对库存");
@@ -90,6 +87,51 @@ public class CardAssetService {
             if (skus.addStock(sku, merchant, normalized.size()) != 1) throw new IllegalStateException("卡密库存更新失败");
             return Map.of("importedCount", normalized.size(), "newStock", batch.getAfterStock(), "batchId", batch.getId());
         });
+    }
+
+    /**
+     * T14：补算本店历史无指纹行的明文摘要，并返回与本次导入重复的指纹（无重复返回 null）。
+     * 解密失败、正文为空等无法补算的行只标记 fingerprint_unavailable=1 并计数告警，不能中断导入。
+     * 补写指纹使用条件更新（card_fingerprint IS NULL），可重入且不覆盖已有指纹。
+     */
+    private String backfillAndMatch(Long merchant, Set<String> incoming) {
+        List<ProductVirtualCard> pending = assets.findUnfingerprinted(merchant);
+        if (pending == null || pending.isEmpty()) return null;
+        int unavailable = 0;
+        for (ProductVirtualCard previous : pending) {
+            String content = previous == null ? null : previous.getCardContent();
+            if (content == null || content.isBlank()) {
+                unavailable++;
+                if (previous != null) assets.markFingerprintState(merchant, previous.getId(), 1);
+                continue;
+            }
+            String plaintext;
+            try {
+                plaintext = cipher.decrypt(content);
+            } catch (RuntimeException e) {
+                // 密钥缺失或历史密钥不匹配：明确标记不可补算，继续处理其余历史行
+                unavailable++;
+                assets.markFingerprintState(merchant, previous.getId(), 1);
+                continue;
+            }
+            if (plaintext == null || plaintext.isBlank()) {
+                unavailable++;
+                assets.markFingerprintState(merchant, previous.getId(), 1);
+                continue;
+            }
+            String fingerprint = cipher.fingerprint(plaintext);
+            if (incoming.contains(fingerprint)) return fingerprint;
+            // 同店铺已有该指纹时不补写，避免唯一键冲突；该行仍已在内存中完成比对
+            if (assets.findExistingFingerprint(merchant, List.of(fingerprint)) == null) {
+                assets.fillFingerprint(merchant, previous.getId(), fingerprint);
+            } else {
+                assets.markFingerprintState(merchant, previous.getId(), 0);
+            }
+        }
+        if (unavailable > 0) {
+            log.warn("卡密历史指纹补算跳过 {} 行：缺少明文或解密失败，已标记 fingerprint_unavailable=1", unavailable);
+        }
+        return null;
     }
 
     public CardVoidRecord voidCard(Long merchant, Long actor, Long id, String reason) {

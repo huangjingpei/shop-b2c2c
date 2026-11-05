@@ -729,6 +729,28 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    void encryptedHistoricalCardWithoutFingerprintIsBackfilledBeforeNextImport() {
+        var cipher = new com.shop.b2b2c.service.CardCipherService();
+        String legacyPlain = "legacy-encrypted-fixture";
+        jdbc.update("UPDATE product_virtual_card SET card_content=?, card_fingerprint=NULL WHERE id=1", cipher.encrypt(legacyPlain));
+
+        assertEquals(1, cardAssets.importCards(1L, 200L, 1L, 1L, List.of("fresh-other-fixture")).get("importedCount"));
+        assertEquals(cipher.fingerprint(legacyPlain),
+                jdbc.queryForObject("SELECT card_fingerprint FROM product_virtual_card WHERE id=1", String.class));
+        assertEquals(0, jdbc.queryForObject("SELECT fingerprint_unavailable FROM product_virtual_card WHERE id=1", Integer.class));
+        assertEquals(409, assertThrows(BusinessException.class,
+                () -> cardAssets.importCards(1L, 200L, 1L, 1L, List.of(legacyPlain))).getCode());
+    }
+
+    @Test
+    void unreadableHistoricalCardIsMarkedUnavailableAndDoesNotBlockImport() {
+        jdbc.update("UPDATE product_virtual_card SET card_content='ENC:v1:not-base64!', card_fingerprint=NULL WHERE id=1");
+        assertEquals(1, cardAssets.importCards(1L, 200L, 1L, 1L, List.of("fresh-after-unreadable-history")).get("importedCount"));
+        assertEquals(1, jdbc.queryForObject("SELECT fingerprint_unavailable FROM product_virtual_card WHERE id=1", Integer.class));
+        assertNull(jdbc.queryForObject("SELECT card_fingerprint FROM product_virtual_card WHERE id=1", String.class));
+    }
+
+    @Test
     void concurrentCardImportsAcrossOwnProductsHaveOneWinner() throws Exception {
         jdbc.update("INSERT INTO product(id,merchant_id,category_id,title,goods_type,main_image,min_price) VALUES(3,1,1,'goods3',2,'image',10)");
         jdbc.update("INSERT INTO product_sku(id,merchant_id,product_id,sku_code,spec_data,price,stock_quantity) VALUES(3,1,3,'SKU3','{}',10,0)");

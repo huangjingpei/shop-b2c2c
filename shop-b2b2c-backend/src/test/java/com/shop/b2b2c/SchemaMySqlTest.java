@@ -175,7 +175,8 @@ class SchemaMySqlTest {
             } catch (SQLException e) { throw new IllegalStateException(e); }
             assertNotNull(cardAssets.findCard(1L, cardId)); assertNull(cardAssets.findCard(2L, cardId));
             assertNotNull(cardAssets.lockCard(1L, cardId));
-            assertTrue(cardAssets.historyContents(1L).contains("native-card-fixture"));
+            assertTrue(cardAssets.findUnfingerprinted(1L).stream()
+                    .anyMatch(c -> "native-card-fixture".equals(c.getCardContent())));
             assertTrue(cardAssets.availableCount(1L, 1L, sku.getId()) >= 1);
             assertEquals(1, cardAssets.markVoid(1L, cardId)); assertEquals(0, cardAssets.markVoid(1L, cardId));
             assertEquals(1, inventory.adjust(1L, 1L, sku.getId(), stock + 1, -1));

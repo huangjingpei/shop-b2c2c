@@ -121,6 +121,7 @@ CREATE TABLE IF NOT EXISTS `product_virtual_card` (
   `sku_id` BIGINT UNSIGNED NOT NULL,
   `merchant_id` BIGINT UNSIGNED NOT NULL,
   `card_fingerprint` CHAR(64) DEFAULT NULL COMMENT '卡密SHA-256去重指纹 (同店铺唯一)',
+  `fingerprint_unavailable` TINYINT NOT NULL DEFAULT 0 COMMENT '历史指纹无法补算标记: 0-可补算/已补算, 1-缺少明文或解密失败',
   `card_content` TEXT NOT NULL COMMENT '卡密明细文本 (AES-256-GCM加密载荷)',
   `status` TINYINT NOT NULL DEFAULT 0 COMMENT '状态: 0-未售出, 1-已售出核销, 2-作废',
   `order_sn` VARCHAR(64) DEFAULT NULL COMMENT '售出关联订单号',

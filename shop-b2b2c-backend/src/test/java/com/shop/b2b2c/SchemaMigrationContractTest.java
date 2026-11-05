@@ -43,6 +43,24 @@ class SchemaMigrationContractTest {
     }
 
     @Test
+    void cardFingerprintBackfillMigrationIsIdempotentAndNonDestructive() throws Exception {
+        var resource = new ClassPathResource("db/migrations/V2__s2_card_fingerprint_backfill.sql");
+        assertTrue(resource.exists(), "T14 必须提供 V2 存量库指纹补算脚本");
+        String sql = resource.getContentAsString(StandardCharsets.UTF_8);
+
+        assertTrue(sql.contains("information_schema.columns"), "新增列必须做存在性判断以保证重试幂等");
+        assertTrue(sql.contains("fingerprint_unavailable"), "必须显式标记无法补算的历史行");
+        assertTrue(sql.contains("SHA2(TRIM(card_content), 256)"), "明文历史行必须回填 SHA-256 指纹");
+        assertTrue(sql.contains("ENC:v1:") && sql.contains("ENC:v2:"), "加密行不得在 SQL 中当作明文取指纹");
+        assertTrue(sql.contains("ROW_NUMBER()"), "同店铺重复明文必须选定唯一回填行以避开唯一键");
+        assertTrue(sql.contains("card_fingerprint IS NULL"), "补算只处理仍无指纹的历史行");
+
+        assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*(DROP\\s+TABLE|TRUNCATE|DELETE|USE)\\b")
+                .matcher(sql).find(), "迁移脚本不得包含删表、清空、删数据或切库语句");
+        assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*DROP\\s+DATABASE\\b").matcher(sql).find());
+    }
+
+    @Test
     void applicationConfigWiresEnabledVersionedMigration() {
         var yaml = new YamlPropertiesFactoryBean();
         yaml.setResources(new ClassPathResource("application.yml"));
@@ -83,6 +101,7 @@ class SchemaMigrationContractTest {
         List<String> versions = runner.listMigrationVersionsForTest();
         assertFalse(versions.isEmpty());
         assertTrue(versions.get(0).startsWith("V1__"));
+        assertTrue(versions.stream().anyMatch(version -> version.startsWith("V2__")), "T14 的 V2 必须被迁移执行器发现");
         assertEquals(versions.stream().sorted().toList(), versions);
     }
 }

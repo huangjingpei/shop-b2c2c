@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS `product_virtual_card` (
   `sku_id` BIGINT  NOT NULL,
   `merchant_id` BIGINT  NOT NULL,
   `card_fingerprint` CHAR(64) DEFAULT NULL,
+  `fingerprint_unavailable` TINYINT NOT NULL DEFAULT 0,
   `card_content` TEXT NOT NULL COMMENT '卡密明细文本 (卡号/卡密/激活链接)',
   `status` TINYINT NOT NULL DEFAULT 0 COMMENT '状态: 0-未售出, 1-已售出核销, 2-作废',
   `order_sn` VARCHAR(64) DEFAULT NULL COMMENT '售出关联订单号',

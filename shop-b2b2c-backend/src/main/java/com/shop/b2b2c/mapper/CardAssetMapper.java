@@ -1,7 +1,7 @@
 /*
  * 文件：CardAssetMapper.java
  * 用途：本店导入互斥、历史卡密去重读取、作废CAS及作废记录持久化。
- * 维护注意：所有新导入必须先锁商户，再锁商品/SKU；历史内容只在服务内生成摘要，禁止日志输出。作废先验证SKU预占和数量一致性，状态CAS与扣库存/记录须同事务；记录没有修改/删除接口。
+ * 维护注意：所有新导入必须先锁商户，再锁商品/SKU；历史内容只在服务内生成摘要，禁止日志输出。T14：历史无指纹行按商户单次查询，解密和指纹补算只在服务内存完成；补写指纹使用 card_fingerprint IS NULL 条件保证幂等，不得覆盖已有指纹。作废先验证SKU预占和数量一致性，状态CAS与扣库存/记录须同事务；记录没有修改/删除接口。
  */
 package com.shop.b2b2c.mapper;
 import com.shop.b2b2c.entity.*;
@@ -11,8 +11,14 @@ import java.util.List;
 public interface CardAssetMapper {
     @Select("SELECT id FROM merchant_store WHERE id=#{merchant} FOR UPDATE")
     Long lockMerchant(@Param("merchant") Long merchant);
-    @Select("SELECT card_content FROM product_virtual_card WHERE merchant_id=#{merchant}")
-    List<String> historyContents(@Param("merchant") Long merchant);
+    @Select("SELECT id, card_content FROM product_virtual_card WHERE merchant_id=#{merchant} AND card_fingerprint IS NULL ORDER BY id")
+    List<ProductVirtualCard> findUnfingerprinted(@Param("merchant") Long merchant);
+    @Update("UPDATE product_virtual_card SET card_fingerprint=#{fingerprint}, fingerprint_unavailable=0 "
+            + "WHERE id=#{id} AND merchant_id=#{merchant} AND card_fingerprint IS NULL")
+    int fillFingerprint(@Param("merchant") Long merchant, @Param("id") Long id, @Param("fingerprint") String fingerprint);
+    @Update("UPDATE product_virtual_card SET fingerprint_unavailable=#{unavailable} "
+            + "WHERE id=#{id} AND merchant_id=#{merchant} AND card_fingerprint IS NULL")
+    int markFingerprintState(@Param("merchant") Long merchant, @Param("id") Long id, @Param("unavailable") Integer unavailable);
     @Select("<script>"
             + "SELECT card_fingerprint FROM product_virtual_card WHERE merchant_id=#{merchant} AND card_fingerprint IN "
             + "<foreach collection='fingerprints' item='fp' open='(' separator=',' close=')'>#{fp}</foreach> "
