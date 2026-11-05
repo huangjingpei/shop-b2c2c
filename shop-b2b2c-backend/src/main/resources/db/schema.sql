@@ -166,6 +166,9 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   KEY `idx_merchant_order` (`merchant_id`, `order_status`),
   KEY `idx_contact` (`buyer_contact`),
   KEY `idx_query_token` (`query_token`),
+  KEY `idx_order_created` (`created_at`, `id`),
+  KEY `idx_merchant_created` (`merchant_id`, `created_at`, `id`),
+  KEY `idx_order_expiry` (`order_status`, `lock_expire_time`, `id`),
   CONSTRAINT `chk_order_amounts` CHECK (`total_amount` >= 0.00 AND `pay_amount` >= 0.00)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易订单主表';
 
@@ -247,7 +250,8 @@ CREATE TABLE IF NOT EXISTS `complaint` (
   KEY `idx_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='买家维权投诉与平台官方仲裁表';
 
--- 13. 库存预占流水；索引随建表创建，避免启动时重复CREATE INDEX
+-- 13. 库存预占流水；索引随建表创建，避免启动时重复 CREATE INDEX。
+-- T11：到期游标索引补齐 order_id，支撑 status + expires_at + order_id 的稳定批量扫描。
 CREATE TABLE IF NOT EXISTS inventory_reservation (
   order_id BIGINT NOT NULL PRIMARY KEY,
   sku_id BIGINT NOT NULL,
@@ -259,7 +263,7 @@ CREATE TABLE IF NOT EXISTS inventory_reservation (
   reissue_count INT NOT NULL DEFAULT 0,
   status VARCHAR(16) NOT NULL,
   expires_at DATETIME NOT NULL,
-  KEY idx_reservation_expiry (status, expires_at),
+  KEY idx_reservation_expiry (status, expires_at, order_id),
   CONSTRAINT chk_reservation_quantity CHECK (quantity > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

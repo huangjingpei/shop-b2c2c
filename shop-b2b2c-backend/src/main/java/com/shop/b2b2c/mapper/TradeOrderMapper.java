@@ -108,9 +108,14 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
         return selectList(new LambdaQueryWrapper<TradeOrder>()
                 .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
                 .eq(TradeOrder::getMerchantId, merchantId)
-                .orderByDesc(TradeOrder::getCreatedAt));
+                .orderByDesc(TradeOrder::getCreatedAt)
+                .orderByDesc(TradeOrder::getId));
     }
 
+    /**
+     * T11：分页必须有 created_at + id 稳定排序，避免同一秒订单在翻页时重复/漏行。
+     * 前端游标式分页改造归属 T24，本卡先修 tiebreaker 与对应索引。
+     */
     default List<TradeOrder> findByMerchantIdPaged(Long merchantId, int page, int pageSize) {
         int boundedPage = Math.max(1, page);
         int boundedSize = Math.min(Math.max(1, pageSize), 200);
@@ -119,13 +124,15 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
                 .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
                 .eq(TradeOrder::getMerchantId, merchantId)
                 .orderByDesc(TradeOrder::getCreatedAt)
+                .orderByDesc(TradeOrder::getId)
                 .last("LIMIT " + boundedSize + " OFFSET " + offset));
     }
 
     default List<TradeOrder> findAllByOrderByCreatedAtDesc() {
         return selectList(new LambdaQueryWrapper<TradeOrder>()
                 .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
-                .orderByDesc(TradeOrder::getCreatedAt));
+                .orderByDesc(TradeOrder::getCreatedAt)
+                .orderByDesc(TradeOrder::getId));
     }
 
     default List<TradeOrder> findAllPaged(int page, int pageSize) {
@@ -135,6 +142,7 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
         return selectList(new LambdaQueryWrapper<TradeOrder>()
                 .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
                 .orderByDesc(TradeOrder::getCreatedAt)
+                .orderByDesc(TradeOrder::getId)
                 .last("LIMIT " + boundedSize + " OFFSET " + offset));
     }
 

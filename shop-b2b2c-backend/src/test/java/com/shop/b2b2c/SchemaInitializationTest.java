@@ -57,6 +57,16 @@ class SchemaInitializationTest {
     }
 
     @Test
+    void baselineHasStablePaginationAndExpiryIndexes() throws Exception {
+        String sql = new ClassPathResource("db/schema.sql").getContentAsString(StandardCharsets.UTF_8);
+        assertTrue(sql.contains("idx_order_created"), "T11 缺少 created_at + id 的分页索引");
+        assertTrue(sql.contains("idx_merchant_created"), "T11 缺少商户维度 created_at + id 分页索引");
+        assertTrue(sql.contains("idx_order_expiry"), "T11 缺少 order_status + lock_expire_time 的到期扫描索引");
+        assertTrue(sql.contains("idx_reservation_expiry (status, expires_at, order_id)"),
+                "T11 预占到期索引必须带 order_id 稳定游标");
+    }
+
+    @Test
     void baselineNeverDeletesDataOrChangesTheConfiguredDatabase() throws Exception {
         String sql = new ClassPathResource("db/schema.sql").getContentAsString(StandardCharsets.UTF_8);
         String commands = sql.replaceAll("(?m)^\\s*--.*$", "");

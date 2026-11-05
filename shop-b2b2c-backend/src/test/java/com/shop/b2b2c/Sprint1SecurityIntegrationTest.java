@@ -2175,6 +2175,25 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    @DisplayName("T11: 同一秒创建的订单分页使用 created_at + id 稳定排序，不重复不漏行")
+    void t11PaginationUsesIdAsTieBreaker() {
+        LocalDateTime sameSecond = LocalDateTime.of(2026, 11, 6, 10, 0, 0);
+        TradeOrder first = unpaid("t11-page-a", 1);
+        first.setCreatedAt(sameSecond);
+        orders.save(first);
+        TradeOrder second = unpaid("t11-page-b", 1);
+        second.setCreatedAt(sameSecond);
+        orders.save(second);
+
+        List<TradeOrder> page1 = orders.findByMerchantIdPaged(1L, 1, 1);
+        List<TradeOrder> page2 = orders.findByMerchantIdPaged(1L, 2, 1);
+        assertEquals(1, page1.size());
+        assertEquals(1, page2.size());
+        assertNotEquals(page1.get(0).getId(), page2.get(0).getId());
+        assertTrue(page1.get(0).getId() > page2.get(0).getId(), "id 降序必须作为 created_at 相同的 tiebreaker");
+    }
+
+    @Test
     void publicProductAndQuickSearchNeverExposePrivateStoreFields() throws Exception {
         unpaid("privacy", 1);
         for (var request : List.of(get("/api/v1/public/products/1"),

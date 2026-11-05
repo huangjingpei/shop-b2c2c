@@ -5,6 +5,7 @@
  *  1. 采用游标分页扫描，单条坏账异常不阻断饿死后续正常单据；统一扫描 HELD 预占与无预占超期未支付意向单。
  *  2. 支付补偿扫描单轮限量，失败记录由 PaymentEventService 写入 FULFILLMENT_FAILED，不在此重复处理。
  *  3. 每轮扫描与更新时间不超过 30 秒一次，不得加入跨库分布式事务。
+ *  4. T11：批量达到上限时输出 WARN 积压告警，便于监控；扫描使用固定批大小，不随请求量放大。
  */
 package com.shop.b2b2c.config;
 
@@ -59,10 +60,10 @@ public class ReservationExpiryJob {
 
     public int expireHeldReservations() {
         int processed = 0;
-        List<Long> ids = reservations.expiredIdsAfter(reservationCursor, 100);
+        List<Long> ids = reservations.expiredIdsAfter(reservationCursor, SCAN_BATCH_SIZE);
         if (ids.isEmpty() && reservationCursor > 0L) {
             reservationCursor = 0L;
-            ids = reservations.expiredIdsAfter(0L, 100);
+            ids = reservations.expiredIdsAfter(0L, SCAN_BATCH_SIZE);
         }
         for (Long id : ids) {
             reservationCursor = Math.max(reservationCursor, id);
@@ -73,8 +74,10 @@ public class ReservationExpiryJob {
                 log.error("预占释放异常，已记录并前移游标避免饿死后续单据 orderId={}", id, e);
             }
         }
-        if (ids.size() < 100) {
+        if (ids.size() < SCAN_BATCH_SIZE) {
             reservationCursor = 0L;
+        } else {
+            log.warn("库存预占到期扫描达到批量上限，可能存在积压 cursor={} batch={}", reservationCursor, SCAN_BATCH_SIZE);
         }
         return processed;
     }
@@ -83,10 +86,10 @@ public class ReservationExpiryJob {
         int processed = 0;
         LocalDateTime now = LocalDateTime.now();
         LocalDateTime cutoff = now.minusMinutes(15);
-        List<Long> ids = orders.findExpiredUnpaidOrderIds(now, cutoff, orderCursor, 100);
+        List<Long> ids = orders.findExpiredUnpaidOrderIds(now, cutoff, orderCursor, SCAN_BATCH_SIZE);
         if (ids.isEmpty() && orderCursor > 0L) {
             orderCursor = 0L;
-            ids = orders.findExpiredUnpaidOrderIds(now, cutoff, 0L, 100);
+            ids = orders.findExpiredUnpaidOrderIds(now, cutoff, 0L, SCAN_BATCH_SIZE);
         }
         for (Long id : ids) {
             orderCursor = Math.max(orderCursor, id);
@@ -97,8 +100,10 @@ public class ReservationExpiryJob {
                 log.error("超时未支付订单关闭异常，已记录并前移游标避免饿死后续单据 orderId={}", id, e);
             }
         }
-        if (ids.size() < 100) {
+        if (ids.size() < SCAN_BATCH_SIZE) {
             orderCursor = 0L;
+        } else {
+            log.warn("超时未支付订单扫描达到批量上限，可能存在积压 cursor={} batch={}", orderCursor, SCAN_BATCH_SIZE);
         }
         return processed;
     }
