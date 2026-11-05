@@ -413,7 +413,7 @@
 | 修复要点 | 启用受控的 `ForwardedHeaderFilter`/server 级 real-IP，并只在可信代理网段使用 `X-Forwarded-For`；或由 Nginx 注入不可伪造的内部头；禁止无条件信任客户端自报头；统一客户端标识解析供建单/预占/海报使用。 |
 | 依赖/冲突 | 与 T19（网关/`.env`）同批配置；与 T11（限流存储容量）联动；不得用前端传参替代服务端解析。 |
 | 回归要点 | 合法：不同真实客户端命中各自桶；同客户端超限 429。非法：伪造 `X-Forwarded-For` 不改变桶。失败后数据不变：限流拒绝不建单/不预占。 |
-| 状态 | 待修复 |
+| 状态 | 已实现·待人工验证（提交 543cbc7；新增 `ClientIpResolver`，仅当直连 `remoteAddr` 命中 `app.security.trusted-proxies`（默认 `127.0.0.1,::1`，支持 IPv4 CIDR）才读取 `X-Forwarded-For`，从右向左取首个非可信合法 IP，直连客户端伪造头一律忽略；登录、建单、代付、查单限流统一改用该解析结果。R06：两云主站/引导配置登录限流 location 校准为 `/api/v1/auth/login`；两云及通用模板 `X-Forwarded-For` 由 `$proxy_add_x_forwarded_for` 改为 `$remote_addr` 覆盖。部署 HTTPS 烟测改用非爬虫 UA。用例覆盖直连伪造、可信代理、多级代理、CIDR、非法值与缺头回退，以及模板 XFF 覆盖和登录路径静态断言。**未运行 mvn/测试/Nginx**，真实代理拓扑与 TLS 需按 V06 在 Linux/WSL/真实环境验证） |
 
 ---
 
