@@ -2,8 +2,9 @@
 # 文件：backup_mysql.sh
 # 用途：MySQL导出、压缩归档及历史备份清理工具。
 # 维护注意：会读取真实库并按保留周期删除旧备份；确认目标库、导出工具与输出目录。
-#          DB_PASS 必须通过环境变量注入，不允许硬编码默认密码。
-#          备份成功后必须另做隔离恢复演练（restore drill）。
+#          DB_PASS 必须通过环境变量注入，不允许硬编码默认密码；口令经临时 600 --defaults-extra-file 传递，
+#          不出现在进程参数。仅使用系统 mysqldump（不再回退 Docker），缺失即失败；stderr 与归档分离，
+#          归档先写 .partial，gzip -t 与解压非空校验通过后才原子改名。备份成功后必须另做隔离恢复演练（restore drill）。
 # ==============================================================================
 # shop-b2b2c 生产级 MySQL 数据库定时冷备与归档脚本
 # 支持：事务级一致性导出、即时 Gzip 压缩、完整性校验、30天自动轮转清理与告警钩子
@@ -43,42 +44,69 @@ err() {
     echo "$msg" >> "${LOG_FILE}"
     if [[ -n "${ALARM_WEBHOOK_URL}" ]]; then
         curl -s -X POST -H 'Content-Type: application/json' \
-            -d "{\"msgtype\":\"markdown\",\"markdown\":{\"content\":\"### 🚨 数据库备份失败告警\n> 主机: $(hostname)\n> 错误: $*\n> 时间: $(date '+%Y-%m-%d %H:%M:%S')\"}}" \
+            -d "{\"msgtype\":\"markdown\",\"markdown\":{\"content\":\"### 数据库备份失败告警\n> 主机: $(hostname)\n> 错误: $*\n> 时间: $(date '+%Y-%m-%d %H:%M:%S')\"}}" \
             "${ALARM_WEBHOOK_URL}" || true
     fi
 }
 
 mkdir -p "${BACKUP_DIR}"
 
+# 凭据临时文件：600 权限，脚本退出时无论成功失败都删除。
+CRED_FILE=""
+cleanup() {
+    [[ -n "${CRED_FILE}" ]] && rm -f "${CRED_FILE}"
+    [[ -n "${TMP_SQL_GZ:-}" && -f "${TMP_SQL_GZ}" ]] && rm -f "${TMP_SQL_GZ}"
+}
+trap cleanup EXIT INT TERM
+
 log "====== 开始执行数据库全量一致性备份 ======"
 log "目标库: ${DB_NAME}@${DB_HOST}:${DB_PORT}, 备份文件: ${BACKUP_FILE}"
 
-# 检查 mysqldump 命令或容器内工具
-if command -v mysqldump >/dev/null 2>&1; then
-    DUMP_CMD="mysqldump -h${DB_HOST} -P${DB_PORT} -u${DB_USER} -p${DB_PASS} --single-transaction --quick --default-character-set=utf8mb4 --routines --triggers ${DB_NAME}"
-elif docker ps --format '{{.Names}}' | grep -q 'shop-b2b2c-mysql'; then
-    log "检测到本地 Docker 容器 shop-b2b2c-mysql，通过容器内 mysqldump 执行..."
-    DUMP_CMD="docker exec -i shop-b2b2c-mysql mysqldump -u${DB_USER} -p${DB_PASS} --single-transaction --quick --default-character-set=utf8mb4 --routines --triggers ${DB_NAME}"
+# 仅允许系统 mysqldump；缺失直接失败，避免 Docker 环境差异导致备份静默为空。
+command -v mysqldump >/dev/null 2>&1 || { err "未检测到 mysqldump 命令，备份终止！"; exit 1; }
+command -v gzip >/dev/null 2>&1 || { err "未检测到 gzip 命令，备份终止！"; exit 1; }
+
+CRED_FILE="$(mktemp)"
+chmod 600 "${CRED_FILE}"
+printf '[client]\nhost=%s\nport=%s\nuser=%s\npassword=%s\n' \
+    "${DB_HOST}" "${DB_PORT}" "${DB_USER}" "${DB_PASS}" > "${CRED_FILE}"
+
+DUMP_ARGS=(
+    --defaults-extra-file="${CRED_FILE}"
+    --single-transaction
+    --quick
+    --routines
+    --triggers
+    --no-tablespaces
+    --default-character-set=utf8mb4
+    "${DB_NAME}"
+)
+
+TMP_SQL_GZ="${BACKUP_FILE}.partial"
+ERR_FILE="${BACKUP_DIR}/backup-dump.err"
+
+# 执行导出与压缩：stderr 单独落盘，避免 warning/错误文本混入 SQL；pipefail 保证 mysqldump 失败可被捕获。
+if mysqldump "${DUMP_ARGS[@]}" 2>"${ERR_FILE}" | gzip -9 > "${TMP_SQL_GZ}"; then
+    if [[ ! -s "${TMP_SQL_GZ}" ]] || ! gzip -t "${TMP_SQL_GZ}" 2>/dev/null; then
+        err "备份文件为空或 gzip 校验失败，导出内容异常！"
+        exit 1
+    fi
+    UNCOMPRESSED_BYTES="$(gzip -l "${TMP_SQL_GZ}" | awk 'NR==2 {print $2}')"
+    if [[ "${UNCOMPRESSED_BYTES:-0}" -le 0 ]]; then
+        err "备份文件为空 (0 字节)，导出内容异常！"
+        exit 1
+    fi
+    chmod 600 "${TMP_SQL_GZ}"
+    mv -f "${TMP_SQL_GZ}" "${BACKUP_FILE}"
+    FILE_SIZE="$(du -h "${BACKUP_FILE}" | cut -f1)"
+    log "备份成功！文件大小: ${FILE_SIZE}, 路径: ${BACKUP_FILE}"
 else
-    err "未检测到 mysqldump 命令或运行中的 shop-b2b2c-mysql 容器，备份终止！"
+    err "mysqldump 执行失败，错误摘要："
+    tail -n 20 "${ERR_FILE}" 2>/dev/null || true
     exit 1
 fi
 
-# 执行导出与压缩：pipefail 已启用，管道任意阶段失败均触发 else 分支
-if ${DUMP_CMD} 2>>"${LOG_FILE}" | gzip -9 > "${BACKUP_FILE}"; then
-    FILE_SIZE="$(du -h "${BACKUP_FILE}" | cut -f1)"
-    if [[ -s "${BACKUP_FILE}" ]]; then
-        log "✅ 备份成功！文件大小: ${FILE_SIZE}, 路径: ${BACKUP_FILE}"
-    else
-        err "备份文件为空 (0 字节)，导出内容异常！"
-        rm -f "${BACKUP_FILE}"
-        exit 1
-    fi
-else
-    err "mysqldump 执行失败，请查看日志: ${LOG_FILE}"
-    rm -f "${BACKUP_FILE}"
-    exit 1
-fi
+rm -f "${ERR_FILE}"
 
 # 清理保留周期外的旧备份（先统计、后删除，均不吞错误）
 log "清理 ${RETENTION_DAYS} 天前的历史旧备份..."

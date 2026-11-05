@@ -4,6 +4,7 @@
 # 维护注意：仅在 Linux/WSL 下运行，不访问真实系统服务、数据库或文件系统路径。
 #   伪工具只模拟最小行为；通过不代表真实 JAR、Nginx、MySQL 或支付链路已验收。
 #   自动回滚只能保护切换后阶段；若回滚本身异常则需人工介入（见 CAUTION 注释）。
+import getpass
 import os
 import signal
 import subprocess
@@ -223,6 +224,7 @@ class _DeployFixture(unittest.TestCase):
         env[self.ROOT_VAR] = str(self.root)
         env["PATH"] = f"{self.bin}:{env.get('PATH', '/usr/bin:/bin')}"
         env["DEPLOY_SKIP_ROOT_CHECK"] = "yes"
+        env["APP_SERVICE_USER"] = getpass.getuser()
         env["DO_HEALTHCHECK"] = "yes"
         env["HEALTH_TIMEOUT"] = "6"   # 2 iters × 3s
         env["DEPLOY_TEST_LOG"] = str(self.root / "calls.log")
@@ -257,6 +259,7 @@ class _DeployFixture(unittest.TestCase):
         env[self.ROOT_VAR] = str(self.root)
         env["PATH"] = f"{self.bin}:{env.get('PATH', '/usr/bin:/bin')}"
         env["DEPLOY_SKIP_ROOT_CHECK"] = "yes"
+        env["APP_SERVICE_USER"] = getpass.getuser()
         env["HEALTH_TIMEOUT"] = "6"
         env["DEPLOY_TEST_LOG"] = str(self.root / "calls.log")
         env["NGINX_AVAIL"] = str(self.nginx_avail_dir / "shop")
@@ -517,6 +520,20 @@ class TencentDeployLifecycleTest(_DeployFixture):
         combined = result.stdout + result.stderr
         self.assertNotIn("数据库同步完毕", combined,
                          "SQL 失败时不能输出虚假成功消息")
+
+    def test_systemd_unit_uses_dedicated_user_and_hardening(self):
+        """T23：后端服务不得以 root 运行，并启用 NoNewPrivileges/ProtectSystem 等加固。"""
+        self._make_release()
+        self._install_cert()
+        result = self._run(extra_env={"MYSQL_TABLE_COUNT": "1"})
+        self.assertEqual(result.returncode, 0, f"部署应成功；stderr={result.stderr}")
+        unit_file = next(self.systemd_dir.glob("*.service"))
+        unit = unit_file.read_text(encoding="utf-8")
+        self.assertIn(f"User={getpass.getuser()}", unit)
+        self.assertNotIn("User=root", unit)
+        for directive in ["NoNewPrivileges=true", "ProtectSystem=full",
+                          "ProtectHome=true", "PrivateTmp=true", "ReadWritePaths="]:
+            self.assertIn(directive, unit)
 
     def test_no_migration_when_tables_exist_without_flag(self):
         """R29 迁移：数据库已有表且未传 --migrate 时，不应执行 SQL 导入。"""

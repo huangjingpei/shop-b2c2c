@@ -110,6 +110,30 @@ class BackupMysqlTest(unittest.TestCase):
         self.assertEqual(len(gz_files), 1)
         self.assertGreater(gz_files[0].stat().st_size, 0)
 
+    def test_dump_uses_defaults_file_and_avoids_password_in_argv(self):
+        """T23：口令必须经 --defaults-extra-file 传入，argv 不含明文；临时凭据文件用后删除。"""
+        args_log = self.root / "dump_args.log"
+        self.make_tool(
+            "mysqldump",
+            'printf "%s\\n" "$@" > "' + str(args_log) + '"\n'
+            'echo "-- dump"; echo "CREATE TABLE t_args(id int);"'
+        )
+        proc = self.run_script()
+        self.assertEqual(proc.returncode, 0, f"Script failed: {proc.stderr}")
+        argv = args_log.read_text(encoding="utf-8")
+        self.assertIn("--defaults-extra-file=", argv)
+        self.assertIn("--no-tablespaces", argv)
+        self.assertNotIn("TestPass123!", argv, "密码不得出现在 mysqldump 参数中")
+        cred_line = next(line for line in argv.splitlines()
+                         if line.startswith("--defaults-extra-file="))
+        cred_path = cred_line.split("=", 1)[1].strip('"')
+        self.assertFalse(os.path.exists(cred_path), "凭据临时文件应在备份结束后删除")
+
+    def test_backup_script_has_no_docker_fallback(self):
+        """T23：缺 mysqldump 时必须失败，不允许回退 Docker 导致静默差异。"""
+        script = SCRIPT.read_text(encoding="utf-8")
+        self.assertNotRegex(script, r"docker\s+(ps|exec)")
+
     def test_retention_rotation_cleans_only_old_files(self):
         """TC-R32-06: 备份成功后清理超过 retention 天数的旧备份，保留近期备份"""
         # 创建一个 10 天前的旧备份文件（RETENTION_DAYS=7）

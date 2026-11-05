@@ -302,9 +302,18 @@ if [[ -d "${WWW_MOBILE_DIR}/m" ]]; then
   ln -sfn "${GMALL_ROOT}/uploads" "${WWW_MOBILE_DIR}/m/uploads"
 fi
 
-# 配置 systemd 服务
+# 配置 systemd 服务：专用非 root 用户 + 最小权限加固
+APP_SERVICE_USER="${APP_SERVICE_USER:-gmall}"
+if ! id -u "${APP_SERVICE_USER}" >/dev/null 2>&1; then
+  log "创建专用服务用户 ${APP_SERVICE_USER} ..."
+  useradd --system --home "${GMALL_ROOT}" --shell /usr/sbin/nologin "${APP_SERVICE_USER}" \
+    || die "创建服务用户 ${APP_SERVICE_USER} 失败"
+fi
+chown -R "${APP_SERVICE_USER}" "${APP_DIR}" "${WWW_ADMIN_DIR}" "${WWW_MOBILE_DIR}" \
+  "${GMALL_ROOT}/logs" "${GMALL_ROOT}/uploads"
+
 JAVA_BIN="$(readlink -f "$(command -v java)")"
-log "配置 systemd 服务: ${SYSTEMD_DIR}/${SERVICE_NAME}.service"
+log "配置 systemd 服务: ${SYSTEMD_DIR}/${SERVICE_NAME}.service (User=${APP_SERVICE_USER})"
 cat > "${SYSTEMD_DIR}/${SERVICE_NAME}.service" <<UNIT
 [Unit]
 Description=GMall Backend Application
@@ -313,7 +322,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=${APP_SERVICE_USER}
 WorkingDirectory=${GMALL_ROOT}
 EnvironmentFile=${GMALL_ROOT}/.env
 ExecStart=${JAVA_BIN} \$JAVA_OPTS -jar ${APP_DIR}/app.jar
@@ -324,7 +333,11 @@ RestartSec=10
 TimeoutStopSec=30
 StandardOutput=append:${GMALL_ROOT}/logs/backend.log
 StandardError=append:${GMALL_ROOT}/logs/backend.log
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
 PrivateTmp=true
+ReadWritePaths=${GMALL_ROOT}/logs ${GMALL_ROOT}/uploads ${APP_DIR}
 
 [Install]
 WantedBy=multi-user.target

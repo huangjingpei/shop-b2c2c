@@ -296,9 +296,18 @@ log "部署 C 端商城与代付收银台 -> ${WWW_STOREFRONT_DIR}"
 rm -rf "${WWW_STOREFRONT_DIR:?}"/* && cp -r "${RELEASE_DIR}/www-storefront/." "${WWW_STOREFRONT_DIR}/"
 ln -sfn "${SHOP_ROOT}/uploads" "${WWW_STOREFRONT_DIR}/uploads"
 
-# 配置 systemd 服务
+# 配置 systemd 服务：专用非 root 用户 + 最小权限加固
+APP_SERVICE_USER="${APP_SERVICE_USER:-gmall}"
+if ! id -u "${APP_SERVICE_USER}" >/dev/null 2>&1; then
+  log "创建专用服务用户 ${APP_SERVICE_USER} ..."
+  useradd --system --home "${SHOP_ROOT}" --shell /usr/sbin/nologin "${APP_SERVICE_USER}" \
+    || die "创建服务用户 ${APP_SERVICE_USER} 失败"
+fi
+chown -R "${APP_SERVICE_USER}" "${APP_DIR}" "${WWW_ADMIN_DIR}" "${WWW_STOREFRONT_DIR}" \
+  "${SHOP_ROOT}/logs" "${SHOP_ROOT}/uploads"
+
 JAVA_BIN="$(readlink -f "$(command -v java)")"
-log "配置 systemd 服务: ${SYSTEMD_DIR}/${SERVICE_NAME}.service"
+log "配置 systemd 服务: ${SYSTEMD_DIR}/${SERVICE_NAME}.service (User=${APP_SERVICE_USER})"
 cat > "${SYSTEMD_DIR}/${SERVICE_NAME}.service" <<UNIT
 [Unit]
 Description=Shop-B2B2C Backend Application (Spring Boot 3 + JDK 17)
@@ -307,7 +316,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=${APP_SERVICE_USER}
 WorkingDirectory=${SHOP_ROOT}
 EnvironmentFile=${SHOP_ROOT}/.env
 ExecStart=${JAVA_BIN} \$JAVA_OPTS -jar ${APP_DIR}/app.jar
@@ -318,7 +327,11 @@ RestartSec=10
 TimeoutStopSec=30
 StandardOutput=append:${SHOP_ROOT}/logs/backend.log
 StandardError=append:${SHOP_ROOT}/logs/backend.log
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
 PrivateTmp=true
+ReadWritePaths=${SHOP_ROOT}/logs ${SHOP_ROOT}/uploads ${APP_DIR}
 
 [Install]
 WantedBy=multi-user.target
