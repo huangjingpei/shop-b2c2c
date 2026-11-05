@@ -52,6 +52,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "spring.datasource.username=sa", "spring.datasource.password=",
         "spring.sql.init.mode=always", "spring.sql.init.continue-on-error=false",
         "spring.sql.init.schema-locations=classpath:sprint1-schema.sql",
+        "spring.sql.init.data-locations=", // H2夹具自带种子，显式关闭MySQL演示种子避免语法/重复数据干扰
         "mybatis-plus.configuration.log-impl=org.apache.ibatis.logging.nologging.NoLoggingImpl",
         "payment.mock=true", "inventory.expiry-delay-ms=3600000",
         "app.security.cors-allowed-origins=https://admin.example.test",
