@@ -88,7 +88,8 @@ class _DeployFixture(unittest.TestCase):
             "REDIS_PASS=testredispass\n"
             "APP_FRONTEND_STOREFRONT_URL=https://shop.example.com/m/\n"
             "BOOTSTRAP_ADMIN_USERNAME=bootstrapadmin\nBOOTSTRAP_ADMIN_PASSWORD=Bootstrap#2026\n"
-            "GMALL_SERVER_NAME=shop.example.com\nSHOP_SERVER_NAME=shop.example.com\n",
+            "GMALL_SERVER_NAME=shop.example.com\nSHOP_SERVER_NAME=shop.example.com\n"
+            "CERTBOT_EMAIL=ops@example.com\n",
             encoding="utf-8",
         )
         self._setup_fake_tools()
@@ -153,6 +154,9 @@ class _DeployFixture(unittest.TestCase):
             #!/usr/bin/env bash
             printf 'curl %s\\n' "$*" >> "$DEPLOY_TEST_LOG"
             [[ "${CURL_FAIL:-no}" != "yes" ]] || exit 1
+            if [[ "$*" == *"https://"* && "${HTTPS_SMOKE_FAIL:-no}" == "yes" ]]; then
+              exit 1
+            fi
             echo '{"code":200}'
             """))
 
@@ -213,7 +217,7 @@ class _DeployFixture(unittest.TestCase):
             )
         return rel
 
-    def _run(self, extra_env=None, capture=True):
+    def _run(self, extra_env=None, capture=True, extra_args=None):
         """执行部署脚本，返回 CompletedProcess。"""
         env = os.environ.copy()
         env[self.ROOT_VAR] = str(self.root)
@@ -241,13 +245,13 @@ class _DeployFixture(unittest.TestCase):
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
-            ["bash", str(self.SCRIPT), "--no-healthcheck"],
+            ["bash", str(self.SCRIPT), "--no-healthcheck", *list(extra_args or [])],
             env=env,
             capture_output=capture,
             text=True,
         )
 
-    def _run_with_healthcheck(self, extra_env=None):
+    def _run_with_healthcheck(self, extra_env=None, extra_args=None):
         """执行脚本但不屏蔽健康检查（用于健康检查失败回滚测试）。"""
         env = os.environ.copy()
         env[self.ROOT_VAR] = str(self.root)
@@ -272,7 +276,7 @@ class _DeployFixture(unittest.TestCase):
         if extra_env:
             env.update(extra_env)
         return subprocess.run(
-            ["bash", str(self.SCRIPT)],
+            ["bash", str(self.SCRIPT), *list(extra_args or [])],
             env=env,
             capture_output=True,
             text=True,
@@ -440,6 +444,44 @@ class TencentDeployLifecycleTest(_DeployFixture):
         self.assertEqual(old_jar.read_bytes(), b"OLD JAR", "reload 失败应触发整套回滚")
         self.assertIn("已回滚并重载切换前的 Nginx 配置", result.stdout + result.stderr)
 
+    def test_certificate_failure_aborts_without_allow_http(self):
+        """T22：证书申请失败且未显式 --allow-http 时，必须中止并移除引导站点。"""
+        old_jar = self.app / "app.jar"
+        old_jar.write_bytes(b"OLD JAR")
+        self._make_release()
+        result = self._run(extra_env={"MYSQL_TABLE_COUNT": "1"})
+        self.assertNotEqual(result.returncode, 0, "无证书且未允许 HTTP 时不得部署成功")
+        combined = result.stdout + result.stderr
+        self.assertIn("无有效 HTTPS 证书", combined)
+        avail = self.nginx_avail_dir / "shop"
+        enabled = self.nginx_enabled_dir / "shop"
+        self.assertFalse(avail.exists(), "中止后不应残留 HTTP 引导站点")
+        self.assertFalse(enabled.exists() or enabled.is_symlink(),
+                         "中止后不应残留引导站点软链")
+        self.assertEqual(old_jar.read_bytes(), b"OLD JAR", "中止时应保留旧产物")
+
+    def test_allow_http_continues_when_certificate_fails(self):
+        """T22：显式 --allow-http 时才允许证书失败后以 HTTP 继续部署。"""
+        self._make_release()
+        result = self._run(extra_env={"MYSQL_TABLE_COUNT": "1"},
+                           extra_args=["--allow-http"])
+        self.assertEqual(result.returncode, 0,
+                         f"显式允许 HTTP 时应部署成功；stderr={result.stderr}")
+        self.assertIn("已显式允许 HTTP 降级运行", result.stdout)
+        self.assertTrue((self.app / "app.jar").exists())
+
+    def test_https_smoke_failure_triggers_rollback(self):
+        """T22：HTTPS 443 网关探测失败时，必须回滚并终止部署。"""
+        old_jar = self.app / "app.jar"
+        old_jar.write_bytes(b"OLD JAR")
+        self._make_release()
+        self._install_cert()
+        result = self._run_with_healthcheck(extra_env={"HTTPS_SMOKE_FAIL": "yes",
+                                                       "MYSQL_TABLE_COUNT": "1"})
+        self.assertNotEqual(result.returncode, 0, "HTTPS 探测失败必须中止部署")
+        self.assertIn("HTTPS 网关探测失败", result.stderr)
+        self.assertEqual(old_jar.read_bytes(), b"OLD JAR", "探测失败应回滚旧产物")
+
     def test_health_check_failure_triggers_rollback(self):
         """R29 烟测：健康检查失败（curl 返回非 200）时，应回滚旧产物。"""
         old_jar = self.app / "app.jar"
@@ -447,6 +489,7 @@ class TencentDeployLifecycleTest(_DeployFixture):
         old_admin_index = self.www_admin / "index.html"
         old_admin_index.write_text("<html>OLD ADMIN</html>", encoding="utf-8")
         self._make_release()
+        self._install_cert()
         result = self._run_with_healthcheck(extra_env={"CURL_FAIL": "yes",
                                                        "MYSQL_TABLE_COUNT": "1"})
         self.assertNotEqual(result.returncode, 0)
@@ -458,6 +501,7 @@ class TencentDeployLifecycleTest(_DeployFixture):
     def test_successful_deploy_updates_all_components(self):
         """R29 成功路径：三端产物全部正确部署，不触发回滚。"""
         self._make_release()
+        self._install_cert()
         result = self._run(extra_env={"MYSQL_TABLE_COUNT": "1"})
         self.assertEqual(result.returncode, 0,
                          f"正常部署应成功退出；stderr={result.stderr}")
@@ -477,6 +521,7 @@ class TencentDeployLifecycleTest(_DeployFixture):
     def test_no_migration_when_tables_exist_without_flag(self):
         """R29 迁移：数据库已有表且未传 --migrate 时，不应执行 SQL 导入。"""
         self._make_release()
+        self._install_cert()
         result = self._run(extra_env={"MYSQL_TABLE_COUNT": "5"})
         self.assertEqual(result.returncode, 0)
         log = (self.root / "calls.log").read_text(encoding="utf-8", errors="replace")
@@ -586,7 +631,8 @@ class AliyunDeployLifecycleTest(_DeployFixture):
             "REDIS_PASS=testredispass\n"
             "APP_FRONTEND_STOREFRONT_URL=https://shop.example.com/m/\n"
             "BOOTSTRAP_ADMIN_USERNAME=bootstrapadmin\nBOOTSTRAP_ADMIN_PASSWORD=Bootstrap#2026\n"
-            "SHOP_SERVER_NAME=shop.example.com\nGMALL_SERVER_NAME=shop.example.com\n",
+            "SHOP_SERVER_NAME=shop.example.com\nGMALL_SERVER_NAME=shop.example.com\n"
+            "CERTBOT_EMAIL=ops@example.com\n",
             encoding="utf-8",
         )
         result = self._run(extra_env={"MYSQL_TABLE_COUNT": "1"})
@@ -597,6 +643,7 @@ class AliyunDeployLifecycleTest(_DeployFixture):
     def test_port_defaults_to_8080(self):
         """R29 阿里云遗留修复：默认端口应为 8080，不再是 8081。"""
         self._make_release()
+        self._install_cert()
         result = self._run(extra_env={"MYSQL_TABLE_COUNT": "1"})
         self.assertEqual(result.returncode, 0, f"部署应成功；stderr={result.stderr}")
         # 检查 systemd unit 中的端口（由 render_site 写入 nginx 模板占位符替换）
@@ -606,6 +653,7 @@ class AliyunDeployLifecycleTest(_DeployFixture):
     def test_successful_deploy_updates_all_components(self):
         """R29 阿里云成功路径：三端产物全部正确部署。"""
         self._make_release()
+        self._install_cert()
         result = self._run(extra_env={"MYSQL_TABLE_COUNT": "1"})
         self.assertEqual(result.returncode, 0,
                          f"正常部署应成功退出；stderr={result.stderr}")

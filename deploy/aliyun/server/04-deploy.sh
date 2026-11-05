@@ -18,6 +18,7 @@ HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
 DO_HEALTHCHECK="yes"
 DO_MIGRATE="no"
 KEEP_SOURCE="no"
+ALLOW_HTTP="no"
 
 log()  { printf '\033[0;32m[deploy]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[deploy]\033[0m %s\n' "$*"; }
@@ -35,6 +36,7 @@ for arg in "$@"; do
     --no-healthcheck) DO_HEALTHCHECK="no" ;;
     --migrate)        DO_MIGRATE="yes" ;;
     --keep-source)    KEEP_SOURCE="yes" ;;
+    --allow-http)     ALLOW_HTTP="yes" ;;
   esac
 done
 
@@ -417,27 +419,40 @@ safe_nginx_switch() {
   return 0
 }
 
-# 检查是否存在已颁发的证书
+# 检查是否存在已颁发的证书；无证书时仅允许显式 --allow-http 降级
 HAVE_CERT="no"
 if [[ -f "${CERT_DIR}/fullchain.pem" && -f "${CERT_DIR}/privkey.pem" ]]; then
   log "发现已有证书: ${CERT_DIR}"
   HAVE_CERT="yes"
 else
-  log "未检测到现有证书，先使用 HTTP 引导配置上线..."
+  [[ -n "${CERTBOT_EMAIL:-}" ]] || die "缺少 CERTBOT_EMAIL，无法申请证书；如确需明文运行请显式加 --allow-http"
+  log "未检测到现有证书，先使用 HTTP 引导配置发布 ACME 挑战..."
   render_site "${GMALL_ROOT}/scripts/nginx-gmall-bootstrap.conf" /tmp/gmall-nginx-bootstrap.conf
   safe_nginx_switch /tmp/gmall-nginx-bootstrap.conf
 
-  log "尝试申请 Let's Encrypt 证书 (域名: ${SERVER_NAME})..."
+  CERTBOT_LOG="${BACKUP_DIR}/certbot-${DEPLOY_TS}.log"
+  log "尝试申请 Let's Encrypt 证书 (域名: ${SERVER_NAME})，日志: ${CERTBOT_LOG}"
   if certbot certonly --webroot -w /var/www/certbot \
        -d "${SERVER_NAME}" --non-interactive --agree-tos \
-       --email "${CERTBOT_EMAIL:-hjp9221@163.com}" --keep-until-expiring 2>&1 | tail -20; then
-    if [[ -f "${CERT_DIR}/fullchain.pem" ]]; then
-      log "✅ SSL 证书签发成功"
+       --email "${CERTBOT_EMAIL}" --keep-until-expiring >"${CERTBOT_LOG}" 2>&1; then
+    if [[ -f "${CERT_DIR}/fullchain.pem" && -f "${CERT_DIR}/privkey.pem" ]]; then
+      log "SSL 证书签发成功"
       HAVE_CERT="yes"
+    else
+      warn "certbot 返回成功但证书文件缺失（${CERT_DIR}），视为证书申请失败"
     fi
   else
-    warn "Let's Encrypt 证书签发未完成（通常因为公网 DNS 尚未解析到本服务器），将以 HTTP 模式运行。"
-    warn "待 DNS 解析生效后，随时运行: certbot certonly --webroot -w /var/www/certbot -d ${SERVER_NAME}"
+    warn "Let's Encrypt 证书签发失败，certbot 日志摘要："
+    tail -n 20 "${CERTBOT_LOG}" 2>/dev/null || true
+  fi
+
+  if [[ "${HAVE_CERT}" != "yes" && "${ALLOW_HTTP}" != "yes" ]]; then
+    warn "当前没有有效 HTTPS 证书，且未显式指定 --allow-http，拒绝以明文 HTTP 上线。"
+    warn "待 DNS 解析生效后重新部署，或由环境负责人手工执行: certbot certonly --webroot -w /var/www/certbot -d ${SERVER_NAME}"
+    die "无有效 HTTPS 证书，部署中止（已回滚引导站点与线上产物）"
+  fi
+  if [[ "${HAVE_CERT}" != "yes" ]]; then
+    warn "⚠️ 已显式允许 HTTP 降级运行（--allow-http）：登录、订单、卡密与 PII 将以明文传输，仅限临时排障。"
   fi
 fi
 
@@ -480,6 +495,17 @@ if [[ "${DO_HEALTHCHECK}" == "yes" ]]; then
     tail -n 40 "${GMALL_ROOT}/logs/backend.log" 2>/dev/null || true
     die "后端健康检查超时"
   }
+
+  if [[ "${HAVE_CERT}" == "yes" ]]; then
+    log "执行 HTTPS 443 网关探测 (${SERVER_NAME})..."
+    if ! curl -fsS --max-time 8 --resolve "${SERVER_NAME}:443:127.0.0.1" \
+         "https://${SERVER_NAME}/api/v1/auth/ready" 2>/dev/null | grep -q '"code":200'; then
+      warn "HTTPS 443 探测失败，最近 Nginx 错误日志："
+      tail -n 20 /var/log/nginx/error.log 2>/dev/null || true
+      die "HTTPS 网关探测失败，拒绝以不可用证书/网关上线"
+    fi
+    log "HTTPS 443 探测通过"
+  fi
 fi
 
 # 确认上线成功，解除异常回滚 trap
