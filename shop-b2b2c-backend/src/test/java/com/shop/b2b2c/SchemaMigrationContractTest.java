@@ -29,7 +29,9 @@ class SchemaMigrationContractTest {
 
         assertTrue(sql.contains("information_schema.statistics"), "索引变更必须做存在性判断以保证重试幂等");
         assertTrue(sql.contains("information_schema.columns"), "列变更必须做存在性判断以保证重试幂等");
-        assertTrue(sql.contains("DATE_ADD(created_at, INTERVAL 15 MINUTE)"), "存量 UNPAID 必须按 created_at + 15 分钟回填");
+        assertFalse(sql.contains("DATE_ADD(created_at, INTERVAL 15 MINUTE)"), "开发期基线不再回填存量订单截止时间");
+        assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*UPDATE\\b").matcher(sql).find(),
+                "迁移脚本不得回填历史业务数据");
         assertTrue(sql.contains("idx_order_created"));
         assertTrue(sql.contains("idx_merchant_created"));
         assertTrue(sql.contains("idx_order_expiry"));
@@ -43,17 +45,17 @@ class SchemaMigrationContractTest {
     }
 
     @Test
-    void cardFingerprintBackfillMigrationIsIdempotentAndNonDestructive() throws Exception {
-        var resource = new ClassPathResource("db/migrations/V2__s2_card_fingerprint_backfill.sql");
-        assertTrue(resource.exists(), "T14 必须提供 V2 存量库指纹补算脚本");
+    void cardFingerprintStateMigrationOnlyAddsColumnAndDoesNotBackfill() throws Exception {
+        var resource = new ClassPathResource("db/migrations/V2__s2_card_fingerprint_state.sql");
+        assertTrue(resource.exists(), "T14 必须保留 V2 状态列增量脚本");
         String sql = resource.getContentAsString(StandardCharsets.UTF_8);
 
         assertTrue(sql.contains("information_schema.columns"), "新增列必须做存在性判断以保证重试幂等");
-        assertTrue(sql.contains("fingerprint_unavailable"), "必须显式标记无法补算的历史行");
-        assertTrue(sql.contains("SHA2(TRIM(card_content), 256)"), "明文历史行必须回填 SHA-256 指纹");
-        assertTrue(sql.contains("ENC:v1:") && sql.contains("ENC:v2:"), "加密行不得在 SQL 中当作明文取指纹");
-        assertTrue(sql.contains("ROW_NUMBER()"), "同店铺重复明文必须选定唯一回填行以避开唯一键");
-        assertTrue(sql.contains("card_fingerprint IS NULL"), "补算只处理仍无指纹的历史行");
+        assertTrue(sql.contains("fingerprint_unavailable"), "必须保留指纹不可用状态列");
+        assertFalse(sql.contains("SHA2(TRIM(card_content), 256)"), "开发期基线不再回填历史明文指纹");
+        assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*UPDATE\\b").matcher(sql).find(),
+                "迁移脚本不得回填或改写历史卡密");
+        assertFalse(sql.contains("ROW_NUMBER()"), "不再需要为历史回填去重选行");
 
         assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*(DROP\\s+TABLE|TRUNCATE|DELETE|USE)\\b")
                 .matcher(sql).find(), "迁移脚本不得包含删表、清空、删数据或切库语句");

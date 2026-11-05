@@ -111,35 +111,14 @@ class CardAssetServiceTest {
         var result = service.importCards(1L, 9L, 1L, 1L, List.of("fresh-private"));
         assertEquals(1, result.get("importedCount"));
         verify(assets).markFingerprintState(1L, 3L, 1);
-        verify(assets, never()).fillFingerprint(any(), any(), any());
     }
-    @Test void readableHistoricalCipherGetsFingerprintBackfilled() {
+    @Test void readableHistoricalCipherIsComparedInMemoryWithoutBackfill() {
         var cipher = new com.shop.b2b2c.service.CardCipherService();
         var legacy = new ProductVirtualCard(); legacy.setId(3L); legacy.setCardContent(cipher.encrypt("legacy-other"));
         when(assets.findUnfingerprinted(1L)).thenReturn(List.of(legacy));
         var result = service.importCards(1L, 9L, 1L, 1L, List.of("fresh-private"));
         assertEquals(1, result.get("importedCount"));
-        var captured = org.mockito.ArgumentCaptor.forClass(String.class);
-        verify(assets).fillFingerprint(eq(1L), eq(3L), captured.capture());
-        assertEquals(cipher.fingerprint("legacy-other"), captured.getValue());
-    }
-    @Test void duplicateHistoricalPlaintextAvoidsSecondFingerprintWrite() {
-        var cipher = new com.shop.b2b2c.service.CardCipherService();
-        String duplicate = cipher.encrypt("duplicate-history");
-        var first = new ProductVirtualCard(); first.setId(3L); first.setCardContent(duplicate);
-        var second = new ProductVirtualCard(); second.setId(4L); second.setCardContent(duplicate);
-        when(assets.findUnfingerprinted(1L)).thenReturn(List.of(first, second));
-        Set<String> stored = new HashSet<>();
-        when(assets.findExistingFingerprint(eq(1L), anyCollection())).thenAnswer(call -> {
-            Collection<String> probes = call.getArgument(1);
-            return probes.stream().filter(stored::contains).findFirst().orElse(null);
-        });
-        when(assets.fillFingerprint(eq(1L), eq(3L), anyString())).thenAnswer(call -> {
-            stored.add(call.getArgument(2)); return 1;
-        });
-        assertEquals(1, service.importCards(1L, 9L, 1L, 1L, List.of("fresh-private")).get("importedCount"));
-        verify(assets, times(1)).fillFingerprint(eq(1L), any(), anyString());
-        verify(assets).markFingerprintState(1L, 4L, 0);
+        verify(assets, never()).markFingerprintState(any(), any(), any());
     }
     @Test void importWithoutActorNeverCreatesUnattributedBatch() {
         assertEquals(401, assertThrows(BusinessException.class, () -> service.importCards(1L, null, 1L, 1L, List.of("new"))).getCode());

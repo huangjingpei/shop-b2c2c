@@ -1,7 +1,7 @@
 /*
  * 文件：CardAssetService.java
  * 用途：本店卡密去重导入、成功批次记录、安全作废、店长按SKU限量查看明文及导出审计。
- * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，批次/成员/卡/库存同事务。T14：仅扫描本店 fingerprint IS NULL 的历史行，解密后内存计算摘要并补写指纹；拿不到明文/解密失败的行标记无法补算、计数并跳过，不中断导入，也不输出明文。密钥按当前单密钥假设处理，轮换不在本轮范围。T15：列表只返回脱敏标识+指纹，不解密；明文查看必须按SKU限量且仅店长/超管；导出必须显式二次确认并写入 card_access_audit，审计失败不得返回明文。作废拒绝HELD预占和数量不一致，不反向锁预占行。
+ * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，批次/成员/卡/库存同事务。T14：仅对本店 fingerprint IS NULL 的行做内存解密比对，不再回写指纹或做历史补算；解密失败/缺少明文的行标记 fingerprint_unavailable=1、计数并跳过，不中断导入，也不输出明文。密钥按当前单密钥假设处理，轮换不在本轮范围。T15：列表只返回脱敏标识+指纹，不解密；明文查看必须按SKU限量且仅店长/超管；导出必须显式二次确认并写入 card_access_audit，审计失败不得返回明文。作废拒绝HELD预占和数量不一致，不反向锁预占行。
  */
 package com.shop.b2b2c.service;
 
@@ -13,8 +13,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.*;
 import org.springframework.transaction.support.*;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.util.*;
 
 @Slf4j
@@ -70,14 +68,14 @@ public class CardAssetService {
             if (current.getStockQuantity() < 0 || held < 0 || (long) current.getStockQuantity() + normalized.size() > Integer.MAX_VALUE - held) {
                 throw new BusinessException(400, "库存数量异常或超过上限（含待释放预占）");
             }
-            // R25: 优先通过数据库索引指纹直接查找，避免全店历史明文全量读入内存
+            // R25: 优先通过数据库索引指纹直接查找，避免全店无指纹行全量读入内存
             String existing = assets.findExistingFingerprint(merchant, fingerprints);
             if (existing == null) {
-                // T14: 仅补算仍无指纹的历史行，使其参与本次去重
-                existing = backfillAndMatch(merchant, fingerprints);
+                // T14: 无指纹行只做内存解密比对，不回写指纹
+                existing = matchUnfingerprinted(merchant, fingerprints);
             }
             if (existing != null) {
-                throw new BusinessException(409, "卡密已存在于本店历史记录，整批未导入；请核对库存");
+                throw new BusinessException(409, "卡密已存在于本店已有记录，整批未导入；请核对库存");
             }
             var batch = new CardImportBatch(); batch.setMerchantId(merchant); batch.setActorId(actor); batch.setProductId(product); batch.setSkuId(sku);
             batch.setImportedCount(normalized.size()); batch.setBeforeStock(current.getStockQuantity()); batch.setAfterStock(current.getStockQuantity() + normalized.size());
@@ -98,11 +96,10 @@ public class CardAssetService {
     }
 
     /**
-     * T14：补算本店历史无指纹行的明文摘要，并返回与本次导入重复的指纹（无重复返回 null）。
-     * 解密失败、正文为空等无法补算的行只标记 fingerprint_unavailable=1 并计数告警，不能中断导入。
-     * 补写指纹使用条件更新（card_fingerprint IS NULL），可重入且不覆盖已有指纹。
+     * 开发期基线清理：本店无指纹行只在内存解密比对，不再回写指纹（迁移脚本不做历史补算）。
+     * 解密失败、正文为空等无法比对的行只标记 fingerprint_unavailable=1 并计数告警，不能中断导入，也不输出明文。
      */
-    private String backfillAndMatch(Long merchant, Set<String> incoming) {
+    private String matchUnfingerprinted(Long merchant, Set<String> incoming) {
         List<ProductVirtualCard> pending = assets.findUnfingerprinted(merchant);
         if (pending == null || pending.isEmpty()) return null;
         int unavailable = 0;
@@ -117,7 +114,7 @@ public class CardAssetService {
             try {
                 plaintext = cipher.decrypt(content);
             } catch (RuntimeException e) {
-                // 密钥缺失或历史密钥不匹配：明确标记不可补算，继续处理其余历史行
+                // 密钥缺失或正文损坏：明确标记不可比对，继续处理其余行
                 unavailable++;
                 assets.markFingerprintState(merchant, previous.getId(), 1);
                 continue;
@@ -127,17 +124,10 @@ public class CardAssetService {
                 assets.markFingerprintState(merchant, previous.getId(), 1);
                 continue;
             }
-            String fingerprint = cipher.fingerprint(plaintext);
-            if (incoming.contains(fingerprint)) return fingerprint;
-            // 同店铺已有该指纹时不补写，避免唯一键冲突；该行仍已在内存中完成比对
-            if (assets.findExistingFingerprint(merchant, List.of(fingerprint)) == null) {
-                assets.fillFingerprint(merchant, previous.getId(), fingerprint);
-            } else {
-                assets.markFingerprintState(merchant, previous.getId(), 0);
-            }
+            if (incoming.contains(cipher.fingerprint(plaintext))) return cipher.fingerprint(plaintext);
         }
         if (unavailable > 0) {
-            log.warn("卡密历史指纹补算跳过 {} 行：缺少明文或解密失败，已标记 fingerprint_unavailable=1", unavailable);
+            log.warn("卡密无指纹行比对跳过 {} 行：缺少明文或解密失败，已标记 fingerprint_unavailable=1", unavailable);
         }
         return null;
     }
@@ -245,9 +235,5 @@ public class CardAssetService {
     private void requireEntry(Long merchant) {
         if (merchant == null || merchant < 1) throw new BusinessException(403, "当前账号未绑定店铺");
         if (TransactionSynchronizationManager.isActualTransactionActive()) throw new IllegalStateException("卡密资产入口不能套外层事务");
-    }
-    private String fingerprint(String content) {
-        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content.getBytes(StandardCharsets.UTF_8))); }
-        catch (java.security.NoSuchAlgorithmException e) { throw new IllegalStateException(e); }
     }
 }

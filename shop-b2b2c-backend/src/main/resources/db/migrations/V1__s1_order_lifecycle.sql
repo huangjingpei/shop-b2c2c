@@ -1,17 +1,12 @@
 -- 文件：V1__s1_order_lifecycle.sql
--- 用途：T08/T10/T11/T12 存量库升级：补订单支付截止时间、预占所有权字段、分页与到期扫描索引。
+-- 用途：T12 版本化增量结构补齐（不含历史数据回填）：订单分页/到期扫描索引、预占所有权与重发字段、预占到期游标索引。
 -- 维护注意：
---  1. 本脚本只用于保留数据的存量库；新库结构仍以 db/schema.sql 为唯一入口。
+--  1. 本执行器只用于保留结构的开发库；新库结构以 db/schema.sql 为唯一入口，两者不得互相替代。
 --  2. MySQL DDL 隐式提交，全部变更必须幂等；用 information_schema 判断索引/列是否存在，失败重试不得留下半套结构。
---  3. 禁止加入 DROP TABLE、TRUNCATE、DELETE、USE 或删库语句；索引重建仅限索引本身。
---  4. lock_expire_time 回填仅处理 UNPAID 且为 NULL 的存量单，统一按 created_at + 15 分钟计算 (Q15)。
+--  3. 禁止 DROP TABLE、TRUNCATE、DELETE、USE 或删库语句；索引重建仅限索引本身。
+--  4. 本脚本不回填订单/卡密等历史业务数据；支付截止由订单创建路径写入，已存在数据不做补算。
 
--- 1. 存量 UNPAID 单回填 15 分钟支付截止时间
-UPDATE trade_order
-SET lock_expire_time = DATE_ADD(created_at, INTERVAL 15 MINUTE)
-WHERE order_status = 'UNPAID' AND lock_expire_time IS NULL;
-
--- 2. 订单分页 created_at + id 稳定排序索引
+-- 1. 订单分页 created_at + id 稳定排序索引
 SET @idx_exists := (SELECT COUNT(*) FROM information_schema.statistics
     WHERE table_schema = DATABASE() AND table_name = 'trade_order' AND index_name = 'idx_order_created');
 SET @ddl := IF(@idx_exists = 0,
@@ -21,7 +16,7 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- 3. 商户维度订单分页 created_at + id 稳定排序索引
+-- 2. 商户维度订单分页 created_at + id 稳定排序索引
 SET @idx_exists := (SELECT COUNT(*) FROM information_schema.statistics
     WHERE table_schema = DATABASE() AND table_name = 'trade_order' AND index_name = 'idx_merchant_created');
 SET @ddl := IF(@idx_exists = 0,
@@ -31,7 +26,7 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- 4. 超时未支付订单扫描索引：订单状态 + 数据库截止时间
+-- 3. 超时未支付订单扫描索引：订单状态 + 数据库截止时间
 SET @idx_exists := (SELECT COUNT(*) FROM information_schema.statistics
     WHERE table_schema = DATABASE() AND table_name = 'trade_order' AND index_name = 'idx_order_expiry');
 SET @ddl := IF(@idx_exists = 0,
@@ -41,7 +36,7 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- 5. 预占所有权与幂等尝试键分离字段 (T10)
+-- 4. 预占所有权与幂等尝试键分离字段 (T10)
 SET @col_exists := (SELECT COUNT(*) FROM information_schema.columns
     WHERE table_schema = DATABASE() AND table_name = 'inventory_reservation' AND column_name = 'attempt_key');
 SET @ddl := IF(@col_exists = 0,
@@ -60,7 +55,7 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- 6. 预占到期游标索引补齐 order_id；索引可重建，不删除任何业务数据
+-- 5. 预占到期游标索引补齐 order_id；索引可重建，不删除任何业务数据
 SET @idx_exists := (SELECT COUNT(*) FROM information_schema.statistics
     WHERE table_schema = DATABASE() AND table_name = 'inventory_reservation' AND index_name = 'idx_reservation_expiry');
 SET @ddl := IF(@idx_exists = 0,
