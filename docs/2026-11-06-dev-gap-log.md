@@ -72,19 +72,18 @@
 - 虚拟订单交付判断（不构成权限扩大）：现有 `deliverOrder` 只接受 `goodsType=1`，员工不能通过发货接口交付虚拟卡密；卡密自动交付发生在支付事件内，不向调用方返回明文；`fulfillVirtualOrder` 仅接受 `goodsType=3` 且只回写 `serviceVoucher`，不返回卡密；商家订单详情对 `MERCHANT_STAFF` 已把 `serviceVoucher` 与 `cardDetails` 替换为“员工账号无权查阅明文”。因此员工履约/发货不会被要求返回明文卡密，与 Q21“员工不看明文”不冲突。T16 实现卡密查看/导出接口时必须继续只允许店长，不得因为发货放开而扩大。
 - 影响面：员工可独立处理本店实物订单发货；推单与资金链路权限不变；无数据库变更。
 
-## G08 T14 收窄后的指纹补算边界与未纳入项
+## G08 T14 指纹补算边界（2026-11-06 基线清理后已删除补算）
 
-- 发现位置：[CardAssetService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java) 的 `backfillAndMatch`；[V2__s2_card_fingerprint_backfill.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/migrations/V2__s2_card_fingerprint_backfill.sql)；[ProductVirtualCard.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/entity/ProductVirtualCard.java)。
-- 收窄事实（用户 2026-11-06 同意）：T14 只解决“已加密但指纹为 NULL 的历史数据无法参与去重”，实现为 V2 迁移 + 导入时历史行指纹补算。
-- 指纹补算边界：
-  1. V2 只能对未加密的明文历史行执行 `SHA2(TRIM(card_content),256)` 回填；`ENC:v1:`/`ENC:v2:` 加密行与空正文在 SQL 中拿不到明文，统一标记 `fingerprint_unavailable=1`。
-  2. 应用在执行卡密导入时只读取本店 `card_fingerprint IS NULL` 的行，逐行尝试解密并在内存计算指纹；成功且无同店铺重复时条件回写指纹（`card_fingerprint IS NULL`），失败或空正文只计数 WARN、标记 1、继续处理后续行，不中断导入。
-  3. 同店铺 `(merchant_id, card_fingerprint)` 有唯一键：V2 对重复明文只回填最早一行；其余保持 NULL、标记 0。其去重代表性由已回填的同一指纹行承担，导入仍会命中 409。
-  4. 本次未收紧 `card_fingerprint` 非空/唯一，未删除历史 NULL 行，未改密钥体系。
-- 不属本卡范围的原因（用户收窄指令）：密钥轮换、缺省密钥回退与无钥匙历史行的补算依赖尚未确认的生产密钥配置，必须改 `CardCipherService` 与部署环境，超出“只做指纹补算与去重”的边界；卡密列表脱敏、明文查看与导出审计属于 T16 的 DTO/权限/审计表范围，不能在 T14 顺手扩大。
-- 建议归属：密钥轮换、缺省密钥回退、密钥不可用时历史行补算 → T15/T21；卡密列表脱敏、明文查看、导出二次确认与审计 → T16；`fingerprint_unavailable` 的运营可见统计/告警面板可作为后续独立候选，不在本轮实现。
-- 影响面：当前密钥与历史密文匹配时，加密历史行会在首次导入时补算并从此参与索引去重；密钥缺失或不匹配时，这些行只能“每次导入重试解密、失败跳过”，无法参与索引去重，需等待 T15/T21 提供稳定密钥后再补算。跳过计数只写 WARN 日志，没有持久化计数字段；`fingerprint_unavailable` 仅作标记，不改变卡密状态、库存或履约。
-- 2026-11-06 用户口径更新：开发期无真实运营数据，**历史数据与存量兼容一律不作为待办或验收项**。V2 脚本保留（幂等、对新库无害）但不再扩展；历史指纹补算代码保留但不优化；解密失败跳过计数保留；指纹补算不再作为“必须通过”的验证入口。待开发期基线清理时，`fingerprint_unavailable` 列与回填逻辑是否删除由该次清理决定（见后续缺口记录）。
+- 发现位置：[CardAssetService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java)、[CardAssetMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/CardAssetMapper.java)、[V2__s2_card_fingerprint_state.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/migrations/V2__s2_card_fingerprint_state.sql)、[ProductVirtualCard.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/entity/ProductVirtualCard.java)。
+- 历史事实（已作废）：曾按“存量兼容”实现 V2 明文 `SHA2(TRIM(card_content),256)` 回填与导入时补写指纹分支；该实现现已在开发期基线清理中删除。
+- 用户口径（2026-11-06）：开发期无真实运营数据，历史数据与存量兼容一律不作为待办或验收项。
+- 基线清理（提交 `de36118`）：
+  1. V1 删除存量订单截止时间回填语句，只保留幂等结构增量；
+  2. V2 只保留 `fingerprint_unavailable` 的幂等列补齐，删除明文回填、加密行跳过与去重选行段；
+  3. `CardAssetService` 无指纹分支改为纯内存解密比对，不再回写指纹；解密失败或缺少明文仍标记 `fingerprint_unavailable=1` 并计数 WARN，不中断导入；
+  4. 删除随之无用的 `fillFingerprint` 与私有 `fingerprint` 方法。
+- 现状边界：所有新导入卡密在入库前计算指纹；无指纹行只作防御性内存比对。`card_fingerprint` 保持可空 + 同店铺唯一，`fingerprint_unavailable` 仅表示无法比对，不改变卡密状态、库存或履约。
+- 未验证：未运行 mvn/编译/测试，状态为“已实现·待人工验证”。
 
 ## G09 T15 密钥项取消：按单密钥假设继续，历史是否轮换过仍待确认
 
@@ -104,7 +103,17 @@
 - 用户确认（2026-11-06）：**严格从下单起算 15 分钟**；预占成功不得重置或延长 `lockExpireTime`，库存占用最长不超过 15 分钟；超时即释放预占，超时付款落 `LATE_PAYMENT`。
 - 处理：提交 `4a4db61` 修改 `PeerPayServiceImpl.preLockInventory`，预占到期/支付截止统一取 `createdAt + 15min`，`lockSeconds` 按剩余时间返回；补集成用例覆盖“预占不延长”“到期释放”“超期付款 LATE_PAYMENT”。文档已在 Q15/Q17、T08/T10 与决策问卷 §0.2 覆盖原推荐口径。
 - 未验证：未运行 mvn/编译/测试，状态为“已实现·待人工验证”。
-- 残留：历史 `RESERVED_LOCK + lock_expire_time NULL` 的兜底释放逻辑仍在（开发期无存量数据，是否随基线清理收紧见清理记录）。
+- 残留：原 `RESERVED_LOCK + lock_expire_time NULL` 的兜底处理与取消预占清空截止已随基线清理提交 `de3d6bd` 移除；提前扫描不再有 `created_at` NULL 回退分支。取消预占现保留原截止时间，意向单继续按 `createdAt+15` 关闭。
+
+## G11 开发期基线清理：已删除的兼容补丁与剩余事项
+
+- 授权（用户 2026-11-06）：开发阶段不存在兼容性约束，已提交代码也允许改；清理范围限定为“为兼容旧库/旧数据而写的补丁”，不重构真实业务逻辑。
+- 结构（提交 `6416a87`）：`schema.sql` 一次写全主键、唯一键、非空、外键、默认值、检查与索引；新增 37 个外键（外键约束共 39 个，含原有 `card_import_item` 2 个；覆盖订单明细、预占、卡密、审计、导入批次、作废、账单、投诉等）；预占与支付事件关联 ID 统一 `BIGINT UNSIGNED`；`trade_order.payment_channel` 收紧为 `NOT NULL DEFAULT 'WECHAT'`。`SchemaMySqlTest` 同步表数量、到期索引列与作废夹具。
+- 卡密（提交 `de36118`）：V1 删除存量订单截止回填；V2 仅保留 `fingerprint_unavailable` 幂等列补齐；`CardAssetService` 无指纹行改纯内存解密比对，不回写指纹，解密失败跳过计数保留；删除 `fillFingerprint` 与冗余私有 `fingerprint`。
+- 订单截止（提交 `de3d6bd`）：`findExpiredUnpaidOrderIds` 删除 `lock_expire_time IS NULL AND created_at <= cutoff` 兼容分支；`cancelPreLock` 不再置空 `lockExpireTime`；`expireIfNecessary` 对缺失截止回退 `createdAt+15`，不把 NULL 当作永不到期。
+- 已从清单/缺口划掉：G08 的历史指纹回填、G10 的 NULL 预占兜底、T14 的 V2 明文回填与补写分支均不再作为待办或验收项；原“存量 NULL 回填见 T12”的状态描述同步更新。
+- 保留（不属于兼容补丁）：`CardCipherService` 的明文透明返回与默认种子属密钥行为，按用户指令不动，仍在 G09 待上线前确认；`fingerprint_unavailable` 列保留，用于解密失败防御性标记。
+- 未验证：未运行 mvn/编译/测试/构建/连库；MySQL 外键需用户在真实库执行 `schema.sql` 验证。状态“已实现·待人工验证”。
 
 ## S1 环境核对待办（由环境负责人执行）
 
