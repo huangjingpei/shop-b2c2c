@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS `merchant_payment_account` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_merchant_channel` (`merchant_id`, `channel`),
-  CONSTRAINT `fk_payment_account_merchant` FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+  CONSTRAINT fk_payment_account_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商户二级收付通进件账户表';
 
 -- 3. 系统后台用户表 (RBAC 商家隔离)
@@ -67,7 +67,7 @@ CREATE TABLE IF NOT EXISTS `sys_user` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_username` (`username`),
-  CONSTRAINT `fk_user_merchant` FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+  CONSTRAINT fk_user_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统管理用户表';
 
 -- 4. 商品分类表
@@ -100,8 +100,8 @@ CREATE TABLE IF NOT EXISTS `product` (
   PRIMARY KEY (`id`),
   KEY `idx_merchant_product` (`merchant_id`, `status`),
   KEY `idx_category` (`category_id`),
-  CONSTRAINT `fk_product_merchant` FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
-  CONSTRAINT `fk_product_category` FOREIGN KEY (`category_id`) REFERENCES `category` (`id`)
+  CONSTRAINT fk_product_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
+  CONSTRAINT fk_product_category FOREIGN KEY (`category_id`) REFERENCES `category` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品主表';
 
 -- 6. 商品规格 SKU 表
@@ -119,8 +119,8 @@ CREATE TABLE IF NOT EXISTS `product_sku` (
   KEY `idx_product_id` (`product_id`),
   CONSTRAINT `chk_sku_stock` CHECK (`stock_quantity` >= 0),
   CONSTRAINT `chk_sku_price` CHECK (`price` >= 0.00),
-  CONSTRAINT `fk_sku_product` FOREIGN KEY (`product_id`) REFERENCES `product` (`id`),
-  CONSTRAINT `fk_sku_merchant` FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+  CONSTRAINT fk_sku_product FOREIGN KEY (`product_id`) REFERENCES `product` (`id`),
+  CONSTRAINT fk_sku_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品规格SKU表';
 
 -- 7. 虚拟卡密库存表 (R05/R25: 分级加密存储与SHA-256指纹唯一去重)
@@ -138,9 +138,9 @@ CREATE TABLE IF NOT EXISTS `product_virtual_card` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_merchant_fingerprint` (`merchant_id`, `card_fingerprint`),
   KEY `idx_sku_status` (`sku_id`, `status`),
-  CONSTRAINT `fk_card_product` FOREIGN KEY (`product_id`) REFERENCES `product` (`id`),
-  CONSTRAINT `fk_card_sku` FOREIGN KEY (`sku_id`) REFERENCES `product_sku` (`id`),
-  CONSTRAINT `fk_card_merchant` FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+  CONSTRAINT fk_card_product FOREIGN KEY (`product_id`) REFERENCES `product` (`id`),
+  CONSTRAINT fk_card_sku FOREIGN KEY (`sku_id`) REFERENCES `product_sku` (`id`),
+  CONSTRAINT fk_card_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='虚拟商品卡密库存表';
 
 -- 7.1 卡密明文访问审计表 (T15: 导出等明文外带操作留痕；只追加，不保存卡密正文/指纹)
@@ -155,9 +155,9 @@ CREATE TABLE IF NOT EXISTS `card_access_audit` (
   PRIMARY KEY (`id`),
   KEY `idx_audit_merchant_created` (`merchant_id`, `created_at`),
   KEY `idx_audit_sku_created` (`sku_id`, `created_at`),
-  CONSTRAINT `fk_audit_merchant` FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
-  CONSTRAINT `fk_audit_sku` FOREIGN KEY (`sku_id`) REFERENCES `product_sku` (`id`),
-  CONSTRAINT `fk_audit_actor` FOREIGN KEY (`actor_id`) REFERENCES `sys_user` (`id`)
+  CONSTRAINT fk_audit_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
+  CONSTRAINT fk_audit_sku FOREIGN KEY (`sku_id`) REFERENCES `product_sku` (`id`),
+  CONSTRAINT fk_audit_actor FOREIGN KEY (`actor_id`) REFERENCES `sys_user` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='卡密明文访问审计表';
 
 -- 8. 交易订单主表 (含两段式代付字段)
@@ -200,7 +200,7 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   KEY `idx_merchant_created` (`merchant_id`, `created_at`, `id`),
   KEY `idx_order_expiry` (`order_status`, `lock_expire_time`, `id`),
   CONSTRAINT `chk_order_amounts` CHECK (`total_amount` >= 0.00 AND `pay_amount` >= 0.00),
-  CONSTRAINT `fk_order_merchant` FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+  CONSTRAINT fk_order_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易订单主表';
 
 -- 9. 订单商品明细表
@@ -221,9 +221,9 @@ CREATE TABLE IF NOT EXISTS `trade_order_item` (
   KEY `idx_order_id` (`order_id`),
   KEY `idx_order_sn` (`order_sn`),
   CONSTRAINT `chk_item_quantity` CHECK (`quantity` > 0 AND `price` >= 0.00 AND `subtotal` >= 0.00),
-  CONSTRAINT `fk_item_order` FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
-  CONSTRAINT `fk_item_product` FOREIGN KEY (`product_id`) REFERENCES `product` (`id`),
-  CONSTRAINT `fk_item_sku` FOREIGN KEY (`sku_id`) REFERENCES `product_sku` (`id`)
+  CONSTRAINT fk_item_order FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
+  CONSTRAINT fk_item_product FOREIGN KEY (`product_id`) REFERENCES `product` (`id`),
+  CONSTRAINT fk_item_sku FOREIGN KEY (`sku_id`) REFERENCES `product_sku` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单明细表';
 
 -- 10. 代付成功页【我也想开店】平台运营广告配置表
@@ -258,7 +258,7 @@ CREATE TABLE IF NOT EXISTS `billing_statement` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_shop_period` (`shop_id`, `period_date`, `period_type`),
-  CONSTRAINT `fk_statement_merchant` FOREIGN KEY (`shop_id`) REFERENCES `merchant_store` (`id`)
+  CONSTRAINT fk_statement_merchant FOREIGN KEY (`shop_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商户财务对账账单汇总表';
 
 -- 12. 买家维权投诉与超管仲裁工单表
@@ -283,8 +283,8 @@ CREATE TABLE IF NOT EXISTS `complaint` (
   KEY `idx_order_id` (`order_id`),
   KEY `idx_merchant_id` (`merchant_id`),
   KEY `idx_status` (`status`),
-  CONSTRAINT `fk_complaint_order` FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
-  CONSTRAINT `fk_complaint_merchant` FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+  CONSTRAINT fk_complaint_order FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
+  CONSTRAINT fk_complaint_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='买家维权投诉与平台官方仲裁表';
 
 -- 13. 库存预占流水；索引随建表创建，避免启动时重复 CREATE INDEX。
@@ -422,5 +422,5 @@ CREATE TABLE IF NOT EXISTS `payment_event` (
   UNIQUE KEY `uk_channel_trade_no` (`channel`, `pay_trade_no`),
   KEY `idx_order_sn` (`order_sn`),
   KEY `idx_merchant_event` (`merchant_id`, `event_status`),
-  CONSTRAINT `fk_payment_event_merchant` FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+  CONSTRAINT fk_payment_event_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付渠道到账事件流水';
