@@ -1,7 +1,7 @@
 /*
  * 文件：PeerPayServiceImpl.java
  * 用途：代付交易与库存预占的事务实现，协调订单、SKU、卡密及人工服务履约；代付编码统一复用PeerStatus。
- * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。保留无流水旧锁的升级兼容；卡密缺货必须回滚。公开代付详情不能返回卡密或服务凭证；当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
+ * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。支付截止严格从下单时刻起算 15 分钟，预占成功只回写订单原始截止时间，不得重置为“当下 +15 分钟”。保留无流水旧锁的升级兼容；卡密缺货必须回滚。公开代付详情不能返回卡密或服务凭证；当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
  */
 package com.shop.b2b2c.service.impl;
 
@@ -426,7 +426,8 @@ public class PeerPayServiceImpl implements PeerPayService {
                 || skuMapper.deductStock(item.getSkuId(), item.getProductId(), order.getMerchantId(), item.getQuantity()) != 1) {
             throw new BusinessException("商品库存不足或SKU归属异常");
         }
-        LocalDateTime expireTime = LocalDateTime.now().plusMinutes(DEFAULT_LOCK_MINUTES);
+        // 支付截止严格从下单时刻起算 15 分钟：预占成功只回写订单原始截止时间，不得以“当下 +15 分钟”延长支付窗口。
+        LocalDateTime expireTime = order.getCreatedAt().plusMinutes(DEFAULT_LOCK_MINUTES);
         // 服务端生成高熵所有权凭证；客户端提交的 attemptKey 不再参与授权判断。
         String ownerToken = UUID.randomUUID().toString().replace("-", "");
         InventoryReservation reservation = new InventoryReservation();
@@ -448,9 +449,9 @@ public class PeerPayServiceImpl implements PeerPayService {
         result.setOwnerToken(reservation.getOwnerToken());
         result.setSuccess(true);
         result.setPeerStatus(PeerStatus.RESERVED_LOCK);
-        result.setLockSeconds(DEFAULT_LOCK_MINUTES * 60);
+        result.setLockSeconds(Math.max(0, Duration.between(LocalDateTime.now(), expireTime).getSeconds()));
         result.setExpireTime(expireTime);
-        result.setMessage("库存预占成功，为您保留 15 分钟支付时间");
+        result.setMessage("库存预占成功，支付截止时间仍为下单后 15 分钟");
         return result;
     }
 

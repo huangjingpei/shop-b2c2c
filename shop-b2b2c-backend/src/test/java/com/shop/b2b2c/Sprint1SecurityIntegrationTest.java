@@ -2215,6 +2215,56 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    @DisplayName("Q15 补充: 预占成功不得延长支付截止，仍按订单创建时间 + 15 分钟")
+    void preLockNeverExtendsOrderPaymentDeadline() {
+        TradeOrder order = intent("deadline-no-extend");
+        // 下单已过 10 分钟，剩余支付窗口约 5 分钟
+        LocalDateTime createdAt = LocalDateTime.now().minusMinutes(10).withNano(0);
+        jdbc.update("UPDATE trade_order SET created_at=?, lock_expire_time=? WHERE id=?",
+                createdAt, createdAt.plusMinutes(15), order.getId());
+
+        var lock = payments.preLockInventory("deadline-no-extend");
+
+        LocalDateTime deadline = orders.selectById(order.getId()).getLockExpireTime();
+        assertNotNull(deadline);
+        assertEquals(900, java.time.Duration.between(createdAt, deadline).getSeconds(),
+                "预占后截止时间必须仍为下单时间 + 15 分钟，不得用当前时刻重算");
+        assertTrue(lock.getLockSeconds() <= 300 && lock.getLockSeconds() >= 290,
+                "剩余秒数应按原始截止计算，实际=" + lock.getLockSeconds());
+        assertEquals(deadline, lock.getExpireTime());
+        LocalDateTime reservationDeadline = jdbc.queryForObject(
+                "SELECT expires_at FROM inventory_reservation WHERE order_id=?", LocalDateTime.class, order.getId());
+        assertEquals(900, java.time.Duration.between(createdAt, reservationDeadline).getSeconds(),
+                "预占到期时间也必须沿用下单截止时间");
+    }
+
+    @Test
+    @DisplayName("Q15 补充: 下单 15 分钟到期即释放预占，超期付款落 LATE_PAYMENT")
+    void expiredCreationDeadlineReleasesHoldAndLatePaymentIsRecorded() {
+        TradeOrder order = intent("deadline-expired");
+        payments.preLockInventory("deadline-expired");
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+
+        LocalDateTime createdAt = LocalDateTime.now().minusMinutes(20).withNano(0);
+        jdbc.update("UPDATE trade_order SET created_at=?, lock_expire_time=? WHERE id=?",
+                createdAt, createdAt.plusMinutes(15), order.getId());
+        jdbc.update("UPDATE inventory_reservation SET expires_at=? WHERE order_id=?",
+                createdAt.plusMinutes(15), order.getId());
+
+        expiryJob.expire();
+
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        assertEquals("CLOSED", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals("EXPIRED", orders.selectById(order.getId()).getPeerStatus());
+
+        assertThrows(BusinessException.class, () -> pay("deadline-expired"));
+        assertEquals("LATE_PAYMENT",
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "trade-deadline-expired").getEventStatus());
+        assertEquals("CLOSED", jdbc.queryForObject(
+                "SELECT order_status FROM trade_order WHERE id=?", String.class, order.getId()));
+    }
+
+    @Test
     @DisplayName("T09/Q16: HELD 预占阻止下架；已下架商品不得先 CAS 为 PAID 再校验可购性")
     void t09HeldReservationBlocksOffShelfAndPaymentRejectsUnpurchasable() {
         TradeOrder order = intent("t09-held");
