@@ -409,9 +409,10 @@ import { receiptPath } from '../utils/buyerReceipt.mjs'
 import { createIdempotentSubmission } from '../utils/idempotency.mjs'
 const checkoutSubmission = createIdempotentSubmission()
 const peerSubmission = createIdempotentSubmission()
-import { ref, watch, onMounted } from 'vue'
+import { ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
+import { loadProductDetail } from '../utils/productDetail.mjs'
 
 const route = useRoute()
 const loading = ref(false)
@@ -445,26 +446,33 @@ const formatSpec = (jsonStr) => {
 
 const loadProduct = async (id = route.params.id) => {
   if (!id) return
-  loading.value = true
-  product.value = null
-  skus.value = []
-  store.value = null
-  currentSku.value = null
-  successResult.value = null
-  peerPayResult.value = null
-  try {
-    const res = await axios.get(`/api/v1/public/products/${id}`)
-    product.value = res.data.data.product
-    skus.value = res.data.data.skus
-    store.value = res.data.data.store
-    if (skus.value.length > 0) {
-      currentSku.value = skus.value[0]
-    }
-  } catch (e) {
-    console.error(e)
-  } finally {
-    loading.value = false
-  }
+  const result = await loadProductDetail(id, productId => axios.get(`/api/v1/public/products/${productId}`), viewState)
+  if (!result.ok && result.error) console.error(result.error)
+}
+
+// 所有响应式绑定必须先于 watch/immediate 调用声明，避免 setup 阶段同步加载时访问未初始化变量。
+const peerPayModalOpen = ref(false)
+const generatingPeerPay = ref(false)
+const peerPayResult = ref(null)
+const peerMessage = ref('好心人帮我买个单呗，谢谢老铁！❤️')
+const quickMessages = [
+  '江湖救急，帮我买个单呗~',
+  '老铁求代付，回头请你喝奶茶！☕',
+  '生日礼物就是它了，球球了~ 🎁',
+  '这个太超值了，快帮我拿下！✨',
+  '独乐乐不如众乐乐，送你一个么么哒~'
+]
+const isWeChat = ref(/MicroMessenger/i.test(navigator.userAgent))
+const showWechatGuide = ref(false)
+
+const viewState = {
+  loading,
+  product,
+  skus,
+  store,
+  currentSku,
+  successResult,
+  peerPayResult
 }
 
 watch(() => route.params.id, (newId) => {
@@ -510,19 +518,7 @@ const copyAllCards = () => {
   }
 }
 
-// ★ 找人代付核心响应式变量与逻辑
-const peerPayModalOpen = ref(false)
-const generatingPeerPay = ref(false)
-const peerPayResult = ref(null)
-const peerMessage = ref('好心人帮我买个单呗，谢谢老铁！❤️')
-const quickMessages = [
-  '江湖救急，帮我买个单呗~',
-  '老铁求代付，回头请你喝奶茶！☕',
-  '生日礼物就是它了，球球了~ 🎁',
-  '这个太超值了，快帮我拿下！✨',
-  '独乐乐不如众乐乐，送你一个么么哒~'
-]
-
+// ★ 找人代付核心逻辑（响应式变量已在加载逻辑之前声明，避免TDZ）
 const openPeerPayModal = () => {
   peerPayResult.value = null
   peerPayModalOpen.value = true
@@ -562,9 +558,6 @@ const handleCreatePeerPay = async () => {
     generatingPeerPay.value = false
   }
 }
-
-const isWeChat = ref(/MicroMessenger/i.test(navigator.userAgent))
-const showWechatGuide = ref(false)
 
 const copyToClipboard = (text, successMsg) => {
   if (navigator.clipboard && window.isSecureContext) {
