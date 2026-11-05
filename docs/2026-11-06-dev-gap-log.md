@@ -72,6 +72,19 @@
 - 虚拟订单交付判断（不构成权限扩大）：现有 `deliverOrder` 只接受 `goodsType=1`，员工不能通过发货接口交付虚拟卡密；卡密自动交付发生在支付事件内，不向调用方返回明文；`fulfillVirtualOrder` 仅接受 `goodsType=3` 且只回写 `serviceVoucher`，不返回卡密；商家订单详情对 `MERCHANT_STAFF` 已把 `serviceVoucher` 与 `cardDetails` 替换为“员工账号无权查阅明文”。因此员工履约/发货不会被要求返回明文卡密，与 Q21“员工不看明文”不冲突。T16 实现卡密查看/导出接口时必须继续只允许店长，不得因为发货放开而扩大。
 - 影响面：员工可独立处理本店实物订单发货；推单与资金链路权限不变；无数据库变更。
 
+## G08 T14 收窄后的指纹补算边界与未纳入项
+
+- 发现位置：[CardAssetService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java) 的 `backfillAndMatch`；[V2__s2_card_fingerprint_backfill.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/migrations/V2__s2_card_fingerprint_backfill.sql)；[ProductVirtualCard.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/entity/ProductVirtualCard.java)。
+- 收窄事实（用户 2026-11-06 同意）：T14 只解决“已加密但指纹为 NULL 的历史数据无法参与去重”，实现为 V2 迁移 + 导入时历史行指纹补算。
+- 指纹补算边界：
+  1. V2 只能对未加密的明文历史行执行 `SHA2(TRIM(card_content),256)` 回填；`ENC:v1:`/`ENC:v2:` 加密行与空正文在 SQL 中拿不到明文，统一标记 `fingerprint_unavailable=1`。
+  2. 应用在执行卡密导入时只读取本店 `card_fingerprint IS NULL` 的行，逐行尝试解密并在内存计算指纹；成功且无同店铺重复时条件回写指纹（`card_fingerprint IS NULL`），失败或空正文只计数 WARN、标记 1、继续处理后续行，不中断导入。
+  3. 同店铺 `(merchant_id, card_fingerprint)` 有唯一键：V2 对重复明文只回填最早一行；其余保持 NULL、标记 0。其去重代表性由已回填的同一指纹行承担，导入仍会命中 409。
+  4. 本次未收紧 `card_fingerprint` 非空/唯一，未删除历史 NULL 行，未改密钥体系。
+- 不属本卡范围的原因（用户收窄指令）：密钥轮换、缺省密钥回退与无钥匙历史行的补算依赖尚未确认的生产密钥配置，必须改 `CardCipherService` 与部署环境，超出“只做指纹补算与去重”的边界；卡密列表脱敏、明文查看与导出审计属于 T16 的 DTO/权限/审计表范围，不能在 T14 顺手扩大。
+- 建议归属：密钥轮换、缺省密钥回退、密钥不可用时历史行补算 → T15/T21；卡密列表脱敏、明文查看、导出二次确认与审计 → T16；`fingerprint_unavailable` 的运营可见统计/告警面板可作为后续独立候选，不在本轮实现。
+- 影响面：当前密钥与历史密文匹配时，加密历史行会在首次导入时补算并从此参与索引去重；密钥缺失或不匹配时，这些行只能“每次导入重试解密、失败跳过”，无法参与索引去重，需等待 T15/T21 提供稳定密钥后再补算。跳过计数只写 WARN 日志，没有持久化计数字段；`fingerprint_unavailable` 仅作标记，不改变卡密状态、库存或履约。
+
 ## S1 环境核对待办（由环境负责人执行）
 
 - 存量 MySQL 升级前先备份（T21 未在 S1 实现）；将 `db/migrations/V1__s1_order_lifecycle.sql` 纳入发布包，确认 `app.schema-migration.enabled=true`。

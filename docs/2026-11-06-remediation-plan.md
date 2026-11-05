@@ -265,12 +265,12 @@
 | 优先级 | **P1**（资产/资金：加密但无指纹存量重复导入会被判新卡，库存虚增，可能同一卡密卖两次） |
 | 阶段 | S2 |
 | D/F/R | R25、R05、F12；关联 N11 |
-| 涉及文件 | [CardAssetService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java#L63-L76)、[schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql#L123-L129)、[CardCipherService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L133-L140) |
+| 涉及文件 | [CardAssetService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java#L65-L135)、[CardAssetMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/CardAssetMapper.java#L14-L21)、[V2__s2_card_fingerprint_backfill.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/migrations/V2__s2_card_fingerprint_backfill.sql)、[schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql#L123-L130)、[CardCipherService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L133-L140) |
 | 问题本质 | `card_fingerprint` 允许 NULL 且唯一键对 NULL 不生效；回退路径对密文做 SHA-256，匹配不到明文指纹，并两次全店全量读取（`historyContents(...) != null` 恒真）。 |
-| 修复要点 | 一次性迁移：`card_fingerprint IS NULL` 的行解密后回填明文指纹，再收紧非空/唯一；回退识别 `ENC:v1:` 先解密再哈希；迁移完成后删除全表回退并只查一次；列表默认不返回正文（与 T16/N11 联动）。 |
-| 依赖/冲突 | 依赖 T12 迁移机制；与 T15（密钥版本/轮换）同批设计迁移顺序（先有稳定密钥再回填）；与 T16（卡密库明文展示）同批交付 DTO。 |
-| 回归要点 | 合法：同一明文重复导入被拒，库存不增。非法：跨商户同卡密按规则处理（不串店）。并发交错：两批相同卡密并发导入，仅一批成功。失败后数据不变：去重失败不写卡、不加库存。 |
-| 状态 | 待修复 |
+| 修复要点 | **2026-11-06 收窄（用户同意）**：只做历史无指纹行的指纹补算与去重判定，配套 V2 迁移。明文行由 SQL 回填 `SHA2(TRIM(card_content),256)`；加密行在导入时解密后在内存补算/比对，可补算时条件回写指纹；拿不到明文或解密失败标记 `fingerprint_unavailable=1`、计数告警并跳过，不阻断导入。补写使用 `card_fingerprint IS NULL` 条件，保证可重入幂等。本次**不收紧**指纹非空/唯一，不改密钥体系。 |
+| 依赖/冲突 | 依赖 T12 迁移机制；T14 收窄后不处理密钥版本/轮换：历史加密行只有在当前密钥可解密时才能补算，密钥缺失/轮换仍归 T15/T21（见缺口 G08）；卡密列表脱敏、明文查看与导出审计归 T16。 |
+| 回归要点 | 合法：同一明文重复导入被拒，库存不增；加密但无指纹的历史行可补算时参与去重。非法：跨商户同卡密按规则处理（不串店）。并发交错：两批相同卡密并发导入，仅一批成功。失败后数据不变：去重失败不写卡、不加库存；不可解密历史行只标记跳过，不中断合法导入。 |
+| 状态 | 已实现·待人工验证（提交 27c02a4；收窄范围与跳过边界见缺口 G08；需用户执行 `mvn -f shop-b2b2c-backend/pom.xml test` 并在独立 MySQL 连续两次执行 V2） |
 
 #### T15 卡密加密默认密钥回退与无轮换
 
@@ -282,7 +282,7 @@
 | 涉及文件 | [CardCipherService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L63-L68)、[application.yml](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/application.yml)、[schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql#L326-L334)、[BuyerOrderView.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/dto/BuyerOrderView.java#L20) |
 | 问题本质 | 未配置密钥时回退到硬编码种子；密文无 keyId，无法轮换；兼容构造器 `new CardCipherService()` 绕过 Spring 注入。 |
 | 修复要点 | 生产缺显式密钥即启动失败；密文增加密钥版本（`ENC:v2:<keyId>:`）支持灰度轮换；所有组件只用注入单例，删除生产可用兼容构造器；种子改无效占位或仅 dev profile 注入，并回填指纹。 |
-| 依赖/冲突 | 与 T14 同批（迁移顺序：密钥稳定→指纹回填→删回退）；与 T03（种子清理）分工：T03 管账号，T15 管卡密密钥；与 T19/T23（`.env`/备份密钥）同源。 |
+| 依赖/冲突 | 与 T14 同批（迁移顺序：密钥稳定→指纹回填→删回退）；T14 已于 2026-11-06 收窄为仅指纹补算，未改密钥体系——密钥轮换、缺省密钥回退与无钥匙历史行补算仍由本卡负责（见缺口 G08）；与 T03（种子清理）分工：T03 管账号，T15 管卡密密钥；与 T19/T23（`.env`/备份密钥）同源。 |
 | 回归要点 | 合法：配置密钥后可导入/读取/作废卡密。非法：缺密钥启动失败；错误 keyId 拒绝解密并告警。失败后数据不变：启动失败不写库；解密失败不返回明文。 |
 | 状态 | 待修复 |
 
@@ -296,7 +296,7 @@
 | 涉及文件 | [Cards.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/merchant/Cards.vue#L21-L24)、[Cards.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/merchant/Cards.vue#L166-L169)、[ProductController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/ProductController.java#L222-L260) |
 | 问题本质 | 列表接口默认返回全店卡密并逐条解密，前端直接渲染正文，与文件说明“查询不展示正文”矛盾。 |
 | 修复要点 | **已确认 Q21-A**：列表返回脱敏值+指纹，仅店长按 SKU 授权时返回单 SKU 明文且限量；前端默认打码、单条“查看”二次确认；导出必须二次确认并审计（操作人、数量、时间）；补分页与“仅未售”过滤；前后端 DTO 同批。 |
-| 依赖/冲突 | 与 T14/T15 同属卡密资产，须同批确定“列表/详情/导出”三种权限；与 T24（列表分页）共用分页模式；影响 `cardAssets.test.mjs` 契约。 |
+| 依赖/冲突 | 与 T14/T15 同属卡密资产，须同批确定“列表/详情/导出”三种权限；T14 收窄后未实现列表脱敏、明文查看与导出审计，仍由本卡负责（见缺口 G08）；与 T24（列表分页）共用分页模式；影响 `cardAssets.test.mjs` 契约。 |
 | 回归要点 | 合法：店长按 SKU 查看明文有数量上限并可审计。非法：员工/跨店请求被拒；列表不含正文。失败后数据不变：查看不修改卡状态/库存。 |
 | 状态 | 待修复 |
 
