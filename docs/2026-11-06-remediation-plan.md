@@ -179,10 +179,10 @@
 | D/F/R | R12、F08；关联 N7 |
 | 涉及文件 | [TradeOrderMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/TradeOrderMapper.java#L54-L60)、[OrderController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/OrderController.java#L71-L75)、[PeerPayServiceImpl.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PeerPayServiceImpl.java#L461-L471) |
 | 问题本质 | 普通建单从不写 `lock_expire_time`，落账 SQL 允许 `IS NULL`，迟到支付是否成功取决于定时任务是否先跑到。 |
-| 修复要点 | **已确认 Q15-A**：所有订单统一下单即写 `lock_expire_time = created_at + 15min`；`markOrderPaidIfUnpaid` 去掉 `IS NULL` 放行，与代付分支统一；存量 `UNPAID` 单补写或按 `created_at` 判定，在迁移方案说明。超时支付拒绝并记录，不静默 PAID。 |
+| 修复要点 | **已确认 Q15-A**：所有订单统一下单即写 `lock_expire_time = created_at + 15min`；`markOrderPaidIfUnpaid` 去掉 `IS NULL` 放行，与代付分支统一；存量 `UNPAID` 单补写或按 `created_at` 判定，在迁移方案说明。超时支付拒绝并记录，不静默 PAID。**2026-11-06 补充确认：支付截止严格从下单时刻起算 15 分钟，预占成功只回写该原始截止时间，不得重置为“当下 +15 分钟”，库存占用最长不超过 15 分钟。** |
 | 依赖/冲突 | 与 T11（过期扫描索引）同批设计 SQL；与 T06/T07 同属支付落账条件，须一起评审；依赖 T12 迁移机制处理存量。 |
 | 回归要点 | 合法：15 分钟内支付成功。非法：超过 15 分钟支付被拒或进入迟到支付处理，不再静默 PAID。失败后数据不变：拒绝时订单保持 UNPAID，不消耗库存/卡密。 |
-| 状态 | 已实现·待人工验证（提交 19c70e0；存量 NULL 回填见 T12 提交 22d0bc4） |
+| 状态 | 已实现·待人工验证（提交 19c70e0；存量 NULL 回填见 T12 提交 22d0bc4；预占不延长截止的口径纠正见提交 4a4db61） |
 
 #### T09 下架与 HELD 预占竞态
 
@@ -207,7 +207,7 @@
 | D/F/R | R10、D09、F08；关联 N8 |
 | 涉及文件 | [PeerPayServiceImpl.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PeerPayServiceImpl.java#L357-L394)、[PeerPayController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/PeerPayController.java#L61-L75) |
 | 问题本质 | `ownerToken` 直接取客户端 `clientKey`，恢复/取消仅比较该值；键不是身份凭证。 |
-| 修复要点 | 服务端生成高熵 `ownerToken` 并仅随响应返回；恢复/取消只接受服务端签发值（可 HMAC 绑定订单）；**已确认 Q17-A**：预占 15 分钟、最多重发 3 次；幂等键与所有权凭证分离。 |
+| 修复要点 | 服务端生成高熵 `ownerToken` 并仅随响应返回；恢复/取消只接受服务端签发值（可 HMAC 绑定订单）；**已确认 Q17-A**：预占 15 分钟、最多重发 3 次；幂等键与所有权凭证分离。预占成功不得重置支付截止（沿用订单 `created_at + 15min`，见 T08 补充口径）。 |
 | 依赖/冲突 | 与 T29（前端接入 pre-lock/cancel-lock）同批，否则契约无处消费；与 T05 的状态机共用订单锁；不得复用 `Idempotency-Key`。 |
 | 回归要点 | 合法：同一付款人可恢复/取消自己的预占。非法：仅持分享链接或错误 ownerToken 不能取消/接管。并发交错：两客户端同时恢复，仅一个成功；到期与取消交错不双释放。失败后数据不变：拒绝时预占不被释放、库存不减。 |
 | 状态 | 已实现·待人工验证（提交 8874b6a；前端消费 T29 未在 S1，见缺口 G04） |
@@ -268,7 +268,7 @@
 | D/F/R | R25、R05、F12；关联 N11 |
 | 涉及文件 | [CardAssetService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java#L65-L135)、[CardAssetMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/CardAssetMapper.java#L14-L21)、[V2__s2_card_fingerprint_backfill.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/migrations/V2__s2_card_fingerprint_backfill.sql)、[schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql#L123-L130)、[CardCipherService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L133-L140) |
 | 问题本质 | `card_fingerprint` 允许 NULL 且唯一键对 NULL 不生效；回退路径对密文做 SHA-256，匹配不到明文指纹，并两次全店全量读取（`historyContents(...) != null` 恒真）。 |
-| 修复要点 | **2026-11-06 收窄（用户同意）**：只做历史无指纹行的指纹补算与去重判定，配套 V2 迁移。明文行由 SQL 回填 `SHA2(TRIM(card_content),256)`；加密行在导入时解密后在内存补算/比对，可补算时条件回写指纹；拿不到明文或解密失败标记 `fingerprint_unavailable=1`、计数告警并跳过，不阻断导入。补写使用 `card_fingerprint IS NULL` 条件，保证可重入幂等。本次**不收紧**指纹非空/唯一，不改密钥体系。 |
+| 修复要点 | **2026-11-06 收窄（用户同意）**：只做历史无指纹行的指纹补算与去重判定，配套 V2 迁移。明文行由 SQL 回填 `SHA2(TRIM(card_content),256)`；加密行在导入时解密后在内存补算/比对，可补算时条件回写指纹；拿不到明文或解密失败标记 `fingerprint_unavailable=1`、计数告警并跳过，不阻断导入。补写使用 `card_fingerprint IS NULL` 条件，保证可重入幂等。本次**不收紧**指纹非空/唯一，不改密钥体系。**已交付给买家的卡密不允许更换或重发（用户 2026-11-06 确认）；不为此新增“换卡/重发”接口、字段或补偿逻辑。** |
 | 依赖/冲突 | 依赖 T12 迁移机制；**用户 2026-11-06 确认开发期无存量数据**：V2 与历史补算代码保留但不再扩展、不作为验收项；解密失败跳过计数保留；密钥行为不变（单密钥假设，见 G09）。 |
 | 回归要点 | 合法：同一明文重复导入被拒，库存不增。非法：跨商户同卡密按规则处理（不串店）。并发交错：两批相同卡密并发导入，仅一批成功。失败后数据不变：去重失败不写卡、不加库存；不可解密行只跳过计数，不中断合法导入。 |
 | 状态 | 已实现·待人工验证（提交 27c02a4；历史数据/存量回填不列为验收项，见缺口 G08 更新） |
@@ -282,7 +282,7 @@
 | D/F/R | R04、R05、F12；关联 N11 |
 | 涉及文件 | [CardAssetService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java)、[ProductController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/ProductController.java)、[Cards.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/merchant/Cards.vue)、[cardAssets.mjs](file:///e:/shop-b2b2c/shop-admin-vue/src/utils/cardAssets.mjs)、[schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql) |
 | 问题本质 | 列表接口默认返回全店卡密并逐条解密；前端直接渲染正文；导出无二次确认与审计。 |
-| 修复要点 | **用户 2026-11-06 范围调整**：删除密钥轮换/缺省回退/历史补算项（按“当前只有一把密钥”处理，见缺口 G09），T15 只做卡密查看限量与导出审计，并与 T16 同一提交实现。列表返回由指纹尾号派生的脱敏标识+指纹，不解密正文；按 SKU 明文查看限量（1–50，越界拒绝）；导出必须显式 confirm 并写 `card_access_audit`（操作人、SKU、数量、时间），审计失败不返回明文；员工在接口层拒绝。 |
+| 修复要点 | **用户 2026-11-06 范围调整**：删除密钥轮换/缺省回退/历史补算项（按“当前只有一把密钥”处理，见缺口 G09），T15 只做卡密查看限量与导出审计，并与 T16 同一提交实现。列表返回由指纹尾号派生的脱敏标识+指纹，不解密正文；按 SKU 明文查看限量（1–50，越界拒绝）；导出必须显式 confirm 并写 `card_access_audit`（操作人、SKU、数量、时间），审计失败不返回明文；员工在接口层拒绝。本卡只提供查看/导出，不提供“更换/重发已交付卡密”的能力。 |
 | 依赖/冲突 | 与 T16 合并为同一交付；与 T14 的指纹列同域但不再要求历史回填；不复用第二套加密/审计权威。 |
 | 回归要点 | 合法：店长按 SKU 查看有限量并可导出（有审计）。非法：员工/跨店/超限被拒；列表不含正文；未确认导出不写审计。失败后数据不变：查看/导出不修改卡状态或库存。 |
 | 状态 | 已实现·待人工验证（提交 b99440e；密钥体系未改，单密钥假设与待确认项见 G09） |

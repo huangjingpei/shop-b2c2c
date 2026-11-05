@@ -97,6 +97,15 @@
 - 影响面：当前安全边界仍依赖源码内默认种子；生产密钥治理未完成，属于上线前必须人工确认的事项，不是“已修复”。
 - 建议归属：上线前安全评审；不在 T15/T16/T17/T18 范围。
 
+## G10 预占截止时间口径冲突：已按“严格从下单起算 15 分钟”统一
+
+- 发现位置：[2026-11-06-backend-logic-review.md](2026-11-06-backend-logic-review.md) P2-4（原文“统一订单生命周期：预占不得超过 `createdAt+15`，或明确订单有效期随预占延长”，两种口径并存）；[2026-11-06-decision-questionnaire.md](2026-11-06-decision-questionnaire.md) Q15“所有订单 15 分钟截止”、Q17“默认 15 分钟”；[2026-11-06-remediation-plan.md](2026-11-06-remediation-plan.md) T08/T10。
+- 现象：`preLockInventory` 原实现以“当前时刻 + 15 分钟”写入 `lockExpireTime`，第 14 分钟预占可占用库存到第 29 分钟，与详情页按 `createdAt + 15` 展示的剩余时间不一致；P2-4 把“延长订单有效期”列为可选方案。
+- 用户确认（2026-11-06）：**严格从下单起算 15 分钟**；预占成功不得重置或延长 `lockExpireTime`，库存占用最长不超过 15 分钟；超时即释放预占，超时付款落 `LATE_PAYMENT`。
+- 处理：提交 `4a4db61` 修改 `PeerPayServiceImpl.preLockInventory`，预占到期/支付截止统一取 `createdAt + 15min`，`lockSeconds` 按剩余时间返回；补集成用例覆盖“预占不延长”“到期释放”“超期付款 LATE_PAYMENT”。文档已在 Q15/Q17、T08/T10 与决策问卷 §0.2 覆盖原推荐口径。
+- 未验证：未运行 mvn/编译/测试，状态为“已实现·待人工验证”。
+- 残留：历史 `RESERVED_LOCK + lock_expire_time NULL` 的兜底释放逻辑仍在（开发期无存量数据，是否随基线清理收紧见清理记录）。
+
 ## S1 环境核对待办（由环境负责人执行）
 
 - 存量 MySQL 升级前先备份（T21 未在 S1 实现）；将 `db/migrations/V1__s1_order_lifecycle.sql` 纳入发布包，确认 `app.schema-migration.enabled=true`。
