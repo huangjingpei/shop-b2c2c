@@ -1342,71 +1342,91 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
-    void r10IdempotentAttemptRecoveryRestoresOwnerTokenWithoutDoubleDeductingStock() throws Exception {
-        intent("r10-recovery");
+    @DisplayName("T10/Q17: ownerToken 由服务端生成，幂等键不能恢复预占，同一预占最多重发 3 次")
+    void t10ServerOwnerTokenIsSeparatedFromAttemptKeyAndReissueIsCapped() {
+        intent("t10-recovery");
         assertEquals(1, skus.selectById(1).getStockQuantity());
 
-        // 1. 首次预占成功，携带尝试凭证 attempt-key-alpha
-        var firstLock = payments.preLockInventory("r10-recovery", "attempt-key-alpha");
-        assertEquals("attempt-key-alpha", firstLock.getOwnerToken());
+        // 1. 首次预占：尝试键只留痕，ownerToken 必须是服务端生成的高熵值
+        var firstLock = payments.preLockInventory("t10-recovery", "attempt-key-alpha");
+        assertNotNull(firstLock.getOwnerToken());
+        assertNotEquals("attempt-key-alpha", firstLock.getOwnerToken());
+        assertEquals(32, firstLock.getOwnerToken().length());
         assertEquals("RESERVED_LOCK", firstLock.getPeerStatus());
         assertEquals(0, skus.selectById(1).getStockQuantity());
 
-        // 2. 模拟客户端丢响应后重试（相同尝试凭据）：幂等恢复原预占，不重复扣库存
-        var retryLock = payments.preLockInventory("r10-recovery", "attempt-key-alpha");
-        assertEquals("attempt-key-alpha", retryLock.getOwnerToken());
+        // 2. 只带相同幂等键、不带 ownerToken：不得恢复，防止猜测幂等键窃取预占
+        var exAttemptOnly = assertThrows(BusinessException.class,
+                () -> payments.preLockInventory("t10-recovery", "attempt-key-alpha"));
+        assertTrue(exAttemptOnly.getMessage().contains("已被其他付款人预占中"));
+
+        // 3. 提交服务端签发的 ownerToken：可恢复且不重复扣库存
+        var retryLock = payments.preLockInventory("t10-recovery", "attempt-key-alpha", firstLock.getOwnerToken());
+        assertEquals(firstLock.getOwnerToken(), retryLock.getOwnerToken());
         assertTrue(retryLock.getSuccess());
-        assertEquals("RESERVED_LOCK", retryLock.getPeerStatus());
-        assertEquals(0, skus.selectById(1).getStockQuantity()); // 库存仍为 0，未发生二次扣减
-
-        // 3. 仿冒者/其他尝试凭证介入：被拒绝，且不能窃取 ownerToken
-        var exOther = assertThrows(BusinessException.class, () -> payments.preLockInventory("r10-recovery", "attempt-key-beta"));
-        assertTrue(exOther.getMessage().contains("已被其他付款人预占中"));
-        var exNull = assertThrows(BusinessException.class, () -> payments.preLockInventory("r10-recovery", null));
-        assertTrue(exNull.getMessage().contains("已被其他付款人预占中"));
         assertEquals(0, skus.selectById(1).getStockQuantity());
 
-        // 4. 超长凭据校验（>64字符直接拦截，防止数据库截断溢出）
-        String excessiveKey = "k".repeat(65);
-        var exExcessive = assertThrows(BusinessException.class, () -> payments.preLockInventory("r10-recovery", excessiveKey));
-        assertEquals(400, exExcessive.getCode());
+        // 4. 重发上限 3 次：第 2、3 次恢复成功，第 4 次被拒
+        assertEquals(firstLock.getOwnerToken(),
+                payments.preLockInventory("t10-recovery", null, firstLock.getOwnerToken()).getOwnerToken());
+        assertEquals(firstLock.getOwnerToken(),
+                payments.preLockInventory("t10-recovery", null, firstLock.getOwnerToken()).getOwnerToken());
+        var exCap = assertThrows(BusinessException.class, () -> payments.preLockInventory(
+                "t10-recovery", null, firstLock.getOwnerToken()));
+        assertEquals(409, exCap.getCode());
+        assertTrue(exCap.getMessage().contains("重发次数已达上限"));
 
-        // 5. 原持有者释放预占：库存回滚恢复
-        payments.cancelPreLock("r10-recovery", "attempt-key-alpha");
+        // 5. 错误/缺失凭据仍被拒
+        var exWrong = assertThrows(BusinessException.class,
+                () -> payments.preLockInventory("t10-recovery", null, "wrong-owner-token"));
+        assertTrue(exWrong.getMessage().contains("已被其他付款人预占中"));
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+
+        // 6. 原持有者释放后，新的尝试才能重新预占且获得新的服务端凭据
+        payments.cancelPreLock("t10-recovery", firstLock.getOwnerToken());
         assertEquals(1, skus.selectById(1).getStockQuantity());
-        assertEquals("INIT", orders.lockByPeerPayToken("r10-recovery").getPeerStatus());
-
-        // 6. 释放后另一尝试可以成功预占
-        var nextLock = payments.preLockInventory("r10-recovery", "attempt-key-beta");
-        assertEquals("attempt-key-beta", nextLock.getOwnerToken());
+        assertEquals("INIT", orders.lockByPeerPayToken("t10-recovery").getPeerStatus());
+        var nextLock = payments.preLockInventory("t10-recovery", "attempt-key-beta");
+        assertNotEquals("attempt-key-beta", nextLock.getOwnerToken());
         assertEquals(0, skus.selectById(1).getStockQuantity());
+
+        // 7. 超长尝试键仍被 400 拦截
+        intent("t10-long-key");
+        var exExcessive = assertThrows(BusinessException.class,
+                () -> payments.preLockInventory("t10-long-key", "k".repeat(65)));
+        assertEquals(400, exExcessive.getCode());
     }
 
     @Test
-    void r10HttpEndpointHonorsIdempotencyKeyHeaderForPreLockRecovery() throws Exception {
-        intent("r10-http");
+    void t10HttpRecoveryRequiresServerIssuedReservationTokenAndCapsReissue() throws Exception {
+        intent("t10-http");
 
-        // 首次调起预占
-        mvc.perform(post("/api/v1/peer-pay/pre-lock/r10-http")
+        // 首次预占：响应返回服务端 ownerToken，客户端必须保存
+        var first = mvc.perform(post("/api/v1/peer-pay/pre-lock/t10-http")
                         .header("Idempotency-Key", "http-client-attempt-1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.ownerToken").value("http-client-attempt-1"))
-                .andExpect(jsonPath("$.data.peerStatus").value("RESERVED_LOCK"));
+                .andExpect(jsonPath("$.data.ownerToken").isNotEmpty())
+                .andExpect(jsonPath("$.data.peerStatus").value("RESERVED_LOCK"))
+                .andReturn();
+        String ownerToken = com.jayway.jsonpath.JsonPath.read(
+                first.getResponse().getContentAsString(), "$.data.ownerToken");
+        assertNotEquals("http-client-attempt-1", ownerToken);
 
-        // 重发请求（网络重试）
-        mvc.perform(post("/api/v1/peer-pay/pre-lock/r10-http")
+        // 只重发幂等键不提交 ownerToken：被拒
+        mvc.perform(post("/api/v1/peer-pay/pre-lock/t10-http")
                         .header("Idempotency-Key", "http-client-attempt-1"))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.ownerToken").value("http-client-attempt-1"))
-                .andExpect(jsonPath("$.data.message").value("已恢复现有库存预占状态"));
-
-        // 其它客户端调起被拒
-        mvc.perform(post("/api/v1/peer-pay/pre-lock/r10-http")
-                        .header("Idempotency-Key", "different-client"))
                 .andExpect(jsonPath("$.code").value(500))
                 .andExpect(jsonPath("$.message").value("订单已被其他付款人预占中，请稍候再试"));
+
+        // 提交服务端 ownerToken：恢复成功
+        mvc.perform(post("/api/v1/peer-pay/pre-lock/t10-http")
+                        .header("Idempotency-Key", "http-client-attempt-1")
+                        .header("X-Reservation-Token", ownerToken))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.ownerToken").value(ownerToken))
+                .andExpect(jsonPath("$.data.message").value("已恢复现有库存预占状态"));
     }
 
     @Test

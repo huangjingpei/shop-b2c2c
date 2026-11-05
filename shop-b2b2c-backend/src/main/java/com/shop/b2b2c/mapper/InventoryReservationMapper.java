@@ -17,9 +17,17 @@ public interface InventoryReservationMapper {
     @Select("SELECT * FROM inventory_reservation WHERE order_id=#{id}")
     InventoryReservation find(@Param("id") Long id);
 
-    @Insert("INSERT INTO inventory_reservation(order_id,sku_id,product_id,merchant_id,quantity,owner_token,status,expires_at) "
-            + "VALUES(#{orderId},#{skuId},#{productId},#{merchantId},#{quantity},#{ownerToken},'HELD',#{expiresAt})")
+    @Insert("INSERT INTO inventory_reservation(order_id,sku_id,product_id,merchant_id,quantity,owner_token,attempt_key,reissue_count,status,expires_at) "
+            + "VALUES(#{orderId},#{skuId},#{productId},#{merchantId},#{quantity},#{ownerToken},#{attemptKey},0,'HELD',#{expiresAt})")
     int insert(InventoryReservation reservation);
+
+    /**
+     * T10/Q17：同一预占最多重发 3 次服务端所有权凭证；达到上限后必须等待到期或新建预占。
+     * 条件更新保证并发重发不会突破上限。
+     */
+    @Update("UPDATE inventory_reservation SET reissue_count = reissue_count + 1 "
+            + "WHERE order_id=#{orderId} AND status='HELD' AND reissue_count < 3")
+    int incrementReissue(@Param("orderId") Long orderId);
 
     @Delete("DELETE FROM inventory_reservation WHERE order_id=#{id} AND status='RELEASED'")
     int deleteReleased(@Param("id") Long id);

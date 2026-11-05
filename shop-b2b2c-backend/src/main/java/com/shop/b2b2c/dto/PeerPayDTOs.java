@@ -1,7 +1,11 @@
 /*
  * 文件：PeerPayDTOs.java
  * 用途：代付、推单、预占与履约的请求和响应契约。
- * 维护注意：peerStatus保持String并遵循PeerStatus固定编码；ownerToken仅从本次预占响应交给持有人；公开详情不得包含领取token、卡密或服务凭证。类型3表示定制服务；MockPayRequest为历史未使用DTO，不代表存在可用Mock支付接口。
+ * 维护注意：
+ *  1. peerStatus 保持 String 并遵循 PeerStatus 固定编码；ownerToken 由服务端生成，仅从本次预占响应交给持有人，
+ *     恢复预占/取消时必须原样回传，不能使用客户端幂等键替代 (T10)。
+ *  2. 公开详情不得包含领取 token、卡密或服务凭证。类型 3 表示定制服务；MockPayRequest 为历史未使用 DTO，
+ *     不代表存在可用 Mock 支付接口。
  */
 package com.shop.b2b2c.dto;
 

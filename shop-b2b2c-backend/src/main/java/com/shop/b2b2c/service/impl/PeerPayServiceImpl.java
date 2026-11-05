@@ -357,12 +357,18 @@ public class PeerPayServiceImpl implements PeerPayService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public PeerPayDTOs.PreLockResult preLockInventory(String token) {
-        return preLockInventory(token, null);
+        return preLockInventory(token, null, null);
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public PeerPayDTOs.PreLockResult preLockInventory(String token, String clientKey) {
+    public PeerPayDTOs.PreLockResult preLockInventory(String token, String attemptKey) {
+        return preLockInventory(token, attemptKey, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public PeerPayDTOs.PreLockResult preLockInventory(String token, String attemptKey, String presentedOwnerToken) {
         TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
                 .orElseThrow(() -> new BusinessException("代付账单不存在"));
 
@@ -373,20 +379,25 @@ public class PeerPayServiceImpl implements PeerPayService {
             throw new BusinessException("订单已过期或不可预占，请刷新账单");
         }
 
-        String sanitizedKey = (clientKey != null) ? clientKey.trim() : null;
+        // T10：attemptKey 仅用于客户端幂等尝试留痕，不再作为所有权凭证。
+        String sanitizedKey = trimToNull(attemptKey);
         if (sanitizedKey != null && sanitizedKey.length() > 64) {
-            throw new BusinessException(400, "预占幂等凭据长度不能超过64字符");
+            throw new BusinessException(400, "预占幂等尝试键长度不能超过64字符");
         }
-        if (sanitizedKey != null && sanitizedKey.isEmpty()) {
-            sanitizedKey = null;
+        String presented = trimToNull(presentedOwnerToken);
+        if (presented != null && presented.length() > 64) {
+            throw new BusinessException(400, "预占所有权凭证格式不合法");
         }
 
-        // R10 恢复逻辑：若订单已由当前尝试持有有效预占，同尝试凭证可幂等恢复，不重复扣库存
+        // T10/R10：仅当提交服务端上次签发的 ownerToken 时才允许恢复；同预占最多重发 3 次 (Q17)。
         if (PeerStatus.RESERVED_LOCK.equals(order.getPeerStatus())) {
             InventoryReservation existing = reservationMapper.find(order.getId());
             if (existing != null && "HELD".equals(existing.getStatus())
                     && existing.getExpiresAt() != null && existing.getExpiresAt().isAfter(LocalDateTime.now())) {
-                if (sanitizedKey != null && sanitizedKey.equals(existing.getOwnerToken())) {
+                if (presented != null && presented.equals(existing.getOwnerToken())) {
+                    if (reservationMapper.incrementReissue(order.getId()) != 1) {
+                        throw new BusinessException(409, "预占凭据重发次数已达上限，请等待预占到期后重新发起");
+                    }
                     PeerPayDTOs.PreLockResult recovered = new PeerPayDTOs.PreLockResult();
                     recovered.setOwnerToken(existing.getOwnerToken());
                     recovered.setSuccess(true);
@@ -416,7 +427,8 @@ public class PeerPayServiceImpl implements PeerPayService {
             throw new BusinessException("商品库存不足或SKU归属异常");
         }
         LocalDateTime expireTime = LocalDateTime.now().plusMinutes(DEFAULT_LOCK_MINUTES);
-        String ownerToken = (sanitizedKey != null) ? sanitizedKey : UUID.randomUUID().toString().replace("-", "");
+        // 服务端生成高熵所有权凭证；客户端提交的 attemptKey 不再参与授权判断。
+        String ownerToken = UUID.randomUUID().toString().replace("-", "");
         InventoryReservation reservation = new InventoryReservation();
         reservation.setOrderId(order.getId());
         reservation.setSkuId(item.getSkuId());
@@ -424,6 +436,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         reservation.setMerchantId(order.getMerchantId());
         reservation.setQuantity(item.getQuantity());
         reservation.setOwnerToken(ownerToken);
+        reservation.setAttemptKey(sanitizedKey);
         reservation.setExpiresAt(expireTime);
         reservationMapper.deleteReleased(order.getId());
         reservationMapper.insert(reservation);
@@ -439,6 +452,12 @@ public class PeerPayServiceImpl implements PeerPayService {
         result.setExpireTime(expireTime);
         result.setMessage("库存预占成功，为您保留 15 分钟支付时间");
         return result;
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) return null;
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 
     @Override

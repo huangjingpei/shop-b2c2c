@@ -4,7 +4,8 @@
  * 维护注意：
  *  1. notifyPaymentSuccess 仅供可信渠道适配器调用，不能直接公开 HTTP 映射；适配器须先验签。
  *  2. 落账入参必须携带渠道实收金额/币种/商户号，禁止由实现从订单应付金额反填 (T06)。
- *  3. 修改取消签名或 ownerToken 语义时须同步调用方和回归测试。
+ *  3. T10/Q17：ownerToken 只能由服务端生成并仅随预占响应返回；客户端幂等键不得恢复/取消预占；同一预占最多重发 3 次。
+ *  4. 修改取消签名或 ownerToken 语义时须同步调用方、前端 (T29) 和回归测试。
  */
 package com.shop.b2b2c.service;
 
@@ -35,14 +36,22 @@ public interface PeerPayService {
     /**
      * 两段式核心：调起支付收银台时原子预占库存 (锁 15 分钟)
      */
-    PeerPayDTOs.PreLockResult preLockInventory(String token);
+    default PeerPayDTOs.PreLockResult preLockInventory(String token) {
+        return preLockInventory(token, null, null);
+    }
 
     /**
-     * 支持幂等尝试凭据的库存预占（重试同尝试可恢复ownerToken，不重复扣库存）
+     * T10：attemptKey 仅是客户端幂等尝试键，不能作为所有权凭证恢复预占。
      */
-    default PeerPayDTOs.PreLockResult preLockInventory(String token, String clientKey) {
-        return preLockInventory(token);
+    default PeerPayDTOs.PreLockResult preLockInventory(String token, String attemptKey) {
+        return preLockInventory(token, attemptKey, null);
     }
+
+    /**
+     * 两段式核心：调起支付收银台时原子预占库存 (锁 15 分钟)。
+     * 恢复已持有预占时必须提交服务端上次签发的 ownerToken；同一预占最多重发 3 次 (Q17)。
+     */
+    PeerPayDTOs.PreLockResult preLockInventory(String token, String attemptKey, String presentedOwnerToken);
 
     /**
      * 付款人主动关闭/离开收银台：主动释放预占锁

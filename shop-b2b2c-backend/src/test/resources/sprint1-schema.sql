@@ -241,6 +241,8 @@ CREATE TABLE IF NOT EXISTS inventory_reservation (
   merchant_id BIGINT NOT NULL,
   quantity INT NOT NULL,
   owner_token VARCHAR(64) NOT NULL,
+  attempt_key VARCHAR(64) NULL,
+  reissue_count INT NOT NULL DEFAULT 0,
   status VARCHAR(16) NOT NULL,
   expires_at DATETIME NOT NULL,
   CONSTRAINT chk_reservation_quantity CHECK (quantity > 0)

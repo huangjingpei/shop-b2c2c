@@ -1,7 +1,10 @@
 /*
  * 文件：PeerPayController.java
  * 用途：买家代付账单、预占、授权取消、海报与成功页广告接口。
- * 维护注意：建单强制Idempotency-Key并受应用成本限流预算；不提供Mock支付或未经验证的公开到账入口；取消必须提交X-Reservation-Token。分享token仅定位账单，不能替代预占所有者凭证。
+ * 维护注意：
+ *  1. 建单强制 Idempotency-Key 并受应用成本限流预算；不提供 Mock 支付或未经验证的公开到账入口。
+ *  2. 取消必须提交 X-Reservation-Token。分享 token 仅定位账单，不能替代预占所有者凭证。
+ *  3. T10：Idempotency-Key 只作为尝试键；恢复预占必须回传服务端上次签发的 X-Reservation-Token，最多重发 3 次。
  */
 package com.shop.b2b2c.controller;
 
@@ -60,12 +63,13 @@ public class PeerPayController {
     @PostMapping("/pre-lock/{token}")
     public R<PeerPayDTOs.PreLockResult> preLockInventory(@PathVariable String token,
             @RequestHeader(value = "Idempotency-Key", required = false) String idempotencyKey,
+            @RequestHeader(value = "X-Reservation-Token", required = false) String reservationToken,
             HttpServletRequest request) {
         if (token == null || token.isBlank()) {
             throw new BusinessException(400, "代付凭证不能为空");
         }
         costLimiter.checkPreLock(request != null ? request.getRemoteAddr() : null, token);
-        PeerPayDTOs.PreLockResult result = peerPayService.preLockInventory(token, idempotencyKey);
+        PeerPayDTOs.PreLockResult result = peerPayService.preLockInventory(token, idempotencyKey, reservationToken);
         return R.ok(result.getMessage(), result);
     }
 
