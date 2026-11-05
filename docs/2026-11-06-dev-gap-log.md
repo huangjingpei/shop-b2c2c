@@ -32,10 +32,41 @@
 - 建议归属：T03 的运维补强或新增候选（生产初始化彩排）。
 - 影响面：合法管理员创建仍可用；缺少随机口令便利性，不影响安全边界。首次创建后须由环境负责人轮换并移除环境变量。
 
+## G04 T10 与 T29 同批约束在 S1 无法满足
+
+- 发现位置：[PeerPayController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/PeerPayController.java)、前端 T29 pre-lock/cancel-lock 接入（S4）。
+- 现象：T10 已改为服务端签发 ownerToken，恢复预占必须回传 `X-Reservation-Token`；仅带 `Idempotency-Key` 的重试现在会被拒绝。
+- 不属本卡范围的原因：T29 属 S4，涉及前端保存/回传凭据与重试交互；S1 未包含前端改造。
+- 建议归属：T29；上线必须与 T10 同批，前端需持久化 ownerToken，不得继续只带幂等键恢复。
+- 影响面：在 T29 完成前，现有前端若重试 pre-lock 会收到“已被其他付款人预占中”；不影响首次预占与取消（取消已要求 X-Reservation-Token）。
+
+## G05 T11 keyset 分页与 T24 同批约束在 S1 无法满足
+
+- 发现位置：[TradeOrderMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/TradeOrderMapper.java)、T24 前端分页（S4）。
+- 现象：T11 已补 `created_at + id` tiebreaker 与组合索引，但接口仍是 page/pageSize offset 分页，未改为游标 keyset。
+- 不属本卡范围的原因：T24 属 S4，keyset 会改变前后端契约，本轮不得提前修改前端或接口形状。
+- 建议归属：T24；实施时后端新增 `created_at + id` 游标参数，前端同步传 cursor，并保留旧分页兼容期。
+- 影响面：同秒订单翻页重复/漏行已消除；深页 offset 性能仍随数据量增长，十万级订单需 T24 解决。
+
+## G06 T07 重复支付已留痕，退款执行归属 T33
+
+- 发现位置：[PaymentEventServiceImpl.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PaymentEventServiceImpl.java) 的 `DUPLICATE_PAYMENT` 分支。
+- 现象：已支付订单收到不同流水号时已落 `DUPLICATE_PAYMENT` 事件并返回已支付结果，但未自动退款、未生成退款单、未通知渠道。
+- 不属本卡范围的原因：T07 只要求留痕并进入补偿队列；自动/人工退款执行属 T33，涉及渠道退款 API 与对账。
+- 建议归属：T33；需提供按 `DUPLICATE_PAYMENT` 查询待退款队列、幂等退款单与对账可见视图。
+- 影响面：资金不会静默丢失，但第二笔付款在 T33 前需人工按事件流水退款。
+
 ## S0 环境核对待办（满足阶段退出条件，由环境负责人执行）
 
 - 生产 `.env` 必须重新生成或补写：`SPRING_DATASOURCE_USERNAME`、`SPRING_DATASOURCE_PASSWORD`、`DB_USER`、`DB_PASS`，并确认应用账号非 `root`。
 - 首次管理员通过 `BOOTSTRAP_ADMIN_USERNAME`/`BOOTSTRAP_ADMIN_PASSWORD` 注入，口令不得为 `admin123`；创建成功后轮换口令并移除环境变量。
 - 存量生产库若曾执行旧 `schema.sql`，需人工核查并清理/禁用 `superadmin`、`seller01`、`seller02` 等演示账号及虚构支付账户；不得用自动种子重跑覆盖真实数据。
 - 发布流程只能导入 `db/schema.sql`，禁止导入 `db/demo-seed.sql`。
+
+## S1 环境核对待办（由环境负责人执行）
+
+- 存量 MySQL 升级前先备份（T21 未在 S1 实现）；将 `db/migrations/V1__s1_order_lifecycle.sql` 纳入发布包，确认 `app.schema-migration.enabled=true`。
+- 在独立 MySQL 连续执行两次 V1 迁移，确认第二次不报错且 `schema_migration` 只记录一次；再比对 `SHOW INDEX` 与 `information_schema.columns`。
+- 空库首次部署必须先导入 `db/schema.sql`，再启动应用；V1 面向存量库，不替代新库建表。
+- H2 集成测试通过不代表 MySQL 迁移语法通过；迁移报告须注明使用的数据库版本与执行次数。
 
