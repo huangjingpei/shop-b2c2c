@@ -399,7 +399,7 @@
 | 修复要点 | 专用系统用户 + `NoNewPrivileges/ProtectSystem`；备份改参数数组/`MYSQL_PWD`/`--defaults-extra-file`/`--no-tablespaces`；stderr 分离、无 BOM 写文件、流式压缩；用例断言首字节非 BOM、SQL 无 warning、非零退出；隔离库恢复演练。 |
 | 依赖/冲突 | 与 T15（密钥随备份可恢复）联动；与 T21 共享 dump 约定；root 改用户需在真实服务器验证权限，代理不执行。 |
 | 回归要点 | 合法：Bash/PowerShell 备份可恢复，恢复后订单/预占/卡密守恒。非法：dump 失败不生成“看似成功”的文件；超长/空格路径不拆参。失败后数据不变：备份失败不删除上一份有效备份。 |
-| 状态 | 待修复 |
+| 状态 | 已实现·待人工验证（提交 9ef0296；两云 `04-deploy.sh` systemd 改为 `User=${APP_SERVICE_USER:-gmall}` 并启用 `NoNewPrivileges/ProtectSystem=full/ProtectHome/PrivateTmp/ReadWritePaths`，root 负责建用户与 chown；`backup_mysql.sh` 改参数数组 + 临时 600 `--defaults-extra-file` + `--no-tablespaces` + stderr 分离 + `gzip -t` + 解压非空校验 + 原子改名，删除 Docker 回退；`backup_mysql.ps1` 改 `Start-Process` 分离 stdout/stderr、`--defaults-extra-file`、无 BOM 原始字节落盘、流式压缩、删除 Docker 回退；用例覆盖 argv 无口令、凭据临时文件删除、无 BOM、stderr 不混入 SQL、失败清理。**未运行** Bash/PowerShell 用例与真实恢复演练） |
 
 #### T36 限流取 `getRemoteAddr`，Nginx 回环后真实客户端共享 IP 桶
 
