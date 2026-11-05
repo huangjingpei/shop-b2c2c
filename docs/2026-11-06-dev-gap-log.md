@@ -85,6 +85,21 @@
 - 建议归属：密钥轮换、缺省密钥回退、密钥不可用时历史行补算 → T15/T21；卡密列表脱敏、明文查看、导出二次确认与审计 → T16；`fingerprint_unavailable` 的运营可见统计/告警面板可作为后续独立候选，不在本轮实现。
 - 影响面：当前密钥与历史密文匹配时，加密历史行会在首次导入时补算并从此参与索引去重；密钥缺失或不匹配时，这些行只能“每次导入重试解密、失败跳过”，无法参与索引去重，需等待 T15/T21 提供稳定密钥后再补算。跳过计数只写 WARN 日志，没有持久化计数字段；`fingerprint_unavailable` 仅作标记，不改变卡密状态、库存或履约。
 
+## G09 T15 因缺少生产卡密密钥配置依据而阻塞，未改密钥体系
+
+- 发现位置：[CardCipherService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java) 的 `resolveKey`；[application.yml](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/application.yml) 与 [application-prod.yml](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/application-prod.yml)；[02-init-infra.sh](file:///e:/shop-b2b2c/deploy/aliyun/server/02-init-infra.sh) 的 `.env` 模板；[04-deploy.sh](file:///e:/shop-b2b2c/deploy/aliyun/server/04-deploy.sh)。
+- 现象：全仓库检索 `shop.security.card-secret-key`、`CARD_ENCRYPTION_KEY` 只出现在 `CardCipherService` 与审查文档，`application*.yml` 未配置该项，部署脚本的 `.env` 生成流程也没有卡密密钥键；未配置时仍回退到硬编码种子 `shopizer-b2b2c-card-default-secret-seed-2026`；密文只有 `ENC:v1:`、无 keyId；`ProductController` 保留可 `new CardCipherService()` 的兼容构造器。
+- 按用户指令停止的原因：T15 的实现必须引入生产密钥配置项（密钥来源、生成与保管）并改变现有密钥体系（版本化密文与轮换），而仓库内没有明确的生产密钥配置依据；用户明确要求此时停在这一步，不自行设计密钥管理方案，也不为“跑通”引入降级回退。
+- 待用户/环境负责人决策（缺一不可，代理不代选）：
+  1. 生产密钥来源：是否统一由部署注入 `CARD_ENCRYPTION_KEY`（或新增 `shop.security.card-secret-key` 映射），由谁生成、保管、分发？是否只允许 32 字节随机值，还是允许任意长度经 SHA-256 派生（现实现两种都接受）。
+  2. 存量数据事实：生产/存量库是否存在用默认种子加密的 `ENC:v1:` 卡密、规模多大。只有先确认，才能决定是否保留“旧密钥仅用于历史解密、不用于新写入”的过渡，以及是否需要 T21 的备份密钥配套。
+  3. 轮换协议：`ENC:v2:<keyId>:` 的 keyId 取值规则、多版本密钥的配置结构（单键逗号分隔/多键/密钥环文件等）均为空白，需先给出确定口径，不能由代理自定。
+  4. 启动失败范围：缺密钥启动失败只作用于 `prod` profile，还是所有非 `test` profile？这会决定 H2 集成测试与本地开发如何注入测试密钥，需与测试/本地运行约定一起确认。
+  5. 兼容构造器处置：删除 `new CardCipherService()` 与 `ProductController` 的二次注入兜底会触达测试装配；是否允许在本卡内一并改造现有测试构造方式，需明确范围。
+- 未做事项：未修改 `CardCipherService`、`application.yml`、`application-prod.yml`、`schema.sql`、部署脚本与任何测试；未新增配置键、未增加 `ENC:v2:`、未删除兼容构造器、未改动硬编码种子回退；本卡无代码提交。
+- 建议归属：T15（密钥体系与轮换）、T21（备份密钥与迁移前备份）、T03（种子治理边界）；T14 的“无钥匙历史行补算”依赖本卡或 T21 的稳定密钥后再补（见 G08）。
+- 影响面（现状延续，不是已修复）：未显式配置密钥的环境仍使用硬编码种子，密钥随源码泄露即可解密生产库与备份；密文无 keyId，无法在不全量重加密的前提下灰度轮换；缺密钥不会阻止启动。`application-prod.yml` 现有说明未涉及卡密密钥，不能据此推断生产密钥来源已确定。
+
 ## S1 环境核对待办（由环境负责人执行）
 
 - 存量 MySQL 升级前先备份（T21 未在 S1 实现）；将 `db/migrations/V1__s1_order_lifecycle.sql` 纳入发布包，确认 `app.schema-migration.enabled=true`。
