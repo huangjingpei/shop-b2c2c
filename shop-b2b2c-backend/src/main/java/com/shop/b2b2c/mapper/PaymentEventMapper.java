@@ -1,6 +1,7 @@
 /*
  * 文件：PaymentEventMapper.java
- * 用途：支付到账事件数据访问，支撑支付流水唯一排重与核对查询 (R13)。
+ * 用途：支付到账事件数据访问，支撑支付流水唯一排重、补偿扫描与核对查询 (R13/T05)。
+ * 维护注意：补偿查询只读取事件 SUCCESS 但订单未支付/未交付的记录；不得把缺失订单纳入自动补履约，避免无限重试。
  */
 package com.shop.b2b2c.mapper;
 
@@ -29,4 +30,14 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
                 .eq(PaymentEvent::getOrderSn, orderSn)
                 .orderByDesc(PaymentEvent::getId));
     }
+
+    /**
+     * T05 补偿扫描：事件已 SUCCESS，但关联订单仍不是 PAID/COMPLETED/SHIPPED。
+     * INNER JOIN 排除订单缺失的历史脏数据，避免自动任务无休止重试。
+     */
+    @Select("SELECT e.* FROM payment_event e INNER JOIN trade_order o ON o.order_sn = e.order_sn "
+            + "WHERE e.event_status = 'SUCCESS' "
+            + "AND o.order_status NOT IN ('PAID', 'COMPLETED', 'SHIPPED') "
+            + "ORDER BY e.id LIMIT #{limit}")
+    List<PaymentEvent> findSuccessfulWithoutPaidOrder(@Param("limit") int limit);
 }

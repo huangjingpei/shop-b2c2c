@@ -1,12 +1,16 @@
 /*
  * 文件：ReservationExpiryJob.java
- * 用途：定时扫描到期的库存预占及超时未支付订单，并调用事务服务释放与关单。
- * 维护注意：采用游标分页扫描，单条坏账异常不阻断饿死后续正常单据；统一扫描HELD预占与无预占超期未支付意向单。
+ * 用途：定时扫描到期的库存预占及超时未支付订单，并调用事务服务释放与关单；同时补偿“事件 SUCCESS 但订单未履约”的历史不一致。
+ * 维护注意：
+ *  1. 采用游标分页扫描，单条坏账异常不阻断饿死后续正常单据；统一扫描 HELD 预占与无预占超期未支付意向单。
+ *  2. 支付补偿扫描单轮限量，失败记录由 PaymentEventService 写入 FULFILLMENT_FAILED，不在此重复处理。
+ *  3. 每轮扫描与更新时间不超过 30 秒一次，不得加入跨库分布式事务。
  */
 package com.shop.b2b2c.config;
 
 import com.shop.b2b2c.mapper.InventoryReservationMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
+import com.shop.b2b2c.service.PaymentEventService;
 import com.shop.b2b2c.service.PeerPayService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,9 +26,13 @@ import java.util.List;
 @RequiredArgsConstructor
 @Slf4j
 public class ReservationExpiryJob {
+    private static final int SCAN_BATCH_SIZE = 100;
+    private static final int PAYMENT_RECONCILE_BATCH_SIZE = 50;
+
     private final InventoryReservationMapper reservations;
     private final TradeOrderMapper orders;
     private final PeerPayService service;
+    private final PaymentEventService paymentEventService;
 
     private volatile long reservationCursor = 0L;
     private volatile long orderCursor = 0L;
@@ -33,6 +41,20 @@ public class ReservationExpiryJob {
     public void expire() {
         expireHeldReservations();
         expireUnpaidOrders();
+        reconcilePaymentEvents();
+    }
+
+    /**
+     * T05 补偿扫描：修复“事件 SUCCESS 但订单仍 UNPAID/CLOSED”的历史不一致。
+     * 单条失败已被 PaymentEventService 转为 FULFILLMENT_FAILED，不会影响下一轮正常单据。
+     */
+    public int reconcilePaymentEvents() {
+        try {
+            return paymentEventService.reconcileSuccessfulWithoutFulfillment(PAYMENT_RECONCILE_BATCH_SIZE);
+        } catch (Exception e) {
+            log.error("支付事件补偿扫描异常，等待下一轮重试", e);
+            return 0;
+        }
     }
 
     public int expireHeldReservations() {

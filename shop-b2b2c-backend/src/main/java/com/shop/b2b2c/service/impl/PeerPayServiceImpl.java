@@ -478,27 +478,36 @@ public class PeerPayServiceImpl implements PeerPayService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
-    public TradeOrder notifyPaymentSuccess(String token, String payerId, String payTradeNo, String channel) {
-        TradeOrder order = orderMapper.findByPeerPayTokenForUpdate(token)
+    public TradeOrder notifyPaymentSuccess(String token, String payerId, String payTradeNo, String channel,
+                                           BigDecimal receivedAmount, String currency, Long channelMerchantId) {
+        // 不在此方法持有事务/行锁：业务事务由 PaymentEventService 的 TransactionTemplate 统一控制，
+        // 避免外层事务占用连接时失败审计再开独立事务造成主连接池自锁 (T05/T11)。
+        TradeOrder order = orderMapper.findByPeerPayToken(token)
                 .orElseThrow(() -> new BusinessException("代付单不存在"));
 
-        if (Set.of("PAID", "COMPLETED", "SHIPPED").contains(order.getOrderStatus())) {
-            return order;
-        }
+        // T07：已支付订单也必须完成参数校验与事件落库，不得在资金核对前静默返回。
         if (payerId == null || payerId.isBlank() || payTradeNo == null || payTradeNo.isBlank()
-                || !("WECHAT".equals(channel) || "ALIPAY".equals(channel))) {
-            throw new BusinessException("缺少可信支付结果");
+                || channel == null || !("WECHAT".equals(channel) || "ALIPAY".equals(channel))) {
+            throw new BusinessException(400, "缺少可信支付结果");
+        }
+        if (receivedAmount == null || receivedAmount.signum() <= 0) {
+            throw new BusinessException(400, "缺少渠道实收金额，拒绝落账");
+        }
+        if (currency == null || currency.isBlank()) {
+            throw new BusinessException(400, "缺少交易币种，拒绝落账");
+        }
+        if (channelMerchantId == null) {
+            throw new BusinessException(400, "缺少渠道商户号，拒绝落账");
         }
 
-        // R13: 接入统一到账事件处理服务 (持久化唯一支付事件流水、资金要素核对与解耦本地履约)
+        // R13/T06: 只透传渠道实收要素，禁止用订单应付金额反填实收/币种/商户号。
         com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent event = com.shop.b2b2c.dto.PaymentEventDTOs.IncomingPaymentEvent.builder()
                 .channel(channel)
                 .payTradeNo(payTradeNo)
                 .orderSn(order.getOrderSn())
-                .merchantId(order.getMerchantId())
-                .payAmount(order.getPayAmount())
-                .currency("CNY")
+                .merchantId(channelMerchantId)
+                .payAmount(receivedAmount)
+                .currency(currency)
                 .payerId(payerId)
                 .rawPayload("InternalAdapter:" + channel + ":" + payTradeNo)
                 .build();

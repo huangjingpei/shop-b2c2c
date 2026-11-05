@@ -1,7 +1,10 @@
 /*
  * 文件：PeerPayService.java
  * 用途：代付建单、预占、授权释放、到期处理及内部落账服务契约。
- * 维护注意：notifyPaymentSuccess仅供未来可信渠道适配器调用，不能直接公开HTTP映射；适配器须先验签并核对资金。修改取消签名或ownerToken语义时须同步调用方和回归测试。
+ * 维护注意：
+ *  1. notifyPaymentSuccess 仅供可信渠道适配器调用，不能直接公开 HTTP 映射；适配器须先验签。
+ *  2. 落账入参必须携带渠道实收金额/币种/商户号，禁止由实现从订单应付金额反填 (T06)。
+ *  3. 修改取消签名或 ownerToken 语义时须同步调用方和回归测试。
  */
 package com.shop.b2b2c.service;
 
@@ -9,6 +12,7 @@ import com.shop.b2b2c.dto.PeerPayDTOs;
 import com.shop.b2b2c.entity.PlatformAdConfig;
 import com.shop.b2b2c.entity.TradeOrder;
 
+import java.math.BigDecimal;
 import java.util.Map;
 
 public interface PeerPayService {
@@ -49,10 +53,11 @@ public interface PeerPayService {
 
     /**
      * 内部支付落账入口，不允许直接暴露为HTTP接口。
-     * 未来渠道适配器必须先验签、核对金额/商户/币种并持久化支付事件，再调用本方法。
-     * 当前没有真实支付适配器；生产购买只建待付款订单。
+     * 渠道适配器必须先验签，并把渠道实收金额、币种、商户号原样传入；实现层不得从订单反填。
+     * 订单已支付时仍须完成要素校验并落第二笔 DUPLICATE_PAYMENT 事件，不得静默返回。
      */
-    TradeOrder notifyPaymentSuccess(String token, String payerId, String payTradeNo, String channel);
+    TradeOrder notifyPaymentSuccess(String token, String payerId, String payTradeNo, String channel,
+                                    BigDecimal receivedAmount, String currency, Long channelMerchantId);
 
     /**
      * 卖家录入交付凭证完成【线上服务】履约 (锁定退款仲裁限制)

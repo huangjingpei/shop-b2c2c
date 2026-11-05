@@ -1234,7 +1234,12 @@ class Sprint1SecurityIntegrationTest {
     }
 
     private TradeOrder pay(String token) {
-        return payments.notifyPaymentSuccess(token, "verified-payer", "trade-" + token, "WECHAT");
+        // T06：测试适配器必须显式传入渠道实收金额/币种/商户号，不再由服务层从订单反填。
+        TradeOrder order = orders.findByOrderSn("ORD-" + token).orElse(null);
+        java.math.BigDecimal amount = order != null ? order.getPayAmount() : java.math.BigDecimal.TEN;
+        Long merchantId = order != null ? order.getMerchantId() : 1L;
+        return payments.notifyPaymentSuccess(token, "verified-payer", "trade-" + token, "WECHAT",
+                amount, "CNY", merchantId);
     }
 
     private TradeOrder intent(String token) {
@@ -1654,7 +1659,8 @@ class Sprint1SecurityIntegrationTest {
         TradeOrder order = intent("r13-peer-adapter");
         payments.preLockInventory("r13-peer-adapter");
 
-        TradeOrder paidOrder = payments.notifyPaymentSuccess("r13-peer-adapter", "verified_peer_payer", "TX_PEER_ADAPTER_123", "WECHAT");
+        TradeOrder paidOrder = payments.notifyPaymentSuccess("r13-peer-adapter", "verified_peer_payer",
+                "TX_PEER_ADAPTER_123", "WECHAT", java.math.BigDecimal.TEN, "CNY", 1L);
         assertEquals("COMPLETED", paidOrder.getOrderStatus());
         assertEquals("TX_PEER_ADAPTER_123", paidOrder.getPayTradeNo());
 
@@ -1662,6 +1668,151 @@ class Sprint1SecurityIntegrationTest {
         assertNotNull(pe);
         assertEquals("SUCCESS", pe.getEventStatus());
         assertEquals("verified_peer_payer", pe.getPayerId());
+    }
+
+    @Test
+    @DisplayName("T05: 履约失败回滚订单与库存后，事件必须落 FULFILLMENT_FAILED 而不是 SUCCESS")
+    void t05FulfillmentFailureLeavesEventInFailedStateNotSuccess() {
+        TradeOrder order = unpaid("t05-fail-state", 1);
+        doReturn(0).when(cards).claimCard(anyLong(), anyLong(), anyLong(), anyString());
+
+        assertThrows(BusinessException.class, () -> pay("t05-fail-state"));
+
+        var pe = paymentEvents.findByChannelAndTradeNo("WECHAT", "trade-t05-fail-state");
+        assertNotNull(pe);
+        assertEquals("FULFILLMENT_FAILED", pe.getEventStatus());
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    @DisplayName("T05: 同一流水号在订单已提交履约后的重放只做幂等返回，不再次发卡/扣库存")
+    void t05CommittedEventReplayIsIdempotent() {
+        TradeOrder order = unpaid("t05-replay", 1);
+        assertEquals("COMPLETED", pay("t05-replay").getOrderStatus());
+        assertNotNull(paymentEvents.findByChannelAndTradeNo("WECHAT", "trade-t05-replay"));
+
+        assertEquals("COMPLETED", pay("t05-replay").getOrderStatus());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        verify(cards, times(1)).claimCard(anyLong(), anyLong(), anyLong(), anyString());
+        assertEquals(1, paymentEvents.findByOrderSn(order.getOrderSn()).size());
+    }
+
+    @Test
+    @DisplayName("T05: 事件 SUCCESS 但订单仍 UNPAID 时，补偿扫描用同一事件重新驱动履约")
+    void t05CompensationReDrivesSuccessEventWithUnpaidOrder() {
+        TradeOrder order = unpaid("t05-compensate", 1);
+        var orphan = new com.shop.b2b2c.entity.PaymentEvent();
+        orphan.setChannel("WECHAT");
+        orphan.setPayTradeNo("TX_T05_COMPENSATE");
+        orphan.setOrderSn(order.getOrderSn());
+        orphan.setMerchantId(1L);
+        orphan.setPayAmount(java.math.BigDecimal.TEN);
+        orphan.setCurrency("CNY");
+        orphan.setPayerId("compensate-payer");
+        orphan.setEventStatus("SUCCESS");
+        paymentEvents.insert(orphan);
+
+        int processed = paymentEventService.reconcileSuccessfulWithoutFulfillment(10);
+
+        assertTrue(processed >= 1);
+        assertEquals("COMPLETED", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals("SUCCESS", paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T05_COMPENSATE").getEventStatus());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    @DisplayName("T06: 渠道适配器缺失/错误实收金额被拒绝，事件金额使用渠道值而非订单反填")
+    void t06AdapterReceiptAmountIsNotBackfilledFromOrder() {
+        TradeOrder order = unpaid("t06-amount", 1);
+
+        var missing = assertThrows(BusinessException.class, () -> payments.notifyPaymentSuccess(
+                "t06-amount", "payer", "TX_T06_MISSING", "WECHAT", null, "CNY", 1L));
+        assertTrue(missing.getMessage().contains("缺少渠道实收金额"));
+        assertNull(paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T06_MISSING"));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+
+        var mismatch = assertThrows(BusinessException.class, () -> payments.notifyPaymentSuccess(
+                "t06-amount", "payer", "TX_T06_MISMATCH", "WECHAT",
+                new java.math.BigDecimal("9.99"), "CNY", 1L));
+        assertTrue(mismatch.getMessage().contains("实付金额"));
+        var pe = paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T06_MISMATCH");
+        assertNotNull(pe);
+        assertEquals("AMOUNT_MISMATCH", pe.getEventStatus());
+        assertEquals(0, new java.math.BigDecimal("9.99").compareTo(pe.getPayAmount()));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
+    @DisplayName("T06: 币种/渠道商户号不符必须拒绝且不降级为订单默认 CNY/商户")
+    void t06AdapterRejectsCurrencyAndMerchantMismatch() {
+        TradeOrder order = unpaid("t06-currency", 1);
+        var wrongCurrency = assertThrows(BusinessException.class, () -> payments.notifyPaymentSuccess(
+                "t06-currency", "payer", "TX_T06_USD", "WECHAT",
+                java.math.BigDecimal.TEN, "USD", 1L));
+        assertTrue(wrongCurrency.getMessage().contains("交易币种不符"));
+        assertEquals("CURRENCY_MISMATCH",
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T06_USD").getEventStatus());
+
+        var wrongMerchant = assertThrows(BusinessException.class, () -> payments.notifyPaymentSuccess(
+                "t06-currency", "payer", "TX_T06_MERCHANT", "WECHAT",
+                java.math.BigDecimal.TEN, "CNY", 2L));
+        assertTrue(wrongMerchant.getMessage().contains("支付事件商户与订单商户不一致"));
+        assertEquals("MERCHANT_MISMATCH",
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T06_MERCHANT").getEventStatus());
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
+    @DisplayName("T07: 已支付订单收到不同流水号必须落 DUPLICATE_PAYMENT，不静默成功也不重复发卡")
+    void t07SecondTradeNoOnPaidOrderBecomesDuplicatePayment() {
+        TradeOrder order = intent("t07-dup");
+        payments.preLockInventory("t07-dup");
+        assertEquals("COMPLETED", payments.notifyPaymentSuccess("t07-dup", "payer-a", "TX_T07_FIRST",
+                "WECHAT", java.math.BigDecimal.TEN, "CNY", 1L).getOrderStatus());
+
+        TradeOrder second = payments.notifyPaymentSuccess("t07-dup", "payer-b", "TX_T07_SECOND",
+                "WECHAT", java.math.BigDecimal.TEN, "CNY", 1L);
+        assertEquals("COMPLETED", second.getOrderStatus());
+
+        var duplicate = paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T07_SECOND");
+        assertNotNull(duplicate);
+        assertEquals("DUPLICATE_PAYMENT", duplicate.getEventStatus());
+        assertEquals("SUCCESS", paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T07_FIRST").getEventStatus());
+        verify(cards, times(1)).claimCard(anyLong(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("T07: 已支付订单仍先完成参数校验，缺失付款人不得静默返回")
+    void t07PaidOrderStillValidatesIncomingParameters() {
+        TradeOrder order = intent("t07-validate");
+        payments.preLockInventory("t07-validate");
+        payments.notifyPaymentSuccess("t07-validate", "payer-a", "TX_T07_VALIDATE_FIRST",
+                "WECHAT", java.math.BigDecimal.TEN, "CNY", 1L);
+
+        var ex = assertThrows(BusinessException.class, () -> payments.notifyPaymentSuccess(
+                "t07-validate", " ", "TX_T07_VALIDATE_BAD", "WECHAT",
+                java.math.BigDecimal.TEN, "CNY", 1L));
+        assertTrue(ex.getMessage().contains("缺少可信支付结果"));
+        assertNull(paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T07_VALIDATE_BAD"));
+        assertEquals("COMPLETED", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
+    @DisplayName("T07: 两个付款人并发用不同流水号付款时两笔事件均落库，仅一笔履约")
+    void t07ConcurrentDifferentTradeNosOnlyOneFulfills() throws Exception {
+        TradeOrder order = intent("t07-race");
+        payments.preLockInventory("t07-race");
+        race(2, i -> payments.notifyPaymentSuccess("t07-race", "payer-" + i, "TX_T07_RACE_" + i,
+                "WECHAT", java.math.BigDecimal.TEN, "CNY", 1L));
+
+        assertEquals("COMPLETED", orders.selectById(order.getId()).getOrderStatus());
+        List<String> statuses = jdbc.queryForList(
+                "SELECT event_status FROM payment_event WHERE pay_trade_no LIKE 'TX_T07_RACE_%'", String.class);
+        assertEquals(2, statuses.size());
+        assertTrue(statuses.contains("SUCCESS"));
+        assertTrue(statuses.contains("DUPLICATE_PAYMENT"));
+        verify(cards, times(1)).claimCard(anyLong(), anyLong(), anyLong(), anyString());
     }
 
     @Test
@@ -2959,7 +3110,8 @@ class Sprint1SecurityIntegrationTest {
         assertTrue(renderingStarted.await(5, TimeUnit.SECONDS));
 
         // 3. 并发完成支付通知（必须立刻成功，不被海报查询或渲染阻塞）
-        TradeOrder paidOrder = payments.notifyPaymentSuccess("r26-concurrency", "payer-concurrent", "trade-concurrency-999", "WECHAT");
+        TradeOrder paidOrder = payments.notifyPaymentSuccess("r26-concurrency", "payer-concurrent",
+                "trade-concurrency-999", "WECHAT", java.math.BigDecimal.TEN, "CNY", 1L);
         assertEquals("PAID", paidOrder.getPeerStatus());
         assertEquals("COMPLETED", paidOrder.getOrderStatus());
         paymentCompleted.countDown();

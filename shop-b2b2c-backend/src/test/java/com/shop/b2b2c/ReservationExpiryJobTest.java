@@ -1,12 +1,13 @@
 /*
  * 文件：ReservationExpiryJobTest.java
- * 用途：测试到期库存预占与超时未支付订单的游标扫描、毒记录异常隔离与防饿死机制 (R11, R12)。
+ * 用途：测试到期库存预占与超时未支付订单的游标扫描、毒记录异常隔离、防饿死机制及支付事件补偿扫描 (R11, R12, T05)。
  */
 package com.shop.b2b2c;
 
 import com.shop.b2b2c.config.ReservationExpiryJob;
 import com.shop.b2b2c.mapper.InventoryReservationMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
+import com.shop.b2b2c.service.PaymentEventService;
 import com.shop.b2b2c.service.PeerPayService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -34,11 +35,14 @@ class ReservationExpiryJobTest {
     @Mock
     private PeerPayService service;
 
+    @Mock
+    private PaymentEventService paymentEventService;
+
     private ReservationExpiryJob job;
 
     @BeforeEach
     void setUp() {
-        job = new ReservationExpiryJob(reservations, orders, service);
+        job = new ReservationExpiryJob(reservations, orders, service, paymentEventService);
     }
 
     @Test
@@ -97,6 +101,17 @@ class ReservationExpiryJobTest {
         verify(service).expireReservation(201L);
         verify(service).expireReservation(202L);
         assertEquals(0L, job.getOrderCursor());
+    }
+
+    @Test
+    @DisplayName("T05: 每轮补偿扫描调用支付事件服务并限制批量，异常不阻断主扫描")
+    void paymentReconcileScanIsBoundedAndErrorIsolated() {
+        when(paymentEventService.reconcileSuccessfulWithoutFulfillment(50)).thenReturn(3);
+        assertEquals(3, job.reconcilePaymentEvents());
+
+        when(paymentEventService.reconcileSuccessfulWithoutFulfillment(50))
+                .thenThrow(new IllegalStateException("补偿队列暂时不可用"));
+        assertEquals(0, job.reconcilePaymentEvents());
     }
 
     @Test
