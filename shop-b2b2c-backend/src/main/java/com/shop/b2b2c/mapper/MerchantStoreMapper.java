@@ -1,7 +1,7 @@
 /*
  * 文件：MerchantStoreMapper.java
  * 用途：MerchantStore领域的MyBatis基础持久化接口。
- * 维护注意：店铺基础查询；普通商家必须限定会话店铺，公开展示使用白名单，状态变更影响交易资格。 普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
+ * 维护注意：店铺基础查询；普通商家必须限定会话店铺，公开展示使用白名单，状态变更影响交易资格。 既有店铺配置必须调用Only定向SQL；null可选字段保留，服务费显式清除单独控制。禁止为了Mock测试吞锁异常或退化查询；普通save不是并发控制。
  */
 package com.shop.b2b2c.mapper;
 
@@ -17,19 +17,6 @@ public interface MerchantStoreMapper extends BaseMapper<MerchantStore> {
 
     default Optional<MerchantStore> findById(Long id) {
         return Optional.ofNullable(selectById(id));
-    }
-
-    @org.apache.ibatis.annotations.Select("SELECT * FROM merchant_store WHERE id = #{id} FOR UPDATE")
-    MerchantStore lockById(@org.apache.ibatis.annotations.Param("id") Long id);
-
-    default Optional<MerchantStore> findByIdForUpdate(Long id) {
-        try {
-            MerchantStore store = lockById(id);
-            if (store != null) return Optional.of(store);
-        } catch (Exception ignored) {
-            // 在未配置数据库连接的纯Mock单元测试中安全回退到普通findById
-        }
-        return findById(id);
     }
 
     @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET status = #{status} WHERE id = #{id}")
@@ -51,6 +38,23 @@ public interface MerchantStoreMapper extends BaseMapper<MerchantStore> {
                           @org.apache.ibatis.annotations.Param("logoUrl") String logoUrl,
                           @org.apache.ibatis.annotations.Param("contactPhone") String contactPhone,
                           @org.apache.ibatis.annotations.Param("customPayQrcode") String customPayQrcode);
+
+    @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET "
+            + "monthly_fee = COALESCE(#{monthlyFee}, monthly_fee), "
+            + "fee_free_until = CASE WHEN #{clearDate} THEN NULL ELSE COALESCE(#{deadline}, fee_free_until) END, "
+            + "fee_status = COALESCE(#{feeStatus}, fee_status) WHERE id = #{id}")
+    int updateServiceFeeOnly(@org.apache.ibatis.annotations.Param("id") Long id,
+                            @org.apache.ibatis.annotations.Param("monthlyFee") java.math.BigDecimal monthlyFee,
+                            @org.apache.ibatis.annotations.Param("deadline") java.time.LocalDateTime deadline,
+                            @org.apache.ibatis.annotations.Param("feeStatus") String feeStatus,
+                            @org.apache.ibatis.annotations.Param("clearDate") boolean clearDate);
+
+    @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET "
+            + "payment_channel_type = COALESCE(#{channel}, payment_channel_type), "
+            + "custom_pay_qrcode = COALESCE(#{qrcode}, custom_pay_qrcode) WHERE id = #{id}")
+    int updatePaymentChannelOnly(@org.apache.ibatis.annotations.Param("id") Long id,
+                                @org.apache.ibatis.annotations.Param("channel") String channel,
+                                @org.apache.ibatis.annotations.Param("qrcode") String qrcode);
 
     default MerchantStore save(MerchantStore entity) {
         if (entity.getId() == null) {

@@ -1,7 +1,7 @@
 /*
  * 文件：ManagementSecurityTest.java
  * 用途：管理参数、显式密码及公开店铺白名单的纯单元测试。
- * 维护注意：仓储使用Mock，非法参数断言无读写，合法参数覆盖正向保存；公开record测试锁定字段白名单。不得接入真实数据库或外部进件服务。
+ * 维护注意：仓储使用Mock，非法参数断言无读写，合法参数覆盖定向列更新，禁止保存旧实体；公开record测试锁定字段白名单。不得接入真实数据库或外部进件服务。
  */
 package com.shop.b2b2c;
 
@@ -39,8 +39,9 @@ class ManagementSecurityTest {
         when(store.findById(1L)).thenReturn(java.util.Optional.of(entity));
         new MerchantController(store, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class))
                 .updateCommission(1L, new BigDecimal(value));
-        assertEquals(new BigDecimal(value), entity.getCommissionRate());
-        verify(store).save(entity);
+        verify(store).updateCommissionOnly(1L, new BigDecimal(value));
+        verify(store, never()).save(any());
+        assertEquals(new BigDecimal("3.00"), entity.getCommissionRate(), "读取快照不应被修改或回写");
     }
 
     @ParameterizedTest

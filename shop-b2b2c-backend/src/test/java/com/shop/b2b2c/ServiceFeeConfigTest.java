@@ -1,7 +1,7 @@
 /*
  * 文件：ServiceFeeConfigTest.java
- * 用途：服务费五种编码保存、缺省保留及非法请求无副作用的单元回归。
- * 维护注意：Mock仓储，不连接数据库；TRIAL/EXEMPTED和OVERDUE/ARREARS必须分别存储，不用本用例推定扣费、到期转换或停服已实现。
+ * 用途：服务费五编码、null保留和显式清日期的定向写入单元回归。
+ * 维护注意：Mock仅验证校验/参数/无整实体回写；实际SQL保留、清除与并发由H2集成测试验证，不代表真实扣费或MySQL已验收。
  */
 package com.shop.b2b2c;
 
@@ -19,20 +19,22 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 class ServiceFeeConfigTest {
+    private MerchantController controller(MerchantStoreMapper stores) {
+        return new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class));
+    }
+
     @ParameterizedTest
     @ValueSource(strings = {"NORMAL", "TRIAL", "OVERDUE", "EXEMPTED", "ARREARS"})
-    void allSupportedCodesSaveExactlyWithZeroMonthlyFee(String code) {
+    void supportedCodesAndZeroFeeOnlyWriteFeeColumns(String code) {
         var stores = mock(MerchantStoreMapper.class);
-        var store = new MerchantStore(); store.setStatus(1);
-        when(stores.findById(1L)).thenReturn(Optional.of(store));
+        var snapshot = new MerchantStore(); snapshot.setStatus(3);
+        when(stores.findById(1L)).thenReturn(Optional.of(snapshot));
         var dto = new MerchantController.ServiceFeeConfigDTO();
         dto.setFeeStatus(code); dto.setMonthlyFee(BigDecimal.ZERO); dto.setFeeFreeUntil(LocalDate.of(2028, 2, 29));
-        var response = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class))
-                .updateServiceFee(1L, dto);
-        assertEquals(200, response.getCode()); assertEquals(code, store.getFeeStatus());
-        assertEquals(BigDecimal.ZERO, store.getMonthlyFee());
-        assertEquals(LocalDate.of(2028, 2, 29).atStartOfDay(), store.getFeeFreeUntil());
-        assertEquals(1, store.getStatus()); verify(stores).save(store);
+        assertEquals(200, controller(stores).updateServiceFee(1L, dto).getCode());
+        verify(stores).updateServiceFeeOnly(1L, BigDecimal.ZERO, LocalDate.of(2028, 2, 29).atStartOfDay(), code, false);
+        verify(stores, never()).save(any());
+        assertEquals(3, snapshot.getStatus()); assertEquals("NORMAL", snapshot.getFeeStatus());
     }
 
     @ParameterizedTest
@@ -40,72 +42,38 @@ class ServiceFeeConfigTest {
     void invalidCodeCannotReadOrWrite(String code) {
         var stores = mock(MerchantStoreMapper.class);
         var dto = new MerchantController.ServiceFeeConfigDTO(); dto.setFeeStatus(code);
-        var ex = assertThrows(BusinessException.class, () -> new MerchantController(stores,
-                mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class)).updateServiceFee(1L, dto));
-        assertEquals(400, ex.getCode()); verifyNoInteractions(stores);
+        assertEquals(400, assertThrows(BusinessException.class, () -> controller(stores).updateServiceFee(1L, dto)).getCode());
+        verifyNoInteractions(stores);
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void explicitClearFlagIsIndependentOfNullOptionalFields(boolean clear) {
+        var stores = mock(MerchantStoreMapper.class);
+        when(stores.findById(1L)).thenReturn(Optional.of(new MerchantStore()));
+        var dto = new MerchantController.ServiceFeeConfigDTO(); dto.setClearFeeFreeUntil(clear);
+        controller(stores).updateServiceFee(1L, dto);
+        verify(stores).updateServiceFeeOnly(1L, null, null, null, clear);
+        verify(stores, never()).save(any());
     }
 
     @Test
-    void absentStatusAndDatePreserveExistingValuesIncludingUnknownHistoricalCode() {
+    void clearFlagWinsOverSimultaneousDateAndMissingFlagPreservesNulls() {
         var stores = mock(MerchantStoreMapper.class);
-        var store = new MerchantStore(); store.setFeeStatus("HISTORICAL");
-        store.setFeeFreeUntil(LocalDate.of(2026, 12, 31).atStartOfDay());
-        when(stores.findById(1L)).thenReturn(Optional.of(store));
-        var dto = new MerchantController.ServiceFeeConfigDTO(); dto.setMonthlyFee(BigDecimal.TEN);
-        new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class)).updateServiceFee(1L, dto);
-        assertEquals("HISTORICAL", store.getFeeStatus());
-        assertEquals(LocalDate.of(2026, 12, 31).atStartOfDay(), store.getFeeFreeUntil());
-        assertEquals(BigDecimal.TEN, store.getMonthlyFee()); verify(stores).save(store);
+        when(stores.findById(1L)).thenReturn(Optional.of(new MerchantStore()));
+        var dto = new MerchantController.ServiceFeeConfigDTO();
+        dto.setClearFeeFreeUntil(true); dto.setFeeFreeUntil(LocalDate.of(2028, 2, 29));
+        controller(stores).updateServiceFee(1L, dto);
+        verify(stores).updateServiceFeeOnly(1L, null, LocalDate.of(2028, 2, 29).atStartOfDay(), null, true);
+        controller(stores).updateServiceFee(1L, new MerchantController.ServiceFeeConfigDTO());
+        verify(stores).updateServiceFeeOnly(1L, null, null, null, false);
+        verify(stores, never()).save(any());
     }
 
     @Test
     void nullRequestIsRejectedBeforePersistence() {
         var stores = mock(MerchantStoreMapper.class);
-        var ex = assertThrows(BusinessException.class, () -> new MerchantController(stores,
-                mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class)).updateServiceFee(1L, null));
-        assertEquals(400, ex.getCode()); verifyNoInteractions(stores);
-    }
-
-    @Test
-    void clearFeeFreeUntilTrueExplicitlyClearsDeadlineWhilePreservingOtherFields() {
-        var stores = mock(MerchantStoreMapper.class);
-        var store = new MerchantStore();
-        store.setFeeStatus("TRIAL");
-        store.setMonthlyFee(new BigDecimal("99.00"));
-        store.setFeeFreeUntil(LocalDate.of(2026, 12, 31).atStartOfDay());
-        when(stores.findById(1L)).thenReturn(Optional.of(store));
-
-        var dto = new MerchantController.ServiceFeeConfigDTO();
-        dto.setClearFeeFreeUntil(true);
-
-        var res = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class))
-                .updateServiceFee(1L, dto);
-
-        assertEquals(200, res.getCode());
-        assertNull(store.getFeeFreeUntil(), "R23: 显式指定 clearFeeFreeUntil=true 应成功清空免收截止日");
-        assertEquals("TRIAL", store.getFeeStatus(), "原有费率状态不应被覆盖");
-        assertEquals(new BigDecimal("99.00"), store.getMonthlyFee(), "原有月费不应被覆盖");
-        verify(stores).save(store);
-    }
-
-    @Test
-    void clearFeeFreeUntilFalseWithNullDatePreservesExistingDeadline() {
-        var stores = mock(MerchantStoreMapper.class);
-        var store = new MerchantStore();
-        store.setFeeStatus("NORMAL");
-        store.setFeeFreeUntil(LocalDate.of(2026, 12, 31).atStartOfDay());
-        when(stores.findById(1L)).thenReturn(Optional.of(store));
-
-        var dto = new MerchantController.ServiceFeeConfigDTO();
-        dto.setClearFeeFreeUntil(false);
-        dto.setMonthlyFee(new BigDecimal("50.00"));
-
-        var res = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class))
-                .updateServiceFee(1L, dto);
-
-        assertEquals(200, res.getCode());
-        assertEquals(LocalDate.of(2026, 12, 31).atStartOfDay(), store.getFeeFreeUntil(), "clearFeeFreeUntil=false 且未传新日期应保留原有截止日");
-        assertEquals(new BigDecimal("50.00"), store.getMonthlyFee());
-        verify(stores).save(store);
+        assertEquals(400, assertThrows(BusinessException.class, () -> controller(stores).updateServiceFee(1L, null)).getCode());
+        verifyNoInteractions(stores);
     }
 }

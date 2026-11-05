@@ -200,6 +200,8 @@ Bearer存localStorage，30天会话无闲置过期，通用异常堆栈可能含
 
 #### R09 · 整实体保存可能恢复旧封禁状态或费率
 
+2026-11-05复核补记：76bcffd引入定向SQL后仍有整实体保存残留，本轮[Sprint23](SPRINT_23_店铺配置并发覆盖补修.md)移除并补齐费用/通道及R23清日期专用SQL，追加受控事务交错用例。状态：已实现·待人工验证；下方保留初次诊断证据，不能以旧行号或历史测试推定当前验收。
+
 **P1 · 确认并发缺陷 · 历史遗留（Git可追溯） · D12/D13/F13 · 待处理/待验证。**
 
 证据：[MerchantController.java](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantController.java) L137（`updateStatus(`）；[MerchantController.java](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantController.java) L222（`updateMerchantProfile(`）；[MerchantStoreMapper.java](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/MerchantStoreMapper.java) L26（`updateById(entity)`）。

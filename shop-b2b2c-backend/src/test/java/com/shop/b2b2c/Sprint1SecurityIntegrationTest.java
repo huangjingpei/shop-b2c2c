@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、状态统计、就绪探针、海报减载及租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、状态统计、就绪探针、海报减载、店铺定向更新并发及租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -93,7 +93,8 @@ class Sprint1SecurityIntegrationTest {
     @Autowired com.shop.b2b2c.service.CardImportBatchService batchQueries;
     @MockBean StringRedisTemplate redis;
     @SpyBean com.shop.b2b2c.service.ReadinessService readiness;
-    @Autowired MerchantStoreMapper stores;
+    @SpyBean MerchantStoreMapper stores;
+    @Autowired com.shop.b2b2c.controller.MerchantController merchantController;
     @Autowired com.shop.b2b2c.service.PaymentEventService paymentEventService;
     @Autowired com.shop.b2b2c.mapper.PaymentEventMapper paymentEvents;
 
@@ -117,6 +118,101 @@ class Sprint1SecurityIntegrationTest {
     @org.junit.jupiter.api.AfterEach
     void clearAuthSessions() {
         cn.dev33.satoken.stp.StpUtil.logout(200L);
+    }
+
+    @Test
+    void staleStoreReadsCannotOverwriteOtherOperationsAcrossAllFivePaths() throws Exception {
+        var fee = new com.shop.b2b2c.controller.MerchantController.ServiceFeeConfigDTO();
+        fee.setMonthlyFee(new java.math.BigDecimal("29.00"));
+        var channel = new com.shop.b2b2c.controller.MerchantController.PaymentChannelConfigDTO();
+        channel.setPaymentChannelType("B");
+        var onlyStatus = new com.shop.b2b2c.controller.MerchantController.ServiceFeeConfigDTO();
+        onlyStatus.setFeeStatus("TRIAL");
+        List<Runnable> stale = List.of(
+                () -> merchantController.updateStatus(1L, 3),
+                () -> merchantController.updateCommission(1L, new java.math.BigDecimal("9.00")),
+                () -> merchantController.updateServiceFee(1L, fee),
+                () -> merchantController.updatePaymentChannel(1L, channel),
+                () -> {
+                    try (var security = mockStatic(SecurityUtils.class);
+                         var roles = mockStatic(cn.dev33.satoken.stp.StpUtil.class)) {
+                        security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
+                        var profile = new MerchantStore(); profile.setNotice("new notice"); profile.setId(2L);
+                        merchantController.updateMerchantProfile(profile);
+                    }
+                },
+                () -> merchantController.updateServiceFee(1L, fee));
+        List<Runnable> committed = List.of(
+                () -> merchantController.updateCommission(1L, new java.math.BigDecimal("9.00")),
+                () -> merchantController.updateStatus(1L, 3),
+                () -> merchantController.updatePaymentChannel(1L, channel),
+                () -> merchantController.updateServiceFee(1L, fee),
+                () -> merchantController.updateStatus(1L, 3),
+                () -> merchantController.updateServiceFee(1L, onlyStatus));
+        for (int i = 0; i < stale.size(); i++) {
+            jdbc.update("UPDATE merchant_store SET status=1,commission_rate=3,monthly_fee=0,fee_status='NORMAL',payment_channel_type='C',notice=NULL WHERE id=1");
+            interleaveStoreWrites(stale.get(i), committed.get(i));
+            var result = stores.findById(1L).orElseThrow();
+            if (i < 2) {
+                assertEquals(3, result.getStatus());
+                assertEquals(0, new java.math.BigDecimal("9.00").compareTo(result.getCommissionRate()));
+            } else if (i == 4) {
+                assertEquals(3, result.getStatus()); assertEquals("new notice", result.getNotice());
+                assertNull(stores.findById(2L).orElseThrow().getNotice());
+            } else {
+                assertEquals(0, new java.math.BigDecimal("29.00").compareTo(result.getMonthlyFee()));
+                if (i == 5) assertEquals("TRIAL", result.getFeeStatus());
+                else assertEquals("B", result.getPaymentChannelType());
+            }
+        }
+    }
+
+    // 在真实Spring事务中暂停旧读取，另一路提交后才允许其UPDATE；不用sleep猜测交错。
+    private void interleaveStoreWrites(Runnable staleWrite, Runnable committedWrite) throws Exception {
+        CountDownLatch snapshotRead = new CountDownLatch(1), resume = new CountDownLatch(1);
+        var worker = new java.util.concurrent.atomic.AtomicReference<Thread>();
+        var once = new java.util.concurrent.atomic.AtomicBoolean();
+        doAnswer(invocation -> {
+            Object snapshot = invocation.callRealMethod();
+            if (Thread.currentThread() == worker.get() && once.compareAndSet(false, true)) {
+                snapshotRead.countDown();
+                if (!resume.await(10, TimeUnit.SECONDS)) throw new IllegalStateException("store write barrier timed out");
+            }
+            return snapshot;
+        }).when(stores).findById(1L);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<?> pending = executor.submit(() -> { worker.set(Thread.currentThread()); staleWrite.run(); });
+        try {
+            assertTrue(snapshotRead.await(10, TimeUnit.SECONDS), "old snapshot must be read before concurrent commit");
+            committedWrite.run();
+            resume.countDown(); pending.get(10, TimeUnit.SECONDS);
+        } finally {
+            resume.countDown(); pending.cancel(true); executor.shutdownNow();
+            assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS));
+        }
+    }
+
+    @Test
+    void feePatchPreservesNullsAndExplicitClearDoesNotTouchOtherConfiguration() {
+        var date = java.time.LocalDate.of(2028, 2, 29);
+        jdbc.update("UPDATE merchant_store SET status=3,fee_status='HISTORICAL',fee_free_until=?,payment_channel_type='B',custom_pay_qrcode='old-qr' WHERE id=1", date.atStartOfDay());
+        var fee = new com.shop.b2b2c.controller.MerchantController.ServiceFeeConfigDTO();
+        fee.setMonthlyFee(java.math.BigDecimal.ZERO);
+        merchantController.updateServiceFee(1L, fee);
+        var retained = stores.findById(1L).orElseThrow();
+        assertEquals(date.atStartOfDay(), retained.getFeeFreeUntil()); assertEquals("HISTORICAL", retained.getFeeStatus());
+        fee.setClearFeeFreeUntil(true); fee.setFeeFreeUntil(date.plusDays(1));
+        merchantController.updateServiceFee(1L, fee);
+        var cleared = stores.findById(1L).orElseThrow();
+        assertNull(cleared.getFeeFreeUntil()); assertEquals(3, cleared.getStatus());
+        assertEquals("B", cleared.getPaymentChannelType()); assertEquals("old-qr", cleared.getCustomPayQrcode());
+        fee.setClearFeeFreeUntil(false); fee.setFeeFreeUntil(date);
+        merchantController.updateServiceFee(1L, fee);
+        assertEquals(date.atStartOfDay(), stores.findById(1L).orElseThrow().getFeeFreeUntil());
+        var channel = new com.shop.b2b2c.controller.MerchantController.PaymentChannelConfigDTO();
+        channel.setCustomPayQrcode(""); merchantController.updatePaymentChannel(1L, channel);
+        assertEquals("B", stores.findById(1L).orElseThrow().getPaymentChannelType());
+        assertEquals("", stores.findById(1L).orElseThrow().getCustomPayQrcode());
     }
 
     private com.shop.b2b2c.dto.ProductEditingDTOs.Update productEdit(String revision, String title, String price) {

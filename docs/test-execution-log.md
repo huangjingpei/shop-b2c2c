@@ -2,6 +2,13 @@
 
 > 本文档用于落实整治项 **R33（测试执行状态与持续回归追溯）**，记录全量测试矩阵在开发机与仿真环境下的执行证据、测试基线、覆盖指标与回归判定。
 
+
+## 2026-11-05后续修订：Sprint23 / R09
+
+执行方：代理只完成实现、用例和静态审阅；本轮没有运行编译、测试或构建。下方历史统计不覆盖本次修改，也不作为本轮通过证据。新增/调整MerchantStoreUpdateTest、ManagementSecurityTest、ServiceFeeConfigTest及Sprint1SecurityIntegrationTest，含五配置写路径的屏障并发交错、null保留/显式清日期、权限/租户及持久化异常边界。
+
+状态：**待用户手动执行**。环境、用例数量、通过/失败/跳过均未记录为本轮已知结果；命令及预期见[Sprint23交付](SPRINT_23_店铺配置并发覆盖补修.md)。原有测试基线保留历史时点，不覆盖后续改动。
+
 ---
 
 ## 一、测试环境基线 (Test Environment Baseline)

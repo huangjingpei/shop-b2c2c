@@ -1,12 +1,11 @@
 /*
  * 文件：MerchantController.java
  * 用途：平台商户配置及商家本店资料接口。
- * 维护注意：管理参数必须在持久化前校验，店铺资料写入按字段白名单；进件账户仍为本地模拟，不能将PASSED视为真实渠道开通。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。
+ * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效；进件账户仍为本地模拟，不能将PASSED视为真实渠道开通。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。
  */
 package com.shop.b2b2c.controller;
 
 import cn.dev33.satoken.secure.BCrypt;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.ManagementGuards;
@@ -135,27 +134,21 @@ public class MerchantController {
 
     @Operation(summary = "【超管】变更店铺营业状态 (打烊/封禁/营业)")
     @PutMapping("/api/v1/admin/merchants/{id}/status")
-    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class)
     public R<Void> updateStatus(@PathVariable Long id, @RequestParam Integer status) {
         ManagementGuards.status(status);
-        MerchantStore store = storeMapper.findById(id)
-                .orElseThrow(() -> new BusinessException("店铺不存在"));
-        store.setStatus(status);
+        requireStore(id);
         storeMapper.updateStatusOnly(id, status);
-        storeMapper.save(store);
         return R.ok("状态更新成功", null);
     }
 
     @Operation(summary = "【超管】调整店铺平台抽成比率")
     @PutMapping("/api/v1/admin/merchants/{id}/commission")
-    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class)
     public R<Void> updateCommission(@PathVariable Long id, @RequestParam BigDecimal rate) {
         ManagementGuards.percent(rate);
-        MerchantStore store = storeMapper.findById(id)
-                .orElseThrow(() -> new BusinessException("店铺不存在"));
-        store.setCommissionRate(rate);
+        requireStore(id);
         storeMapper.updateCommissionOnly(id, rate);
-        storeMapper.save(store);
         return R.ok("费率调整成功", null);
     }
 
@@ -169,21 +162,16 @@ public class MerchantController {
 
     @Operation(summary = "【超管】配置商户月度技术服务费与免收期")
     @PutMapping("/api/v1/admin/merchants/{id}/service-fee")
-    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class)
     public R<Void> updateServiceFee(@PathVariable Long id, @RequestBody ServiceFeeConfigDTO dto) {
         if (dto == null) throw new BusinessException(400, "服务费配置不能为空");
         if (dto.getMonthlyFee() != null) ManagementGuards.monthlyFee(dto.getMonthlyFee());
         if (dto.getFeeStatus() != null) ManagementGuards.choice(dto.getFeeStatus(), ServiceFeeStatus.SUPPORTED);
-        MerchantStore store = storeMapper.findById(id)
-                .orElseThrow(() -> new BusinessException("店铺不存在"));
-        if (dto.getMonthlyFee() != null) store.setMonthlyFee(dto.getMonthlyFee());
-        if (Boolean.TRUE.equals(dto.getClearFeeFreeUntil())) {
-            store.setFeeFreeUntil(null);
-        } else if (dto.getFeeFreeUntil() != null) {
-            store.setFeeFreeUntil(dto.getFeeFreeUntil().atStartOfDay());
-        }
-        if (dto.getFeeStatus() != null) store.setFeeStatus(dto.getFeeStatus());
-        storeMapper.save(store);
+        requireStore(id);
+        // null保留旧值；显式清除优先于同时提交的日期，兼容既有R23协议。
+        storeMapper.updateServiceFeeOnly(id, dto.getMonthlyFee(),
+                dto.getFeeFreeUntil() == null ? null : dto.getFeeFreeUntil().atStartOfDay(),
+                dto.getFeeStatus(), Boolean.TRUE.equals(dto.getClearFeeFreeUntil()));
         return R.ok("商户技术服务费配置更新成功", null);
     }
 
@@ -195,15 +183,13 @@ public class MerchantController {
 
     @Operation(summary = "【超管】配置商户结算通道类型与独立收款码")
     @PutMapping("/api/v1/admin/merchants/{id}/payment-channel")
-    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class)
     public R<Void> updatePaymentChannel(@PathVariable Long id, @RequestBody PaymentChannelConfigDTO dto) {
+        if (dto == null) throw new BusinessException(400, "收款配置不能为空");
         if (dto.getPaymentChannelType() != null) ManagementGuards.choice(dto.getPaymentChannelType(), Set.of("A", "B", "C"));
         ManagementGuards.text(dto.getCustomPayQrcode(), 512, false);
-        MerchantStore store = storeMapper.findById(id)
-                .orElseThrow(() -> new BusinessException("店铺不存在"));
-        if (dto.getPaymentChannelType() != null) store.setPaymentChannelType(dto.getPaymentChannelType());
-        if (dto.getCustomPayQrcode() != null) store.setCustomPayQrcode(dto.getCustomPayQrcode());
-        storeMapper.save(store);
+        requireStore(id);
+        storeMapper.updatePaymentChannelOnly(id, dto.getPaymentChannelType(), dto.getCustomPayQrcode());
         return R.ok("商户结算收款通道配置成功", null);
     }
 
@@ -231,31 +217,27 @@ public class MerchantController {
 
     @Operation(summary = "【商家】更新店铺公告与展示资料")
     @PutMapping("/api/v1/merchant/profile")
-    @org.springframework.transaction.annotation.Transactional(rollbackFor = Exception.class)
+    @Transactional(rollbackFor = Exception.class)
     public R<Void> updateMerchantProfile(@RequestBody MerchantStore updateDTO) {
+        if (updateDTO == null) throw new BusinessException(400, "店铺资料不能为空");
         ManagementGuards.text(updateDTO.getNotice(), 512, false);
         ManagementGuards.text(updateDTO.getLogoUrl(), 255, false);
         ManagementGuards.text(updateDTO.getContactPhone(), 32, false);
         ManagementGuards.text(updateDTO.getCustomPayQrcode(), 512, false);
-        try {
-            if (cn.dev33.satoken.stp.StpUtil.isLogin()) {
-                cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
-            }
-        } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
-        }
+        cn.dev33.satoken.stp.StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
-        MerchantStore store = storeMapper.findById(merchantId)
-                .orElseThrow(() -> new BusinessException("店铺不存在"));
-
-        // 严格白名单列更新：使用定向列更新，绝不覆盖封禁状态、费率或系统资料 (R09)
+        requireStore(merchantId);
         storeMapper.updateProfileOnly(merchantId, updateDTO.getNotice(), updateDTO.getLogoUrl(),
                 updateDTO.getContactPhone(), updateDTO.getCustomPayQrcode());
 
-        if (updateDTO.getNotice() != null) store.setNotice(updateDTO.getNotice());
-        if (updateDTO.getLogoUrl() != null) store.setLogoUrl(updateDTO.getLogoUrl());
-        if (updateDTO.getContactPhone() != null) store.setContactPhone(updateDTO.getContactPhone());
-        if (updateDTO.getCustomPayQrcode() != null) store.setCustomPayQrcode(updateDTO.getCustomPayQrcode());
-
         return R.ok("店铺资料保存成功", null);
     }
+
+    private void requireStore(Long id) {
+        if (id == null || id <= 0) throw new BusinessException(400, "店铺编号不合法");
+        storeMapper.findById(id).orElseThrow(() -> new BusinessException(404, "店铺不存在"));
+        // 仅验证存在性，不将读到的实体用于回写。重复设置相同值允许成功，兼容MySQL changed-row计数为0。
+        // 当前没有删店入口；未来引入删除须统一事务/锁或版本策略，不能将此读取当行锁。
+    }
+
 }
