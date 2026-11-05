@@ -115,6 +115,7 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
 import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery } from '../../utils/cardAssets.mjs'
+import { merchantProductRows } from '../../utils/merchantProducts.mjs'
 
 const loading = ref(false)
 const submitLoading = ref(false)
@@ -227,7 +228,7 @@ const showVoidRecord = async row => {
 onMounted(() => {
   loadCards()
   loadBatches(false)
-  request.get('/merchant/products').then(res => { importProducts.value = res.data.filter(p => p.goodsType === 2) }).catch(() => {})
+  request.get('/merchant/products').then(res => { importProducts.value = merchantProductRows(res.data).filter(p => p.goodsType === 2) }).catch(() => {})
 })
 </script>
 

@@ -517,7 +517,7 @@ const openPushPayDialog = async () => {
   // 加载商家商品
   try {
     const res = await request.get('/merchant/products')
-    myProducts.value = res.data
+    myProducts.value = Array.isArray(res.data) ? res.data.filter(row => row?.product?.id != null) : []
     if (myProducts.value.length > 0) {
       pushForm.value.productId = myProducts.value[0].product.id
       handleProductChange(pushForm.value.productId)

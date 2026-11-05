@@ -166,6 +166,7 @@ import request from '../../api/request'
 import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload } from '../../utils/productEditing.mjs'
 import { inventoryPayload, canAdjustInventory } from '../../utils/inventoryAdjustment.mjs'
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
+import { merchantProductRows } from '../../utils/merchantProducts.mjs'
 
 const isManager = ref(localStorage.getItem('roleCode') === 'MERCHANT_ADMIN' || localStorage.getItem('roleCode') === 'SUPERADMIN')
 const loading = ref(false)
@@ -287,7 +288,7 @@ const loadProducts = async () => {
   loading.value = true
   try {
     const res = await request.get('/merchant/products')
-    products.value = res.data
+    products.value = merchantProductRows(res.data)
     const cRes = await request.get('/public/categories')
     categories.value = cRes.data
   } finally {

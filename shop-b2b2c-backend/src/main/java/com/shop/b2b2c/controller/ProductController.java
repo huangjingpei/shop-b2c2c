@@ -98,11 +98,14 @@ public class ProductController {
     // 商家工作台视角 API (/api/v1/merchant/products)
     // ==========================================
 
-    @Operation(summary = "【商家】查询本店商品列表")
+    @Operation(summary = "【商家】查询本店商品列表（含SKU，供推单选品联动）")
     @GetMapping("/api/v1/merchant/products")
-    public R<List<Product>> listMerchantProducts() {
+    public R<List<com.shop.b2b2c.dto.MerchantProductView>> listMerchantProducts() {
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
-        return R.ok(productMapper.findByMerchantId(merchantId));
+        List<com.shop.b2b2c.dto.MerchantProductView> views = productMapper.findByMerchantId(merchantId).stream()
+                .map(product -> new com.shop.b2b2c.dto.MerchantProductView(product, skuMapper.findByProductId(product.getId())))
+                .toList();
+        return R.ok(views);
     }
 
     @Data

@@ -71,6 +71,7 @@
 import { ref, computed, onMounted } from 'vue'
 import request from '../../api/request'
 import { statisticsView, listedProductCount, storeDisplay, STATISTICS_NOTICE } from '../../utils/orderStatistics.mjs'
+import { merchantProductRows } from '../../utils/merchantProducts.mjs'
 
 const storeInfo = ref({})
 const productCount = ref('—')
@@ -83,7 +84,7 @@ const loadData = async () => {
     storeInfo.value = res.data.store || {}
 
     const pRes = await request.get('/merchant/products')
-    productCount.value = listedProductCount(pRes.data)
+    productCount.value = listedProductCount(merchantProductRows(pRes.data))
 
     const oRes = await request.get('/merchant/orders/statistics')
     stats.value = statisticsView(oRes.data)
