@@ -1,7 +1,7 @@
 <!--
 文件：Login.vue
 用途：管理端登录表单和会话信息初始化。
-维护注意：本地存储的token/角色不可视为可信授权；登录后按服务端角色与店铺绑定选择首页，再由路由验证身份；不要在日志中输出密码或令牌，修改响应字段要同步身份接口。
+维护注意：本地存储的token/角色不可视为可信授权；登录后按服务端角色与店铺绑定选择首页，再由路由验证身份；不得预填演示账号/口令或提供一键填入；不要在日志中输出密码或令牌，修改响应字段要同步身份接口。
 -->
 <template>
   <div class="login-container">
@@ -23,18 +23,6 @@
           立即登录
         </el-button>
       </el-form>
-
-      <div class="quick-fill">
-        <div class="fill-title">体验账号一键填入：</div>
-        <div class="btn-group">
-          <el-button size="small" type="danger" plain @click="quickFill('superadmin', 'admin123')">
-            👑 平台超管视角 (superadmin)
-          </el-button>
-          <el-button size="small" type="primary" plain @click="quickFill('seller01', 'admin123')">
-            🏪 商家店长视角 (seller01)
-          </el-button>
-        </div>
-      </div>
     </div>
   </div>
 </template>
@@ -50,14 +38,9 @@ const router = useRouter()
 const loading = ref(false)
 
 const form = ref({
-  username: 'superadmin',
-  password: 'admin123'
+  username: '',
+  password: ''
 })
-
-const quickFill = (u, p) => {
-  form.value.username = u
-  form.value.password = p
-}
 
 const handleLogin = async () => {
   if (!form.value.username || !form.value.password) {
@@ -121,22 +104,5 @@ const handleLogin = async () => {
   margin-top: 10px;
   background: #2563eb;
   border: none;
-}
-
-.quick-fill {
-  margin-top: 30px;
-  padding-top: 20px;
-  border-top: 1px dashed #e2e8f0;
-}
-
-.fill-title {
-  font-size: 12px;
-  color: #94a3b8;
-  margin-bottom: 10px;
-}
-
-.btn-group {
-  display: flex;
-  gap: 10px;
 }
 </style>

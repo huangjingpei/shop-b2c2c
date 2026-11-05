@@ -64,7 +64,9 @@ class SchemaMySqlTest {
                 // Connector/J statements capture their catalog at creation; create validators after selecting it.
                 try (Statement statement = connection.createStatement()) {
                 var resource = new EncodedResource(new ClassPathResource("db/schema.sql"), StandardCharsets.UTF_8);
+                var demoSeed = new EncodedResource(new ClassPathResource("db/demo-seed.sql"), StandardCharsets.UTF_8);
                 ScriptUtils.executeSqlScript(connection, resource);
+                ScriptUtils.executeSqlScript(connection, demoSeed);
                 List<String> tables = new ArrayList<>();
                 try (ResultSet result = statement.executeQuery("SHOW TABLES")) {
                     while (result.next()) tables.add(result.getString(1));
@@ -95,6 +97,7 @@ class SchemaMySqlTest {
                 statement.executeUpdate("INSERT INTO card_import_item(card_id,batch_id) VALUES(900000000,900000000)");
                 Map<String,Long> counts = counts(connection, tables);
                 ScriptUtils.executeSqlScript(connection, resource);
+                ScriptUtils.executeSqlScript(connection, demoSeed);
                 assertEquals(counts, counts(connection, tables), "重复初始化不能增加演示数据或清空已有记录");
                 try (ResultSet stock = statement.executeQuery("SELECT stock_quantity FROM product_sku WHERE id=1")) {
                     assertTrue(stock.next()); assertEquals(777, stock.getInt(1));

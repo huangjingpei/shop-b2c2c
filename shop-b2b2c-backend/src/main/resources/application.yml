@@ -1,6 +1,6 @@
 # 文件：application.yml
 # 用途：Spring Boot数据源、会话、SQL初始化、前台地址和认证/CORS边界配置。
-# 维护注意：升级至令牌级授权快照后旧登录需重新登录；生产应注入受控环境变量，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一入口；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；SQL错误容忍不是版本迁移机制；不得开启记录卡密/领取凭证的SQL参数日志。
+# 维护注意：升级至令牌级授权快照后旧登录需重新登录；生产应注入受控环境变量，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一结构入口，演示账号/商品仅由db/demo-seed.sql在显式开关下加载，生产profile禁用SQL初始化；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；SQL错误容忍不是版本迁移机制；不得开启记录卡密/领取凭证的SQL参数日志。
 server:
   port: ${SERVER_PORT:8080}
   servlet:
@@ -27,11 +27,13 @@ spring:
       max-lifetime: 1800000
       connection-timeout: 30000
 
-  # 开发期完整基线初始化（不会升级已有表结构） (单一权威源: classpath:db/schema.sql)
+  # 开发期完整基线初始化（不会升级已有表结构） (单一权威结构源: classpath:db/schema.sql)
   sql:
     init:
-      mode: always # 每次应用启动自动执行 schema.sql 初始化建表与种子数据
+      mode: always # 每次应用启动自动执行结构初始化；生产由application-prod.yml改为never
       schema-locations: classpath:db/schema.sql
+      # 显式演示种子开关：默认仅开发/演示加载固定账号与虚构商品；设为空值可关闭，生产profile整体不执行。
+      data-locations: ${APP_DEMO_SEED_LOCATIONS:classpath:db/demo-seed.sql}
       encoding: UTF-8
       continue-on-error: false # SQL执行失败立即阻断启动，防止缺表/缺索引却报告就绪
 
@@ -88,6 +90,10 @@ app:
     poster-window-seconds: ${APP_POSTER_WINDOW_SECONDS:60}
   frontend:
     storefront-url: ${APP_FRONTEND_STOREFRONT_URL:http://localhost:3002}
+  # 生产首次管理员受控初始化：仅在库中不存在超管时创建，默认空值关闭；密码不得为演示默认口令。
+  bootstrap-admin:
+    username: ${BOOTSTRAP_ADMIN_USERNAME:}
+    password: ${BOOTSTRAP_ADMIN_PASSWORD:}
 
 # SpringDoc OpenAPI
 springdoc:
