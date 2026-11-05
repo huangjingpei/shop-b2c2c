@@ -4,8 +4,8 @@
  * 维护注意：
  *  1. 列表/统计投影不读 poster_url，不能将这些不完整实体当作订单全量快照；已存海报单独按 ID 和商户读取。
  *  2. 所有写者须保持订单行锁顺序，支付 CAS 须检查影响行数，事务外 FOR UPDATE 无并发保护。
- *  3. T08 起普通订单支付 CAS 也必须校验 lock_expire_time > 当前时间，不再对 NULL 截止时间放行；
- *     存量 UNPAID 的 NULL 截止时间由 V1 迁移按 created_at + 15 分钟回填。
+ *  3. T08 起普通订单支付 CAS 也校验 lock_expire_time > 当前时间，不对 NULL 截止时间放行；
+ *     截止时间由订单创建/预占路径写入 createdAt+15，迁移脚本不回填历史订单。
  */
 package com.shop.b2b2c.mapper;
 
@@ -64,11 +64,9 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
                               @org.apache.ibatis.annotations.Param("channel") String channel);
 
     @org.apache.ibatis.annotations.Select("SELECT id FROM trade_order "
-            + "WHERE order_status = 'UNPAID' "
-            + "AND (lock_expire_time <= #{now} OR (lock_expire_time IS NULL AND created_at <= #{cutoffTime})) "
+            + "WHERE order_status = 'UNPAID' AND lock_expire_time <= #{now} "
             + "AND id > #{cursor} ORDER BY id LIMIT #{limit}")
     List<Long> findExpiredUnpaidOrderIds(@org.apache.ibatis.annotations.Param("now") java.time.LocalDateTime now,
-                                         @org.apache.ibatis.annotations.Param("cutoffTime") java.time.LocalDateTime cutoffTime,
                                          @org.apache.ibatis.annotations.Param("cursor") Long cursor,
                                          @org.apache.ibatis.annotations.Param("limit") int limit);
 

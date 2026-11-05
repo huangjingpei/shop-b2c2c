@@ -1,7 +1,7 @@
 /*
  * 文件：PeerPayServiceImpl.java
  * 用途：代付交易与库存预占的事务实现，协调订单、SKU、卡密及人工服务履约；代付编码统一复用PeerStatus。
- * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。支付截止严格从下单时刻起算 15 分钟，预占成功只回写订单原始截止时间，不得重置为“当下 +15 分钟”。保留无流水旧锁的升级兼容；卡密缺货必须回滚。公开代付详情不能返回卡密或服务凭证；当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
+ * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。支付截止严格从下单时刻起算 15 分钟，预占成功只回写订单原始截止时间，不得重置为“当下 +15 分钟”；取消预占只回到意向态，不抹掉该截止时间。卡密缺货必须回滚。公开代付详情不能返回卡密或服务凭证；当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
  */
 package com.shop.b2b2c.service.impl;
 
@@ -473,7 +473,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         if (!"UNPAID".equals(order.getOrderStatus())) return;
         if (release(reservation)) {
             order.setPeerStatus(PeerStatus.INIT);
-            order.setLockExpireTime(null);
+            // 开发期基线：取消预占不抹掉下单时确定的支付截止，意向单仍按 createdAt+15 关闭
             orderMapper.save(order);
         }
     }
@@ -488,8 +488,9 @@ public class PeerPayServiceImpl implements PeerPayService {
 
     private void expireIfNecessary(TradeOrder order) {
         if (!"UNPAID".equals(order.getOrderStatus())) return;
-        LocalDateTime deadline = PeerStatus.RESERVED_LOCK.equals(order.getPeerStatus()) ? order.getLockExpireTime()
-                : order.getCreatedAt() == null ? null : order.getCreatedAt().plusMinutes(15);
+        // 截止时间以订单列写入值为准；缺失时按开发期基线回退到 createdAt+15，不再把 NULL 当作永不到期。
+        LocalDateTime deadline = order.getLockExpireTime();
+        if (deadline == null && order.getCreatedAt() != null) deadline = order.getCreatedAt().plusMinutes(15);
         if (deadline != null && !deadline.isAfter(LocalDateTime.now())) {
             release(reservationMapper.find(order.getId()));
             order.setOrderStatus("CLOSED");

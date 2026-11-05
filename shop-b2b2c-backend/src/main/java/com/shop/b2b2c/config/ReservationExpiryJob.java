@@ -1,6 +1,6 @@
 /*
  * 文件：ReservationExpiryJob.java
- * 用途：定时扫描到期的库存预占及超时未支付订单，并调用事务服务释放与关单；同时补偿“事件 SUCCESS 但订单未履约”的历史不一致。
+ * 用途：定时扫描到期的库存预占及超时未支付订单，并调用事务服务释放与关单；同时补偿“事件 SUCCESS 但订单未履约”的不一致。
  * 维护注意：
  *  1. 采用游标分页扫描，单条坏账异常不阻断饿死后续正常单据；统一扫描 HELD 预占与无预占超期未支付意向单。
  *  2. 支付补偿扫描单轮限量，失败记录由 PaymentEventService 写入 FULFILLMENT_FAILED，不在此重复处理。
@@ -46,7 +46,7 @@ public class ReservationExpiryJob {
     }
 
     /**
-     * T05 补偿扫描：修复“事件 SUCCESS 但订单仍 UNPAID/CLOSED”的历史不一致。
+     * T05 补偿扫描：修复“事件 SUCCESS 但订单仍 UNPAID/CLOSED”的不一致。
      * 单条失败已被 PaymentEventService 转为 FULFILLMENT_FAILED，不会影响下一轮正常单据。
      */
     public int reconcilePaymentEvents() {
@@ -85,11 +85,10 @@ public class ReservationExpiryJob {
     public int expireUnpaidOrders() {
         int processed = 0;
         LocalDateTime now = LocalDateTime.now();
-        LocalDateTime cutoff = now.minusMinutes(15);
-        List<Long> ids = orders.findExpiredUnpaidOrderIds(now, cutoff, orderCursor, SCAN_BATCH_SIZE);
+        List<Long> ids = orders.findExpiredUnpaidOrderIds(now, orderCursor, SCAN_BATCH_SIZE);
         if (ids.isEmpty() && orderCursor > 0L) {
             orderCursor = 0L;
-            ids = orders.findExpiredUnpaidOrderIds(now, cutoff, 0L, SCAN_BATCH_SIZE);
+            ids = orders.findExpiredUnpaidOrderIds(now, 0L, SCAN_BATCH_SIZE);
         }
         for (Long id : ids) {
             orderCursor = Math.max(orderCursor, id);

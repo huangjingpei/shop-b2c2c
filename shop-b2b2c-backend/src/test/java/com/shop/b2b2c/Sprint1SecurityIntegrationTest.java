@@ -1492,12 +1492,12 @@ class Sprint1SecurityIntegrationTest {
     void r12UnpaidDirectCheckoutOrdersAreAutomaticallyClosedAfterFifteenMinutes() {
         TradeOrder directOrder = unpaid("r12-direct", 1);
         directOrder.setPeerStatus("INIT");
-        directOrder.setLockExpireTime(null);
         orders.save(directOrder);
 
-        // 设置创建时间在 20 分钟前（超过 15 分钟超期时限），无预占记录
-        jdbc.update("UPDATE trade_order SET created_at=?, lock_expire_time=NULL WHERE id=?",
-                LocalDateTime.now().minusMinutes(20), directOrder.getId());
+        // 设置创建时间在 20 分钟前（截止时间按 createdAt+15 计算），无预占记录
+        LocalDateTime createdAt = LocalDateTime.now().minusMinutes(20);
+        jdbc.update("UPDATE trade_order SET created_at=?, lock_expire_time=? WHERE id=?",
+                createdAt, createdAt.plusMinutes(15), directOrder.getId());
 
         expiryJob.expireUnpaidOrders();
 
@@ -1516,9 +1516,10 @@ class Sprint1SecurityIntegrationTest {
 
         TradeOrder freshUnpaid = unpaid("r12-fresh", 1);
         freshUnpaid.setPeerStatus("INIT");
-        freshUnpaid.setLockExpireTime(null);
         orders.save(freshUnpaid);
-        jdbc.update("UPDATE trade_order SET created_at=? WHERE id=?", LocalDateTime.now().minusMinutes(5), freshUnpaid.getId());
+        LocalDateTime freshCreatedAt = LocalDateTime.now().minusMinutes(5);
+        jdbc.update("UPDATE trade_order SET created_at=?, lock_expire_time=? WHERE id=?",
+                freshCreatedAt, freshCreatedAt.plusMinutes(15), freshUnpaid.getId());
 
         expiryJob.expireUnpaidOrders();
 
@@ -2262,6 +2263,21 @@ class Sprint1SecurityIntegrationTest {
                 paymentEvents.findByChannelAndTradeNo("WECHAT", "trade-deadline-expired").getEventStatus());
         assertEquals("CLOSED", jdbc.queryForObject(
                 "SELECT order_status FROM trade_order WHERE id=?", String.class, order.getId()));
+    }
+
+    @Test
+    @DisplayName("基线清理: 取消预占回到意向态但保留下单截止时间")
+    void cancelPreLockKeepsOrderPaymentDeadline() {
+        TradeOrder order = intent("cancel-keeps-deadline");
+        var lock = payments.preLockInventory("cancel-keeps-deadline");
+        LocalDateTime deadline = orders.selectById(order.getId()).getLockExpireTime();
+        assertNotNull(deadline);
+
+        payments.cancelPreLock("cancel-keeps-deadline", lock.getOwnerToken());
+
+        TradeOrder released = orders.selectById(order.getId());
+        assertEquals("INIT", released.getPeerStatus());
+        assertEquals(deadline, released.getLockExpireTime(), "取消预占不得抹掉下单时确定的支付截止");
     }
 
     @Test
