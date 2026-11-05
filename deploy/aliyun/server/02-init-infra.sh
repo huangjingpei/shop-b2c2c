@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文件：02-init-infra.sh
 # 用途：初始化数据库账号/表结构和检查Redis等基础设施。
-# 维护注意：涉及真实凭据与数据库写入；确认目标库、权限和备份，不能将演示初始化当成存量迁移或恢复验证。只导入schema.sql结构，禁止导入demo-seed.sql；.env必须写入SPRING_DATASOURCE_USERNAME/PASSWORD供应用显式注入，不允许回退root；首次管理员通过BOOTSTRAP_ADMIN_USERNAME/PASSWORD受控创建，禁止使用admin123。 阿里云目录仍含GMall/PDK等历史工程路径，使用前必须对照当前项目核对，详见D34/D35。
+# 维护注意：涉及真实凭据与数据库写入；确认目标库、权限和备份，不能将演示初始化当成存量迁移或恢复验证。只导入schema.sql结构，禁止导入demo-seed.sql；.env必须写入SPRING_DATASOURCE_USERNAME/PASSWORD供应用显式注入，不允许回退root；首次管理员通过BOOTSTRAP_ADMIN_USERNAME/PASSWORD受控创建，禁止使用admin123。GMALL_SERVER_NAME/CERTBOT_EMAIL/DB_NAME/DB_USER/REDIS_PASS/BOOTSTRAP_ADMIN_* 必须由调用方显式提供，缺失即终止，不再写回任何默认口令。 阿里云目录仍含GMall/PDK等历史工程路径，使用前必须对照当前项目核对，详见D34/D35。
 # ============================================================================
 # GMall 基础设施初始化 —— 生成 .env 配置 / 创建 MySQL 数据库 / 导入 schema
 #
@@ -14,8 +14,6 @@ set -euo pipefail
 GMALL_ROOT="${GMALL_ROOT:-/opt/gmall}"
 ENV_FILE="${GMALL_ROOT}/.env"
 SCHEMA_SQL="${GMALL_ROOT}/src/shop-b2b2c-backend/src/main/resources/db/schema.sql"
-DB_NAME="${DB_NAME:-shop_b2b2c}"
-DB_APP_USER="${DB_USER:-shop_b2b2c}"
 
 log()  { printf '\033[0;32m[infra]\033[0m %s\n' "$*"; }
 warn() { printf '\033[0;33m[infra]\033[0m %s\n' "$*"; }
@@ -24,6 +22,19 @@ die()  { printf '\033[0;31m[infra][ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 [[ $EUID -eq 0 ]] || die "请用 root 执行（sudo bash $0）"
 
 rand_pass() { openssl rand -base64 30 | tr -dc 'A-Za-z0-9' | head -c 24; }
+
+# ================================================================ 0. 必填项校验
+# 缺配置即终止：不保留任何Redis/数据库/管理员默认口令或空值回退。
+for key in GMALL_SERVER_NAME CERTBOT_EMAIL DB_NAME DB_USER REDIS_PASS BOOTSTRAP_ADMIN_USERNAME BOOTSTRAP_ADMIN_PASSWORD; do
+  [[ -n "${!key:-}" ]] || die "缺少必填环境变量 ${key}，拒绝生成带空值或默认口令的 .env"
+done
+[[ "${BOOTSTRAP_ADMIN_PASSWORD}" != "admin123" ]] || die "BOOTSTRAP_ADMIN_PASSWORD 不得使用演示默认口令 admin123"
+
+SERVER_PORT="${SERVER_PORT:-8080}"
+REDIS_HOST_VALUE="${REDIS_HOST:-127.0.0.1}"
+REDIS_PORT_VALUE="${REDIS_PORT:-6379}"
+REDIS_DB_VALUE="${REDIS_DB:-1}"
+ADMIN_PORTAL_PATH_VALUE="${ADMIN_PORTAL_PATH:-/console}"
 
 # ================================================================ 1. 环境文件
 if [[ -f "${ENV_FILE}" ]]; then
@@ -34,9 +45,10 @@ else
   cat > "${ENV_FILE}" <<EOF
 # ============================================================================
 # GMall 生产环境变量
+# 注意：本文件由 02-init-infra.sh 生成；凭据缺失时部署预检会终止，不要删除必填键。
 # ============================================================================
 TZ=Asia/Shanghai
-SERVER_PORT=${SERVER_PORT:-8080}
+SERVER_PORT=${SERVER_PORT}
 SERVER_ADDRESS=127.0.0.1
 SPRING_PROFILES_ACTIVE=prod
 
@@ -44,21 +56,31 @@ SPRING_PROFILES_ACTIVE=prod
 DB_HOST=127.0.0.1
 DB_PORT=3306
 DB_NAME=${DB_NAME}
-DB_USER=${DB_APP_USER}
+DB_USER=${DB_USER}
 DB_PASS=${DB_PASSWORD}
-SPRING_DATASOURCE_URL=jdbc:mysql://127.0.0.1:3306/${DB_NAME}?useUNICODE=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
-SPRING_DATASOURCE_USERNAME=${DB_APP_USER}
+SPRING_DATASOURCE_URL=jdbc:mysql://127.0.0.1:3306/${DB_NAME}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+SPRING_DATASOURCE_USERNAME=${DB_USER}
 SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
 
-# ---- 首次管理员受控初始化（仅库中无超管时创建；密码不得为admin123，初始化后请轮换并移除）----
-BOOTSTRAP_ADMIN_USERNAME=${BOOTSTRAP_ADMIN_USERNAME:-}
-BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD:-}
+# ---- 首次管理员受控初始化（仅库中无超管时创建；密码不得为admin123；初始化后轮换口令但保留键）----
+BOOTSTRAP_ADMIN_USERNAME=${BOOTSTRAP_ADMIN_USERNAME}
+BOOTSTRAP_ADMIN_PASSWORD=${BOOTSTRAP_ADMIN_PASSWORD}
 
-# ---- Redis（复用本机 Redis 6379）----
-REDIS_HOST=${REDIS_HOST:-127.0.0.1}
-REDIS_PORT=${REDIS_PORT:-6379}
-REDIS_PASS=${REDIS_PASS:-3wTYvNMHNn89pZ3XmTZcQluG}
-SPRING_DATA_REDIS_DATABASE=${REDIS_DB:-1}
+# ---- Redis（复用本机 Redis 6379；口令必须显式提供，无默认值）----
+REDIS_HOST=${REDIS_HOST_VALUE}
+REDIS_PORT=${REDIS_PORT_VALUE}
+REDIS_PASS=${REDIS_PASS}
+REDIS_DB=${REDIS_DB_VALUE}
+SPRING_DATA_REDIS_HOST=${REDIS_HOST_VALUE}
+SPRING_DATA_REDIS_PORT=${REDIS_PORT_VALUE}
+SPRING_DATA_REDIS_PASSWORD=${REDIS_PASS}
+SPRING_DATA_REDIS_DATABASE=${REDIS_DB_VALUE}
+
+# ---- 站点与前台地址（代付短链与二维码海报基准地址）----
+GMALL_SERVER_NAME=${GMALL_SERVER_NAME}
+CERTBOT_EMAIL=${CERTBOT_EMAIL}
+ADMIN_PORTAL_PATH=${ADMIN_PORTAL_PATH_VALUE}
+APP_FRONTEND_STOREFRONT_URL=https://${GMALL_SERVER_NAME}/m/
 
 # ---- JVM ----
 JAVA_OPTS="-Xms128m -Xmx${JAVA_XMX:-300m} -XX:MaxMetaspaceSize=128m -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${GMALL_ROOT}/logs -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
@@ -69,6 +91,11 @@ fi
 
 # shellcheck disable=SC1090
 set -a; . "${ENV_FILE}"; set +a
+
+# 已存在 .env 时同样校验，防止旧文件缺键继续部署
+for key in DB_NAME DB_USER DB_PASS REDIS_PASS SPRING_DATASOURCE_USERNAME SPRING_DATASOURCE_PASSWORD APP_FRONTEND_STOREFRONT_URL BOOTSTRAP_ADMIN_USERNAME BOOTSTRAP_ADMIN_PASSWORD; do
+  [[ -n "${!key:-}" ]] || die ".env 缺少 ${key}，请补齐后重试"
+done
 
 # ================================================================ 2. 数据库配置
 mysql_root() {
@@ -107,7 +134,7 @@ else
 fi
 
 # ================================================================ 3. Redis 检查
-log "检测 Redis 连通性 (127.0.0.1:${REDIS_PORT})..."
+log "检测 Redis 连通性 (${REDIS_HOST}:${REDIS_PORT})..."
 if command -v redis-cli >/dev/null 2>&1; then
   if redis-cli -h "${REDIS_HOST}" -p "${REDIS_PORT}" -a "${REDIS_PASS}" ping 2>/dev/null | grep -q PONG; then
     log "Redis 连接正常"

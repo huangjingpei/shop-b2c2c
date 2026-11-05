@@ -81,9 +81,14 @@ class _DeployFixture(unittest.TestCase):
         self.systemd_dir = self.root / "etc/systemd/system"
         self.systemd_dir.mkdir(parents=True)
         self.env_file = self.root / ".env"
+        # T19：部署预检要求完整必填键集合；缺任意一项即终止，不再回退默认口令或地址。
         self.env_file.write_text(
             "DB_PASS=testpass\nDB_USER=shop_b2b2c\nDB_NAME=shop_b2b2c\n"
-            "SPRING_DATASOURCE_USERNAME=shop_b2b2c\nSPRING_DATASOURCE_PASSWORD=testpass\n",
+            "SPRING_DATASOURCE_USERNAME=shop_b2b2c\nSPRING_DATASOURCE_PASSWORD=testpass\n"
+            "REDIS_PASS=testredispass\n"
+            "APP_FRONTEND_STOREFRONT_URL=https://shop.example.com/m/\n"
+            "BOOTSTRAP_ADMIN_USERNAME=bootstrapadmin\nBOOTSTRAP_ADMIN_PASSWORD=Bootstrap#2026\n"
+            "GMALL_SERVER_NAME=shop.example.com\nSHOP_SERVER_NAME=shop.example.com\n",
             encoding="utf-8",
         )
         self._setup_fake_tools()
@@ -456,7 +461,11 @@ class AliyunDeployLifecycleTest(_DeployFixture):
         self._make_release()
         self.env_file.write_text(
             "DB_USER=shop_b2b2c\nDB_PASS=testpass\nDB_NAME=shop_b2b2c\n"
-            "SPRING_DATASOURCE_USERNAME=shop_b2b2c\n",
+            "SPRING_DATASOURCE_USERNAME=shop_b2b2c\n"
+            "REDIS_PASS=testredispass\n"
+            "APP_FRONTEND_STOREFRONT_URL=https://shop.example.com/m/\n"
+            "BOOTSTRAP_ADMIN_USERNAME=bootstrapadmin\nBOOTSTRAP_ADMIN_PASSWORD=Bootstrap#2026\n"
+            "SHOP_SERVER_NAME=shop.example.com\nGMALL_SERVER_NAME=shop.example.com\n",
             encoding="utf-8",
         )
         result = self._run(extra_env={"MYSQL_TABLE_COUNT": "1"})
