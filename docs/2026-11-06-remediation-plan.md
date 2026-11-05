@@ -49,10 +49,10 @@
 | --- | --- | --- | --- | --- |
 | S0 生产阻断 | 让明细页、代客推单、后台登录、阿里云启动先可用且不泄露默认凭据 | T01、T02、T03、T04 | 四项代码完成且各自最小回归通过；生产 `.env` 与种子账号核对结论已记录（可为“需环境负责人确认”）。 | 无前置；T03/T04 涉及部署配置，须与 S3 的备份/回滚约定一致，但不阻塞 S1。 |
 | S1 资金与订单生命周期 | 支付事件顺序、实收金额、重复支付、普通订单截止、下架竞态、预占所有权、到期释放 | T05、T06、T07、T08、T09、T10、T11、T12 | P0 三连（T05–T07）同批完成并通过“提交失败/重放/少付/重复付款”用例；T08 截止条件统一；T09 下架与支付交错用例通过；T11 的 V01/V02 故障注入结论已记录。 | 依赖 S0 无；T05–T07 必须同批；T08 与 T11 共用 SQL/索引改造，须同批评审；T10 前端改动依赖 T05 的事件契约稳定。 |
-| S2 权限、隐私与资产安全 | 员工 PII/推单权限、库内卡密、备份密钥、默认凭据、跨店 SKU、HTTP 状态 | T13、T14、T15、T16、T17、T18 | T13 权限矩阵按业务确认结果落地；T14 存量指纹迁移在隔离库演练通过；T15 的密钥缺失启动失败验证通过；T18 的状态码契约测试通过。 | T14 依赖 T12 的 schema 迁移机制；T14 与 T15 同属卡密资产，须同批设计密钥版本与迁移顺序；T18 会被 S1 的支付错误码复用。 |
-| S3 部署、备份与网关 | 阿里云 `.env` 与默认口令、Nginx 顺序/路径、迁移备份与回滚、证书降级、可信代理 IP、进程权限与备份可信度 | T19、T20、T21、T22、T23、T36 | 部署脚本改动均有隔离用例；T21 的“迁移前备份”在隔离库演练通过；T22 证书失败在生产 profile 必须失败；T23 的 Bash/PowerShell 备份恢复矩阵由用户执行；T36 的可信代理解析在网关隔离用例中通过（伪造头不改变限流桶）。 | 依赖 S2 的凭据策略（T15）；T19 与 T23 同属 `.env`/备份文件，改动须一次评审；T21 依赖 T12 迁移机制。 |
+| S2 权限、隐私与资产安全 | 员工 PII/推单权限、库内卡密、卡密查看与导出、默认凭据、跨店 SKU、HTTP 状态 | T13、T14、T15、T16、T17、T18 | T13 权限矩阵按业务确认结果落地；T15/T16 列表脱敏、按 SKU 限量查看、导出二次确认与审计通过，员工/跨店在接口层被拒；T17 店内唯一索引生效且跨店定位带店铺维度；T18 的状态码契约测试通过。 | T14 依赖 T12 的 schema 迁移机制；**开发期无存量数据，V1/V2 仅验证迁移器幂等，不做存量回填验收**；T15 密钥项已取消（单密钥、无轮换，见 G09）；T18 会被 S1 的支付错误码复用。 |
+| S3 部署、备份与网关 | 阿里云 `.env` 与默认口令、Nginx 顺序/路径、迁移备份与回滚、证书降级、可信代理 IP、进程权限与备份可信度 | T19、T20、T21、T22、T23、T36 | 部署脚本改动均有隔离用例；T21 的“迁移前备份”在隔离库演练通过；T22 证书失败在生产 profile 必须失败；T23 的 Bash/PowerShell 备份恢复矩阵由用户执行；T36 的可信代理解析在网关隔离用例中通过（伪造头不改变限流桶）。 | 依赖 S2 的凭据策略（T03/T04）；T19 与 T23 同属 `.env`/备份文件，改动须一次评审；T21 依赖 T12 迁移机制。 |
 | S4 契约、规模与运营 | 订单分页、海报移出事务、统计聚合、幂等与错误映射、Long ID 序列化、CI、搜索与错误态、迟到响应、运营功能 | T24、T25、T26、T27、T28、T29、T30、T31、T37、T38 | 每项前后端同批交付并有契约/组件用例；T24/T26/T27 的性能改造有可复现的基准记录（用户执行）；T29/T30 的主链路浏览器回归通过。 | 依赖 S1 支付契约稳定；T27 依赖 T12 迁移机制；T29 依赖 T10 的所有权凭证契约；T30 若后端无搜索能力，须先确认范围再实现。T31 可独立推进，但不得挤占 S0–S2。 |
-| S5 商业闭环（阶段一商家结算 + 阶段二预留） | 商家入驻/实名/收款账户/费率政策、阶段一商家直收、退款与费用冲正、服务费账本与结算单、欠费与对账、阶段二分账预留 | T39、T32、T33、T34、T35、T40 | 阶段一：实名/账户审核与费率政策可用、T05–T07 已修、真实渠道在商家直收模式下完成联调、结算单与对账样例一致；T40 仅资质取得且阶段一稳定后进入下一判据。 | 强依赖 S1（T05–T12）与 S2（T15）；T39/M1 为 T32/M2 前置，T34 依赖 T32/T33，T35 依赖 T32–T34；T40 依赖阶段一全部完成与渠道分账资质。 |
+| S5 商业闭环（阶段一商家结算 + 阶段二预留） | 商家入驻/实名/收款账户/费率政策、阶段一商家直收、退款与费用冲正、服务费账本与结算单、欠费与对账、阶段二分账预留 | T39、T32、T33、T34、T35、T40 | 阶段一：实名/账户审核与费率政策可用、T05–T07 已修、真实渠道在商家直收模式下完成联调、结算单与对账样例一致；T40 仅资质取得且阶段一稳定后进入下一判据。 | 强依赖 S1（T05–T12）与 S2（T15/T16 卡密查看与导出权限）；T39/M1 为 T32/M2 前置，T34 依赖 T32/T33，T35 依赖 T32–T34；T40 依赖阶段一全部完成与渠道分账资质。 |
 
 阶段独立性说明：
 - S0 可独立交付、独立验证，不与 S1 共用必须同批的代码。
@@ -269,37 +269,37 @@
 | 涉及文件 | [CardAssetService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java#L65-L135)、[CardAssetMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/CardAssetMapper.java#L14-L21)、[V2__s2_card_fingerprint_backfill.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/migrations/V2__s2_card_fingerprint_backfill.sql)、[schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql#L123-L130)、[CardCipherService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L133-L140) |
 | 问题本质 | `card_fingerprint` 允许 NULL 且唯一键对 NULL 不生效；回退路径对密文做 SHA-256，匹配不到明文指纹，并两次全店全量读取（`historyContents(...) != null` 恒真）。 |
 | 修复要点 | **2026-11-06 收窄（用户同意）**：只做历史无指纹行的指纹补算与去重判定，配套 V2 迁移。明文行由 SQL 回填 `SHA2(TRIM(card_content),256)`；加密行在导入时解密后在内存补算/比对，可补算时条件回写指纹；拿不到明文或解密失败标记 `fingerprint_unavailable=1`、计数告警并跳过，不阻断导入。补写使用 `card_fingerprint IS NULL` 条件，保证可重入幂等。本次**不收紧**指纹非空/唯一，不改密钥体系。 |
-| 依赖/冲突 | 依赖 T12 迁移机制；T14 收窄后不处理密钥版本/轮换：历史加密行只有在当前密钥可解密时才能补算，密钥缺失/轮换仍归 T15/T21（见缺口 G08）；卡密列表脱敏、明文查看与导出审计归 T16。 |
-| 回归要点 | 合法：同一明文重复导入被拒，库存不增；加密但无指纹的历史行可补算时参与去重。非法：跨商户同卡密按规则处理（不串店）。并发交错：两批相同卡密并发导入，仅一批成功。失败后数据不变：去重失败不写卡、不加库存；不可解密历史行只标记跳过，不中断合法导入。 |
-| 状态 | 已实现·待人工验证（提交 27c02a4；收窄范围与跳过边界见缺口 G08；需用户执行 `mvn -f shop-b2b2c-backend/pom.xml test` 并在独立 MySQL 连续两次执行 V2） |
+| 依赖/冲突 | 依赖 T12 迁移机制；**用户 2026-11-06 确认开发期无存量数据**：V2 与历史补算代码保留但不再扩展、不作为验收项；解密失败跳过计数保留；密钥行为不变（单密钥假设，见 G09）。 |
+| 回归要点 | 合法：同一明文重复导入被拒，库存不增。非法：跨商户同卡密按规则处理（不串店）。并发交错：两批相同卡密并发导入，仅一批成功。失败后数据不变：去重失败不写卡、不加库存；不可解密行只跳过计数，不中断合法导入。 |
+| 状态 | 已实现·待人工验证（提交 27c02a4；历史数据/存量回填不列为验收项，见缺口 G08 更新） |
 
-#### T15 卡密加密默认密钥回退与无轮换
+#### T15 卡密查看限量与导出审计（原密钥项已取消）
 
 | 项 | 内容 |
 | --- | --- |
-| 优先级 | **P1**（资产机密性：源码内置密钥可解密生产库与备份；种子明文无指纹） |
+| 优先级 | **P1**（资产机密性：列表批量明文、导出无审计、员工可绕前端直接读取） |
 | 阶段 | S2 |
-| D/F/R | R05、F12；关联 N11 |
-| 涉及文件 | [CardCipherService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L63-L68)、[application.yml](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/application.yml)、[schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql#L326-L334)、[BuyerOrderView.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/dto/BuyerOrderView.java#L20) |
-| 问题本质 | 未配置密钥时回退到硬编码种子；密文无 keyId，无法轮换；兼容构造器 `new CardCipherService()` 绕过 Spring 注入。 |
-| 修复要点 | 生产缺显式密钥即启动失败；密文增加密钥版本（`ENC:v2:<keyId>:`）支持灰度轮换；所有组件只用注入单例，删除生产可用兼容构造器；种子改无效占位或仅 dev profile 注入，并回填指纹。 |
-| 依赖/冲突 | 与 T14 同批（迁移顺序：密钥稳定→指纹回填→删回退）；T14 已于 2026-11-06 收窄为仅指纹补算，未改密钥体系——密钥轮换、缺省密钥回退与无钥匙历史行补算仍由本卡负责（见缺口 G08）；与 T03（种子清理）分工：T03 管账号，T15 管卡密密钥；与 T19/T23（`.env`/备份密钥）同源。 |
-| 回归要点 | 合法：配置密钥后可导入/读取/作废卡密。非法：缺密钥启动失败；错误 keyId 拒绝解密并告警。失败后数据不变：启动失败不写库；解密失败不返回明文。 |
-| 状态 | 阻塞·待决策（2026-11-06 按用户指令停止：仓库无生产卡密密钥配置依据，未改代码/未引入配置键/未保留降级回退；卡点与待决事项见开发缺口G09，记录提交 03de5f2） |
+| D/F/R | R04、R05、F12；关联 N11 |
+| 涉及文件 | [CardAssetService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java)、[ProductController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/ProductController.java)、[Cards.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/merchant/Cards.vue)、[cardAssets.mjs](file:///e:/shop-b2b2c/shop-admin-vue/src/utils/cardAssets.mjs)、[schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql) |
+| 问题本质 | 列表接口默认返回全店卡密并逐条解密；前端直接渲染正文；导出无二次确认与审计。 |
+| 修复要点 | **用户 2026-11-06 范围调整**：删除密钥轮换/缺省回退/历史补算项（按“当前只有一把密钥”处理，见缺口 G09），T15 只做卡密查看限量与导出审计，并与 T16 同一提交实现。列表返回由指纹尾号派生的脱敏标识+指纹，不解密正文；按 SKU 明文查看限量（1–50，越界拒绝）；导出必须显式 confirm 并写 `card_access_audit`（操作人、SKU、数量、时间），审计失败不返回明文；员工在接口层拒绝。 |
+| 依赖/冲突 | 与 T16 合并为同一交付；与 T14 的指纹列同域但不再要求历史回填；不复用第二套加密/审计权威。 |
+| 回归要点 | 合法：店长按 SKU 查看有限量并可导出（有审计）。非法：员工/跨店/超限被拒；列表不含正文；未确认导出不写审计。失败后数据不变：查看/导出不修改卡状态或库存。 |
+| 状态 | 已实现·待人工验证（提交 b99440e；密钥体系未改，单密钥假设与待确认项见 G09） |
 
-#### T16 卡密库明文批量展示
+#### T16 卡密库明文批量展示（用户 2026-11-06 确认并入 T15）
 
 | 项 | 内容 |
 | --- | --- |
 | 优先级 | **P1**（隐私/资产：一屏批量复制全店未售+已售卡密；接口一次返回全店并逐条解密） |
 | 阶段 | S2 |
 | D/F/R | R04、R05、F12；关联 N11 |
-| 涉及文件 | [Cards.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/merchant/Cards.vue#L21-L24)、[Cards.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/merchant/Cards.vue#L166-L169)、[ProductController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/ProductController.java#L222-L260) |
+| 涉及文件 | [Cards.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/merchant/Cards.vue)、[ProductController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/ProductController.java)、[MerchantCardView.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/dto/MerchantCardView.java) |
 | 问题本质 | 列表接口默认返回全店卡密并逐条解密，前端直接渲染正文，与文件说明“查询不展示正文”矛盾。 |
-| 修复要点 | **已确认 Q21-A**：列表返回脱敏值+指纹，仅店长按 SKU 授权时返回单 SKU 明文且限量；前端默认打码、单条“查看”二次确认；导出必须二次确认并审计（操作人、数量、时间）；补分页与“仅未售”过滤；前后端 DTO 同批。 |
-| 依赖/冲突 | 与 T14/T15 同属卡密资产，须同批确定“列表/详情/导出”三种权限；T14 收窄后未实现列表脱敏、明文查看与导出审计，仍由本卡负责（见缺口 G08）；与 T24（列表分页）共用分页模式；影响 `cardAssets.test.mjs` 契约。 |
-| 回归要点 | 合法：店长按 SKU 查看明文有数量上限并可审计。非法：员工/跨店请求被拒；列表不含正文。失败后数据不变：查看不修改卡状态/库存。 |
-| 状态 | 待修复 |
+| 修复要点 | **已确认 Q21-A，且 2026-11-06 用户明确并入 T15**：列表脱敏值+指纹、按 SKU 限量明文、前端默认打码与单条二次确认、导出二次确认+审计、分页与“仅未售”过滤、前后端 DTO 同批。实现落点见 T15。 |
+| 依赖/冲突 | 与 T15 同一提交，不再单独提交；`cardAssets.test.mjs` 契约同步。 |
+| 回归要点 | 合法：店长按 SKU 查看明文有上限并可审计。非法：员工/跨店请求被拒；列表不含正文。失败后数据不变：查看不修改卡状态/库存。 |
+| 状态 | 已实现·待人工验证（与 T15 合并，同一提交 b99440e） |
 
 #### T17 跨商户 SKU 编码全局唯一
 
