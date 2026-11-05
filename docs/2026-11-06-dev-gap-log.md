@@ -63,6 +63,15 @@
 - 存量生产库若曾执行旧 `schema.sql`，需人工核查并清理/禁用 `superadmin`、`seller01`、`seller02` 等演示账号及虚构支付账户；不得用自动种子重跑覆盖真实数据。
 - 发布流程只能导入 `db/schema.sql`，禁止导入 `db/demo-seed.sql`。
 
+## G07 Q13 发货权限口径修正（用户 2026-11-06 澄清）
+
+- 发现位置：[OrderController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/OrderController.java) `deliverOrder`；[Sprint1SecurityIntegrationTest.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/test/java/com/shop/b2b2c/Sprint1SecurityIntegrationTest.java) 的 T13 用例。
+- 现象：T13 首次实现把“实物订单发货”与推单、虚拟履约一起收紧为店长专属，员工发货被 403。
+- 口径修正（用户 2026-11-06 明确）：**实物订单发货 MERCHANT_ADMIN 与 MERCHANT_STAFF 均可**；推单/代客下单/改价、资金操作、身份证/银行卡原文、卡密明文、虚拟履约仍仅店长/超管。员工发货仍须通过本店归属、`PAID` 状态、`goodsType=1` 与运单字段校验；跨店发货必须拒绝且订单状态/运单不变。
+- 处理：已单独提交修正，删除 `deliverOrder` 的角色裁剪，保留租户与状态校验；测试改为“员工发货成功 + 跨店发货 403 且无副作用”。后续任何权限整理不得再把员工发货禁掉。
+- 虚拟订单交付判断（不构成权限扩大）：现有 `deliverOrder` 只接受 `goodsType=1`，员工不能通过发货接口交付虚拟卡密；卡密自动交付发生在支付事件内，不向调用方返回明文；`fulfillVirtualOrder` 仅接受 `goodsType=3` 且只回写 `serviceVoucher`，不返回卡密；商家订单详情对 `MERCHANT_STAFF` 已把 `serviceVoucher` 与 `cardDetails` 替换为“员工账号无权查阅明文”。因此员工履约/发货不会被要求返回明文卡密，与 Q21“员工不看明文”不冲突。T16 实现卡密查看/导出接口时必须继续只允许店长，不得因为发货放开而扩大。
+- 影响面：员工可独立处理本店实物订单发货；推单与资金链路权限不变；无数据库变更。
+
 ## S1 环境核对待办（由环境负责人执行）
 
 - 存量 MySQL 升级前先备份（T21 未在 S1 实现）；将 `db/migrations/V1__s1_order_lifecycle.sql` 纳入发布包，确认 `app.schema-migration.enabled=true`。

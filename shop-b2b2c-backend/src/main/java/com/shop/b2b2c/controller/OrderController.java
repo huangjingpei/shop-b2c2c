@@ -1,7 +1,7 @@
 /*
  * 文件：OrderController.java
  * 用途：待付款建单、免登录查单、商家发货、平台订单及统一状态统计入口；建单代付编码复用PeerStatus。
- * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入，退款及已结算指标不可用。分页/SQL聚合仍待D30处理。Q13-A：推单、发货、虚拟履约仅店长可调用，员工请求必须在接口层被拒绝。
+ * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入，退款及已结算指标不可用。分页/SQL聚合仍待D30处理。Q13-A（2026-11-06 口径澄清）：实物订单发货对店长与员工开放；推单/改价、资金操作、卡密明文与虚拟履约仍仅店长。
  */
 package com.shop.b2b2c.controller;
 
@@ -328,7 +328,7 @@ public class OrderController {
         if (id == null || id <= 0) {
             throw new BusinessException(400, "订单编号不正确");
         }
-        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
+        // Q13-A 澄清：实物订单发货对店长与员工开放；租户归属与状态校验仍必须通过，员工不得跨店发货。
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         TradeOrder order = Optional.ofNullable(orderMapper.lockById(id))
                 .orElseThrow(() -> new BusinessException("订单不存在"));

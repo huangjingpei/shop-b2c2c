@@ -2718,7 +2718,7 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
-    void q13StaffCannotPushDeliverOrFulfillButManagerCan() throws Exception {
+    void q13StaffCannotPushOrFulfillButCanDeliverPhysicalOrderWithoutCrossTenantEffect() throws Exception {
         physicalProduct();
         authUser("MERCHANT_STAFF", 1L);
         String staffToken = loginToken();
@@ -2738,16 +2738,31 @@ class Sprint1SecurityIntegrationTest {
         physical.setGoodsType(1); physical.setOrderStatus("PAID"); orders.save(physical);
         OrderController.DeliverDTO deliver = new OrderController.DeliverDTO();
         deliver.setLogisticsCompany("carrier"); deliver.setTrackingNumber("tracking-staff");
+        // 2026-11-06 口径澄清：员工可执行实物订单发货，但只能发本店订单。
         mvc.perform(post("/api/v1/merchant/orders/" + physical.getId() + "/deliver")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(deliver)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        assertEquals("SHIPPED", orders.selectById(physical.getId()).getOrderStatus());
+
+        // 越权副作用检查：员工发其他店铺的实物订单必须被拒且订单状态不变。
+        TradeOrder otherStore = unpaid("staff-other-store", 1);
+        otherStore.setMerchantId(2L); otherStore.setGoodsType(1); otherStore.setOrderStatus("PAID");
+        orders.save(otherStore);
+        mvc.perform(post("/api/v1/merchant/orders/" + otherStore.getId() + "/deliver")
                         .header("Authorization", "Bearer " + staffToken)
                         .contentType("application/json")
                         .content(json.writeValueAsString(deliver)))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(403));
-        assertEquals("PAID", orders.selectById(physical.getId()).getOrderStatus());
+        assertEquals("PAID", orders.selectById(otherStore.getId()).getOrderStatus());
+        assertNull(orders.selectById(otherStore.getId()).getTrackingNumber());
 
+        // 口径澄清只放开“实物订单发货”；虚拟履约仍按原实现仅店长可调用。
         TradeOrder virtual = unpaid("staff-virtual", 1);
-        virtual.setGoodsType(2); virtual.setOrderStatus("PAID"); orders.save(virtual);
+        virtual.setGoodsType(3); virtual.setOrderStatus("PAID"); orders.save(virtual);
         mvc.perform(post("/api/v1/merchant/orders/" + virtual.getId() + "/fulfill-virtual")
                         .header("Authorization", "Bearer " + staffToken)
                         .contentType("application/json")
@@ -2755,18 +2770,6 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(403));
         assertNull(orders.selectById(virtual.getId()).getServiceVoucher());
-
-        cn.dev33.satoken.stp.StpUtil.logout(200L);
-        jdbc.update("DELETE FROM sys_user WHERE id=200");
-        authUser("MERCHANT_ADMIN", 1L);
-        String managerToken = loginToken();
-        mvc.perform(post("/api/v1/merchant/orders/" + physical.getId() + "/deliver")
-                        .header("Authorization", "Bearer " + managerToken)
-                        .contentType("application/json")
-                        .content(json.writeValueAsString(deliver)))
-                .andExpect(status().isOk())
-                .andExpect(jsonPath("$.code").value(200));
-        assertEquals("SHIPPED", orders.selectById(physical.getId()).getOrderStatus());
     }
 
     @Test
