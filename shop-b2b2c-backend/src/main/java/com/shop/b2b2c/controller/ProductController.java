@@ -172,6 +172,12 @@ public class ProductController {
             } catch (Exception e) { throw new BusinessException(400, "规格须为合法JSON对象且不超过255字符"); }
         }
         Product product = new Product();
+        // T17/Q14-A：SKU 编码店内唯一；同店冲突明确 409，不泄露其他店铺是否使用该编码。
+        for (SkuDTO sku : dto.getSkus()) {
+            if (skuMapper.existsSkuCode(merchantId, sku.getSkuCode())) {
+                throw new BusinessException(409, "SKU编码在本店已存在，请更换后重试");
+            }
+        }
         product.setMerchantId(merchantId);
         product.setCategoryId(dto.getCategoryId());
         product.setTitle(dto.getTitle());

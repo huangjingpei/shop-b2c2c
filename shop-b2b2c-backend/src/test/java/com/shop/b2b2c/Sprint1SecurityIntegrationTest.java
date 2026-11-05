@@ -896,6 +896,42 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    void skuCodeIsUniqueWithinMerchantButReusableAcrossMerchants() {
+        try (var security = mockStatic(SecurityUtils.class)) {
+            security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
+            int before = jdbc.queryForObject("SELECT COUNT(*) FROM product", Integer.class);
+
+            ProductController.CreateProductDTO first = productWithSku("T17-FIRST", "SHARED-SKU-CODE");
+            Long firstId = products.createProduct(first).getData().getId();
+            assertEquals("SHARED-SKU-CODE", jdbc.queryForObject(
+                    "SELECT sku_code FROM product_sku WHERE product_id=?", String.class, firstId));
+
+            ProductController.CreateProductDTO duplicate = productWithSku("T17-DUPLICATE", "SHARED-SKU-CODE");
+            assertEquals(409, assertThrows(BusinessException.class, () -> products.createProduct(duplicate)).getCode());
+            // 同店冲突必须整单回滚：不新增商品、不新增 SKU
+            assertEquals(before + 1, jdbc.queryForObject("SELECT COUNT(*) FROM product", Integer.class));
+            assertEquals(1, jdbc.queryForObject(
+                    "SELECT COUNT(*) FROM product_sku WHERE merchant_id=1 AND sku_code='SHARED-SKU-CODE'", Integer.class));
+
+            // 跨店同码允许：唯一域是 (merchant_id, sku_code)
+            security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(2L);
+            Long secondMerchantProduct = products.createProduct(productWithSku("T17-OTHER-MERCHANT", "SHARED-SKU-CODE")).getData().getId();
+            assertEquals(2L, jdbc.queryForObject("SELECT merchant_id FROM product_sku WHERE product_id=?",
+                    Long.class, secondMerchantProduct));
+        }
+    }
+
+    private ProductController.CreateProductDTO productWithSku(String title, String skuCode) {
+        var dto = new ProductController.CreateProductDTO();
+        dto.setTitle(title); dto.setMainImage("https://example.test/img.png");
+        dto.setCategoryId(1L); dto.setGoodsType(1); dto.setMinPrice(java.math.BigDecimal.TEN);
+        var sku = new ProductController.SkuDTO();
+        sku.setSkuCode(skuCode); sku.setSpecData("{}"); sku.setPrice(java.math.BigDecimal.TEN); sku.setStockQuantity(10);
+        dto.setSkus(List.of(sku));
+        return dto;
+    }
+
+    @Test
     void importBatchHttpUsesSessionActorAndHidesCardContent() throws Exception {
         mvc.perform(get("/api/v1/merchant/card-import-batches")).andExpect(status().isUnauthorized());
         authUser("MERCHANT_ADMIN", 1L); String token = loginToken();

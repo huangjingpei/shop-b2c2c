@@ -78,6 +78,22 @@ class SchemaMigrationContractTest {
     }
 
     @Test
+    void merchantSkuCodeMigrationScopesUniquenessToMerchant() throws Exception {
+        var resource = new ClassPathResource("db/migrations/V4__s2_merchant_sku_code_unique.sql");
+        assertTrue(resource.exists(), "T17 必须提供 V4 SKU 店内唯一索引脚本");
+        String sql = resource.getContentAsString(StandardCharsets.UTF_8);
+        assertTrue(sql.contains("uk_merchant_sku_code") && sql.contains("merchant_id") && sql.contains("sku_code"));
+        assertTrue(sql.contains("information_schema.statistics"), "必须按索引存在性判断，保证幂等");
+        assertTrue(sql.contains("DROP INDEX uk_sku_code"), "必须移除旧的全局唯一索引");
+        assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*(TRUNCATE|DELETE|DROP\\s+TABLE|DROP\\s+DATABASE)\\b")
+                .matcher(sql).find(), "迁移脚本不得包含清空/删表/删库语句");
+
+        String schema = new ClassPathResource("db/schema.sql").getContentAsString(StandardCharsets.UTF_8);
+        assertTrue(schema.contains("uk_merchant_sku_code"), "新库基线必须直接落店内唯一索引");
+        assertFalse(schema.contains("UNIQUE KEY `uk_sku_code`"), "新库基线不得保留全局 SKU 唯一键");
+    }
+
+    @Test
     void applicationConfigWiresEnabledVersionedMigration() {
         var yaml = new YamlPropertiesFactoryBean();
         yaml.setResources(new ClassPathResource("application.yml"));
@@ -120,6 +136,7 @@ class SchemaMigrationContractTest {
         assertTrue(versions.get(0).startsWith("V1__"));
         assertTrue(versions.stream().anyMatch(version -> version.startsWith("V2__")), "T14 的 V2 必须被迁移执行器发现");
         assertTrue(versions.stream().anyMatch(version -> version.startsWith("V3__")), "T15 的 V3 必须被迁移执行器发现");
+        assertTrue(versions.stream().anyMatch(version -> version.startsWith("V4__")), "T17 的 V4 必须被迁移执行器发现");
         assertEquals(versions.stream().sorted().toList(), versions);
     }
 }

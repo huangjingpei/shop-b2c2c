@@ -48,8 +48,17 @@ public interface ProductSkuMapper extends BaseMapper<ProductSku> {
                 .eq(ProductSku::getProductId, productId));
     }
 
-    default Optional<ProductSku> findBySkuCode(String skuCode) {
+    /** 跨店定位必须带 merchantId；仅凭 sku_code 查询会泄露其他店铺的编码占用情况（T17/Q14-A）。 */
+    default Optional<ProductSku> findBySkuCode(Long merchantId, String skuCode) {
         return Optional.ofNullable(selectOne(new LambdaQueryWrapper<ProductSku>()
+                .eq(ProductSku::getMerchantId, merchantId)
                 .eq(ProductSku::getSkuCode, skuCode)));
+    }
+
+    /** 同店同码预检；并发下仍由数据库唯一键 (merchant_id, sku_code) 兜底。 */
+    default boolean existsSkuCode(Long merchantId, String skuCode) {
+        return selectCount(new LambdaQueryWrapper<ProductSku>()
+                .eq(ProductSku::getMerchantId, merchantId)
+                .eq(ProductSku::getSkuCode, skuCode)) > 0;
     }
 }

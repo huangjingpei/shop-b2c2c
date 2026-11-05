@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS `product_sku` (
   `stock_quantity` INT NOT NULL DEFAULT 0 COMMENT '可用物理库存',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_sku_code` (`sku_code`),
+  UNIQUE KEY `uk_merchant_sku_code` (`merchant_id`, `sku_code`),
   KEY `idx_product_id` (`product_id`),
   CONSTRAINT `chk_sku_stock` CHECK (`stock_quantity` >= 0),
   CONSTRAINT `chk_sku_price` CHECK (`price` >= 0.00)
