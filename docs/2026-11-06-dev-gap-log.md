@@ -31,3 +31,11 @@
 - 不属本卡范围的原因：随机口令需要一次性安全展示与轮换流程，涉及运维约定，任务卡未给出展示渠道。
 - 建议归属：T03 的运维补强或新增候选（生产初始化彩排）。
 - 影响面：合法管理员创建仍可用；缺少随机口令便利性，不影响安全边界。首次创建后须由环境负责人轮换并移除环境变量。
+
+## S0 环境核对待办（满足阶段退出条件，由环境负责人执行）
+
+- 生产 `.env` 必须重新生成或补写：`SPRING_DATASOURCE_USERNAME`、`SPRING_DATASOURCE_PASSWORD`、`DB_USER`、`DB_PASS`，并确认应用账号非 `root`。
+- 首次管理员通过 `BOOTSTRAP_ADMIN_USERNAME`/`BOOTSTRAP_ADMIN_PASSWORD` 注入，口令不得为 `admin123`；创建成功后轮换口令并移除环境变量。
+- 存量生产库若曾执行旧 `schema.sql`，需人工核查并清理/禁用 `superadmin`、`seller01`、`seller02` 等演示账号及虚构支付账户；不得用自动种子重跑覆盖真实数据。
+- 发布流程只能导入 `db/schema.sql`，禁止导入 `db/demo-seed.sql`。
+
