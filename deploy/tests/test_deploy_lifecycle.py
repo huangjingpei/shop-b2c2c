@@ -82,7 +82,8 @@ class _DeployFixture(unittest.TestCase):
         self.systemd_dir.mkdir(parents=True)
         self.env_file = self.root / ".env"
         self.env_file.write_text(
-            "DB_PASS=testpass\nDB_USER=shop_b2b2c\nDB_NAME=shop_b2b2c\n",
+            "DB_PASS=testpass\nDB_USER=shop_b2b2c\nDB_NAME=shop_b2b2c\n"
+            "SPRING_DATASOURCE_USERNAME=shop_b2b2c\nSPRING_DATASOURCE_PASSWORD=testpass\n",
             encoding="utf-8",
         )
         self._setup_fake_tools()
@@ -446,6 +447,21 @@ class AliyunDeployLifecycleTest(_DeployFixture):
         self._make_release()
         result = self._run(extra_env={"MYSQL_FAIL": "yes", "MYSQL_TABLE_COUNT": "0"})
         self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(old_jar.read_bytes(), b"OLD JAR")
+
+    def test_missing_datasource_credentials_abort_before_switch(self):
+        """T04 阿里云：缺少SPRING_DATASOURCE_PASSWORD时预检终止，不回退root或空口令。"""
+        old_jar = self.app / "app.jar"
+        old_jar.write_bytes(b"OLD JAR")
+        self._make_release()
+        self.env_file.write_text(
+            "DB_USER=shop_b2b2c\nDB_PASS=testpass\nDB_NAME=shop_b2b2c\n"
+            "SPRING_DATASOURCE_USERNAME=shop_b2b2c\n",
+            encoding="utf-8",
+        )
+        result = self._run(extra_env={"MYSQL_TABLE_COUNT": "1"})
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SPRING_DATASOURCE_PASSWORD", result.stderr)
         self.assertEqual(old_jar.read_bytes(), b"OLD JAR")
 
     def test_port_defaults_to_8080(self):

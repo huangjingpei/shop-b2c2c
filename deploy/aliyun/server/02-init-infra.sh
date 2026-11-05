@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文件：02-init-infra.sh
 # 用途：初始化数据库账号/表结构和检查Redis等基础设施。
-# 维护注意：涉及真实凭据与数据库写入；确认目标库、权限和备份，不能将演示初始化当成存量迁移或恢复验证。只导入schema.sql结构，禁止导入demo-seed.sql；首次管理员通过BOOTSTRAP_ADMIN_USERNAME/PASSWORD受控创建，禁止使用admin123。 阿里云目录仍含GMall/PDK等历史工程路径，使用前必须对照当前项目核对，详见D34/D35。
+# 维护注意：涉及真实凭据与数据库写入；确认目标库、权限和备份，不能将演示初始化当成存量迁移或恢复验证。只导入schema.sql结构，禁止导入demo-seed.sql；.env必须写入SPRING_DATASOURCE_USERNAME/PASSWORD供应用显式注入，不允许回退root；首次管理员通过BOOTSTRAP_ADMIN_USERNAME/PASSWORD受控创建，禁止使用admin123。 阿里云目录仍含GMall/PDK等历史工程路径，使用前必须对照当前项目核对，详见D34/D35。
 # ============================================================================
 # GMall 基础设施初始化 —— 生成 .env 配置 / 创建 MySQL 数据库 / 导入 schema
 #
@@ -47,6 +47,8 @@ DB_NAME=${DB_NAME}
 DB_USER=${DB_APP_USER}
 DB_PASS=${DB_PASSWORD}
 SPRING_DATASOURCE_URL=jdbc:mysql://127.0.0.1:3306/${DB_NAME}?useUNICODE=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+SPRING_DATASOURCE_USERNAME=${DB_APP_USER}
+SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}
 
 # ---- 首次管理员受控初始化（仅库中无超管时创建；密码不得为admin123，初始化后请轮换并移除）----
 BOOTSTRAP_ADMIN_USERNAME=${BOOTSTRAP_ADMIN_USERNAME:-}

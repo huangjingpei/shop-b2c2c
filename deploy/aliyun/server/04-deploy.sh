@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文件：04-deploy.sh
 # 用途：按预检->兼容迁移->切换->就绪烟测四阶段切换发布产物，失败整套自动回滚。
-# 维护注意：会影响线上服务，必须在预检和迁移通过后才执行切换；任何阶段失败自动恢复既有版本与站点。仅同步schema结构，不能导入demo-seed.sql；BOOTSTRAP_ADMIN_PASSWORD为演示默认口令时预检直接终止。
+# 维护注意：会影响线上服务，必须在预检和迁移通过后才执行切换；任何阶段失败自动恢复既有版本与站点。仅同步schema结构，不能导入demo-seed.sql；.env必须显式提供DB_USER/DB_PASS/SPRING_DATASOURCE_USERNAME/SPRING_DATASOURCE_PASSWORD，缺失即终止；BOOTSTRAP_ADMIN_PASSWORD为演示默认口令时预检直接终止。
 # ============================================================================
 # GMall 部署脚本 —— 四阶段安全上线与自动回滚 (systemd + Nginx)
 # ============================================================================
@@ -56,6 +56,10 @@ if [[ -f "${GMALL_ROOT}/.env" ]]; then set -a; . "${GMALL_ROOT}/.env"; set +a; f
 if [[ -n "${BOOTSTRAP_ADMIN_PASSWORD:-}" && "${BOOTSTRAP_ADMIN_PASSWORD}" == "admin123" ]]; then
   die "BOOTSTRAP_ADMIN_PASSWORD 不得使用演示默认口令 admin123"
 fi
+
+for key in DB_USER DB_PASS SPRING_DATASOURCE_USERNAME SPRING_DATASOURCE_PASSWORD; do
+  [[ -n "${!key:-}" ]] || die ".env 缺少 ${key}，拒绝回退默认数据库账号或空口令"
+done
 
 SERVER_PORT="${SERVER_PORT:-8080}"
 DB_USER="${DB_USER:-shop_b2b2c}"

@@ -9,6 +9,24 @@ BACKEND_RESOURCES = Path(__file__).resolve().parents[2] / "shop-b2b2c-backend" /
 
 
 class AliyunBootstrapCredentialContractTest(unittest.TestCase):
+    def test_env_template_exports_datasource_credentials(self):
+        script = (SERVER_DIR / "02-init-infra.sh").read_text(encoding="utf-8")
+        self.assertIn("SPRING_DATASOURCE_USERNAME=${DB_APP_USER}", script)
+        self.assertIn("SPRING_DATASOURCE_PASSWORD=${DB_PASSWORD}", script)
+
+    def test_deploy_script_requires_explicit_datasource_credentials(self):
+        script = (SERVER_DIR / "04-deploy.sh").read_text(encoding="utf-8")
+        for key in ["DB_USER", "DB_PASS", "SPRING_DATASOURCE_USERNAME", "SPRING_DATASOURCE_PASSWORD"]:
+            self.assertIn(f".env 缺少 ${{key}}", script)
+        self.assertIn("for key in DB_USER DB_PASS SPRING_DATASOURCE_USERNAME SPRING_DATASOURCE_PASSWORD", script)
+
+    def test_backend_has_no_default_datasource_account(self):
+        config = (BACKEND_RESOURCES / "application.yml").read_text(encoding="utf-8")
+        self.assertIn("username: ${SPRING_DATASOURCE_USERNAME}", config)
+        self.assertIn("password: ${SPRING_DATASOURCE_PASSWORD}", config)
+        self.assertNotIn("${SPRING_DATASOURCE_USERNAME:root}", config)
+        self.assertNotIn("89dfu", config)
+
     def test_env_template_has_bootstrap_admin_keys(self):
         script = (SERVER_DIR / "02-init-infra.sh").read_text(encoding="utf-8")
         self.assertIn("BOOTSTRAP_ADMIN_USERNAME=", script)

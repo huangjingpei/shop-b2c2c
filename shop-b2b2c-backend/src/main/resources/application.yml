@@ -1,6 +1,6 @@
 # 文件：application.yml
 # 用途：Spring Boot数据源、会话、SQL初始化、前台地址和认证/CORS边界配置。
-# 维护注意：升级至令牌级授权快照后旧登录需重新登录；生产应注入受控环境变量，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一结构入口，演示账号/商品仅由db/demo-seed.sql在显式开关下加载，生产profile禁用SQL初始化；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；SQL错误容忍不是版本迁移机制；不得开启记录卡密/领取凭证的SQL参数日志。
+# 维护注意：升级至令牌级授权快照后旧登录需重新登录；生产必须注入SPRING_DATASOURCE_USERNAME/PASSWORD且不得回退root，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一结构入口，演示账号/商品仅由db/demo-seed.sql在显式开关下加载，生产profile禁用SQL初始化；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；SQL错误容忍不是版本迁移机制；不得开启记录卡密/领取凭证的SQL参数日志。
 server:
   port: ${SERVER_PORT:8080}
   servlet:
@@ -16,8 +16,8 @@ spring:
 
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:mysql://localhost:3306/shop_b2b2c?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true&allowMultiQueries=true}
-    username: ${SPRING_DATASOURCE_USERNAME:root}
-    password: ${SPRING_DATASOURCE_PASSWORD:89dfu*#$ewr87l}
+    username: ${SPRING_DATASOURCE_USERNAME}
+    password: ${SPRING_DATASOURCE_PASSWORD}
     driver-class-name: com.mysql.cj.jdbc.Driver
     hikari:
       minimum-idle: 5
