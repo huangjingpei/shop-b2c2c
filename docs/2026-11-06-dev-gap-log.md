@@ -108,7 +108,7 @@
 ## G11 开发期基线清理：已删除的兼容补丁与剩余事项
 
 - 授权（用户 2026-11-06）：开发阶段不存在兼容性约束，已提交代码也允许改；清理范围限定为“为兼容旧库/旧数据而写的补丁”，不重构真实业务逻辑。
-- 结构（提交 `6416a87`）：`schema.sql` 一次写全主键、唯一键、非空、外键、默认值、检查与索引；新增 37 个外键（外键约束共 39 个，含原有 `card_import_item` 2 个；覆盖订单明细、预占、卡密、审计、导入批次、作废、账单、投诉等）；预占与支付事件关联 ID 统一 `BIGINT UNSIGNED`；`trade_order.payment_channel` 收紧为 `NOT NULL DEFAULT 'WECHAT'`。`SchemaMySqlTest` 同步表数量、到期索引列与作废夹具。
+- 结构（提交 `6416a87`，外键名统一无引号见 `8029b71`）：`schema.sql` 一次写全主键、唯一键、非空、外键、默认值、检查与索引；新增 37 个外键（外键约束共 39 个，含原有 `card_import_item` 2 个；覆盖订单明细、预占、卡密、审计、导入批次、作废、账单、投诉等）；预占与支付事件关联 ID 统一 `BIGINT UNSIGNED`；`trade_order.payment_channel` 收紧为 `NOT NULL DEFAULT 'WECHAT'`。`SchemaMySqlTest` 同步表数量、到期索引列与作废夹具。
 - 卡密（提交 `de36118`）：V1 删除存量订单截止回填；V2 仅保留 `fingerprint_unavailable` 幂等列补齐；`CardAssetService` 无指纹行改纯内存解密比对，不回写指纹，解密失败跳过计数保留；删除 `fillFingerprint` 与冗余私有 `fingerprint`。
 - 订单截止（提交 `de3d6bd`）：`findExpiredUnpaidOrderIds` 删除 `lock_expire_time IS NULL AND created_at <= cutoff` 兼容分支；`cancelPreLock` 不再置空 `lockExpireTime`；`expireIfNecessary` 对缺失截止回退 `createdAt+15`，不把 NULL 当作永不到期。
 - 已从清单/缺口划掉：G08 的历史指纹回填、G10 的 NULL 预占兜底、T14 的 V2 明文回填与补写分支均不再作为待办或验收项；原“存量 NULL 回填见 T12”的状态描述同步更新。
