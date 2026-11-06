@@ -330,8 +330,8 @@
     | SUCCESS 且流水号一致、金额/币种齐全 | 确认已支付 | 复用 `processPaymentEvent` 幂等履约 → `SUCCESS`；业务校验拒绝 → 对应失败态 |
     | `PENDING`（NOTPAY/USERPAYING/WAIT_BUYER_PAY）、`CLOSED`、`FAILED`（PAYERROR）、`NOT_EXIST`（微信 404/ORDER_NOT_EXIST、支付宝 ACQ.TRADE_NOT_EXIST） | 渠道明确未支付/查无此单 | 落 `FULFILLMENT_FAILED` + ERROR 告警，原因前缀“渠道明确未支付”。**新事件占位即 `1`，SQL `CASE` 保留 `1`**，实际为“`FULFILLMENT_FAILED` + `1` + 渠道明确未支付”冲突行，T+1 记 `PAYMENT_EVENT_CHANNEL_CONFLICT`；仅未标注行/历史或异常行才会真的落 `0`（T+1 记 `PAYMENT_EVENT_REJECTED`）；失败态不阻止后续真实成功通知重新履约。**支付宝 `TRADE_CLOSED` 属退款/关闭无法判定场景，见下两行，不写“渠道明确未支付”** |
     | `REFUNDED` | 渠道已收款后已退款 | 落 `FULFILLMENT_FAILED` + ERROR 告警，原因前缀“渠道已收款后已退款”，`funds_received=1`（存在资金往来，进入 T+1 预期流水差集）；T+1 记 `PAYMENT_EVENT_REFUNDED`（键 `EV\|id\|REFUNDED`），不得写“未收到资金”（第六轮修正，第七轮拆分类型，见 t1 方案 §13.6/§13.7） |
-    | 支付宝 `TRADE_CLOSED` 且响应携带 `refund_fee`/`refund_amount > 0` | 支付宝全额退款 | 适配器映射为 `REFUNDED`，按上一行处理；字段是否稳定返回需真实联调确认 |
-    | 支付宝 `TRADE_CLOSED` 且无退款金额证据 | 可能为全额退款，也可能为超时关闭（无法区分） | 适配器保持 `CLOSED`，G34 原因写“渠道已关闭，可能为全额退款，需核对退款流水”（**不得写“渠道明确未支付”**），`funds_received` 保留 `1`；T+1 记 `PAYMENT_EVENT_CHANNEL_CONFLICT`，文案提示“可能为全额退款或渠道状态异常，需核对渠道流水” |
+    | 支付宝 `TRADE_CLOSED` 且响应携带 `refund_fee`/`refund_amount > 0` | 支付宝全额退款 | 适配器映射为 `REFUNDED`，按上一行处理；字段是否稳定返回需真实联调确认，**若 `alipay.trade.query` 不返回 `refund_fee`/`refund_amount`，全额退款会统一落 `CHANNEL_CONFLICT`**，仍需人工核对退款流水 |
+    | 支付宝 `TRADE_CLOSED` 且无退款金额证据 | 可能为全额退款，也可能为超时关闭（无法区分） | 适配器保持 `CLOSED`，G34 原因写“渠道已关闭，可能为全额退款，需核对退款流水”（**不得写“渠道明确未支付”**）；`funds_received` 只对原本已是 `1` 的行保留 `1`，原本 `NULL` 的未标注行会写 `0`（新事件在 claimEvent 已占位为 `1`，故实际多为保留 `1`）；T+1 记 `PAYMENT_EVENT_CHANNEL_CONFLICT`，文案提示“可能为全额退款或渠道状态异常，需核对渠道流水” |
     | 400/401/403/404 | 查单前置校验失败 | 落 `FULFILLMENT_FAILED` + ERROR 告警，资金状态未知写 `NULL`，由 T+1 `REVIEW` 差异兜住 |
     | 事件已有 `funds_received=1` 再遇上述“未支付/退款/无法确认”答复 | 存在资金往来的记录不得降级 | Mapper SQL 用 `CASE WHEN funds_received=1 THEN 1 ELSE ... END` 保留 `1`；状态与标记共存为“`FULFILLMENT_FAILED` + `1`”，由 T+1 按原因前缀生成冲突类/退款类差异，要求人工核对 |
     | 超时、网络、限流、5xx、空响应/解析失败、未知 trade_state、SUCCESS 但流水号/金额不一致 | 查询异常或答复不确定 | **保持 PROCESSING**，`reconcile_attempts+1`、写 `next_reconcile_at` 指数退避；到期前不再回查 |
@@ -484,5 +484,13 @@
 - 未改原因：需要精确控制多次扫描与 `next_reconcile_at` 到期时间，用例成本高于本轮收益；现有断言已覆盖最终态。
 - 建议归属：G34 用例补强；分步执行三次扫描并在每次后回读 `funds_received`/`reconcile_attempts`，断言前两次仍为 `1`、第三次转 `MANUAL_REVIEW` 且为 `NULL`。
 - 影响面：测试覆盖偏弱，不影响当前实现正确性判断。
+
+## G49 旧格式游标在管理端“加载更多”会持续 400 直到刷新（已登记，不改代码）
+
+- 发现位置：[OrderCursor.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/common/OrderCursor.java)；[admin/Orders.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/admin/Orders.vue)；[merchant/Orders.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/merchant/Orders.vue)。
+- 现象：2026-11-07 把游标从“毫秒时间戳 + id”改为“ISO 完整精度时间 + id”。部署前已打开并已翻页的浏览器仍持有旧格式 `nextCursor`，点“加载更多”会因 `decode` 返回 400；前端未在失败时清空 `nextCursor`，同一旧游标会被反复提交，直到刷新页面或重新选择筛选条件才恢复。
+- 未改原因：属于跨版本瞬时体验问题，不产生错单/错账；旧格式只存在于部署瞬间的内存状态，不做后端兼容会引入双格式解析与长期维护成本。
+- 建议归属：前端分页体验优化；请求返回 400 时清空游标并提示“分页已过期，请刷新后重试”，或首屏请求时丢弃本地缓存游标。若希望兼容，需在后端短暂接受旧格式并在文档标注下线时间。
+- 影响面：单次发布期间已打开的管理端订单列表需刷新一次；不影响新请求与数据正确性。
 
 

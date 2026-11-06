@@ -54,7 +54,12 @@ public class PaymentEventReconcileService {
     private static final Duration MAX_RETRY_BACKOFF = Duration.ofMinutes(30);
     private static final int DEFAULT_MAX_ATTEMPTS = 5;
 
-    /** 渠道给出确定答复且确认没有资金到账：这些状态按“明确未支付”落失败态，不算查询异常。 */
+    /**
+     * 渠道给出确定答复且确认没有资金到账：这些状态按“明确未支付”请求写 0，不算查询异常。
+     * 注意：新事件在 claimEvent 时已写入 funds_received=1，markFulfillmentFailed 的 CASE 会保留 1，
+     * 因此 0 对新事件不可达，仅对 funds_received IS NULL 的未标注行/历史或异常行生效；
+     * 对已建事件，这些答复形成“渠道答复与已收款记录冲突”，由 T+1 生成 PAYMENT_EVENT_CHANNEL_CONFLICT。
+     */
     private static final Set<String> DEFINITIVE_NOT_PAID_STATES =
             Set.of("PENDING", "CLOSED", "FAILED", "NOT_EXIST");
 

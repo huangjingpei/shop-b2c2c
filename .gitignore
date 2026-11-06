@@ -47,3 +47,7 @@ RECON_16688/
 16688-clone-preview.png
 temp/
 tmp/
+
+# 本地调试配置（含凭据，禁止提交；通过 --spring.profiles.active=local 启用）
+**/application-local.yml
+**/application-local.yaml

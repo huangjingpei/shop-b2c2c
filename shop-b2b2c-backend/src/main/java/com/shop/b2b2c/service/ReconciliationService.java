@@ -109,9 +109,11 @@ public class ReconciliationService {
      * 预期会在本商户渠道账户产生流水的支付事件状态（第四~五轮口径，覆盖第三轮“仅三种状态”的错误判断）。
      * 仅“状态在集合内且 funds_received=1”才进入缺失渠道判定：
      * SUCCESS、DUPLICATE_PAYMENT、LATE_PAYMENT 与收到回调后 reject(...) 写入的拒绝状态均属已收款；
-     * FULFILLMENT_FAILED 一码多义（回调后履约失败=1 / G34 渠道已收款后已退款=1 / G34 渠道明确未支付=0 /
+     * FULFILLMENT_FAILED 一码多义（回调后履约失败=1 / G34 渠道已收款后已退款=1 / G34 渠道明确未支付请求 0 /
      * G34 查单前置校验失败=NULL），由 funds_received 区分；REFUNDED 属“钱到过账又退回”，按 1 进入差集。
-     * funds_received=0（明确未到账）与 NULL（未标注）都不预期流水，但必须各自生成可见差异，不能静默。
+     * 注意：新事件在 claimEvent 已占位为 1，markFulfillmentFailed 的 CASE 会保留 1，故“明确未支付→0”对新事件不可达，
+     * 仅对 funds_received IS NULL 的未标注行/历史或异常行生效；这类行遇到明确未支付答复会形成 CHANNEL_CONFLICT。
+     * funds_received=0（明确无资金往来，仅未标注/历史异常行）与 NULL（未标注）都不预期流水，但必须各自生成可见差异，不能静默。
      * 不计入：PROCESSING（结果未确认，单独按悬挂阈值给差异信号）与未知/人工队列状态。
      */
     private static final Set<String> STATEMENT_EXPECTED_EVENT_STATUSES = Set.of(
@@ -231,7 +233,7 @@ public class ReconciliationService {
 
         List<PaymentEvent> events = eventMapper.findByMerchantAndPeriod(merchantId, from, to);
         for (PaymentEvent event : events) {
-            // 只有“已收到渠道回调、且渠道侧确认资金到账（funds_received=1）”的事件才计入缺失渠道判定：
+            // 只有“已收到渠道回调、且渠道侧存在该笔资金往来（funds_received=1，应有对应流水）”的事件才计入缺失渠道判定：
             // SUCCESS / DUPLICATE_PAYMENT / LATE_PAYMENT 与 reject(...) 写入的拒绝状态均在集合内。
             // funds_received=0/NULL 不预期流水（NULL 由 REVIEW 差异兜住），未知状态也不计入，避免永久 PARTIAL。
             if (event.getChannel() != null && !event.getChannel().isBlank()
