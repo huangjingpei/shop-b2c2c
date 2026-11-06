@@ -137,9 +137,11 @@ class Sprint1SecurityIntegrationTest {
                 () -> merchantController.updateServiceFee(1L, fee),
                 () -> merchantController.updatePaymentChannel(1L, channel),
                 () -> {
-                    try (var security = mockStatic(SecurityUtils.class);
-                         var roles = mockStatic(cn.dev33.satoken.stp.StpUtil.class)) {
+                    try (var security = mockStatic(SecurityUtils.class)) {
                         security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
+                        // Q13-A 后资料更新走 AuthSessionService 角色校验，必须同时提供管理角色，
+                        // 否则会在读取快照前被 403 拒绝，旧实现的 NPE 同样会掩盖真实交错结果。
+                        security.when(SecurityUtils::getCurrentRoleCode).thenReturn("MERCHANT_ADMIN");
                         var profile = new MerchantStore(); profile.setNotice("new notice"); profile.setId(2L);
                         merchantController.updateMerchantProfile(profile);
                     }
@@ -597,12 +599,22 @@ class Sprint1SecurityIntegrationTest {
     private com.shop.b2b2c.dto.InventoryAdjustmentDTOs.Adjust adjustment(int delta, int expected) {
         return new com.shop.b2b2c.dto.InventoryAdjustmentDTOs.Adjust(1L, 1L, delta, expected, "stock-taking");
     }
+    /**
+     * HTTP 用例必须显式发送 JSON 整数标识与数量：T37 后测试侧 ObjectMapper 会把包装 Long 序列化成字符串，
+     * 而库存 DTO 按契约只接受 JSON 整数，直接 writeValueAsString(Adjust) 会在参数解析阶段得到 400。
+     */
+    private com.fasterxml.jackson.databind.node.ObjectNode inventoryBody(int delta, int expected) {
+        var body = json.createObjectNode();
+        body.put("productId", 1); body.put("skuId", 1);
+        body.put("delta", delta); body.put("expectedStock", expected); body.put("reason", "stock-taking");
+        return body;
+    }
     private void physicalProduct() { jdbc.update("UPDATE product SET goods_type=1 WHERE id=1"); }
 
     @Test
     void inventoryHttpUsesSessionActorAndRequiresIdempotencyKey() throws Exception {
         physicalProduct(); authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
-        var body = (com.fasterxml.jackson.databind.node.ObjectNode) json.valueToTree(adjustment(2, 1));
+        var body = inventoryBody(2, 1);
         body.put("actorId", 999); body.put("merchantId", 2);
         mvc.perform(post("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token)
                 .contentType("application/json").content(json.writeValueAsString(body))).andExpect(status().isBadRequest());
@@ -621,7 +633,7 @@ class Sprint1SecurityIntegrationTest {
     void inventoryStaffMayReadButCannotWrite() throws Exception {
         physicalProduct(); authUser("MERCHANT_STAFF", 1L); String token = loginToken();
         mvc.perform(post("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token)
-                .header("Idempotency-Key", "stock-staff-key-1234").contentType("application/json").content(json.writeValueAsString(adjustment(1, 1))))
+                .header("Idempotency-Key", "stock-staff-key-1234").contentType("application/json").content(json.writeValueAsString(inventoryBody(1, 1))))
                 .andExpect(status().isForbidden());
         mvc.perform(get("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token))
                 .andExpect(jsonPath("$.code").value(200));
@@ -750,15 +762,16 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
-    void encryptedHistoricalCardWithoutFingerprintIsBackfilledBeforeNextImport() {
+    void encryptedHistoricalCardWithoutFingerprintIsDeduplicatedWithoutBackfill() {
         var cipher = new com.shop.b2b2c.service.CardCipherService();
         String legacyPlain = "legacy-encrypted-fixture";
         jdbc.update("UPDATE product_virtual_card SET card_content=?, card_fingerprint=NULL WHERE id=1", cipher.encrypt(legacyPlain));
 
         assertEquals(1, cardAssets.importCards(1L, 200L, 1L, 1L, List.of("fresh-other-fixture")).get("importedCount"));
-        assertEquals(cipher.fingerprint(legacyPlain),
-                jdbc.queryForObject("SELECT card_fingerprint FROM product_virtual_card WHERE id=1", String.class));
+        // 基线清理已删除历史指纹回填：无指纹行只在内存解密比对，不得写回 card_fingerprint。
+        assertNull(jdbc.queryForObject("SELECT card_fingerprint FROM product_virtual_card WHERE id=1", String.class));
         assertEquals(0, jdbc.queryForObject("SELECT fingerprint_unavailable FROM product_virtual_card WHERE id=1", Integer.class));
+        // 去重能力仍必须覆盖：同一明文再次导入应被内存比对拦下。
         assertEquals(409, assertThrows(BusinessException.class,
                 () -> cardAssets.importCards(1L, 200L, 1L, 1L, List.of(legacyPlain))).getCode());
     }
@@ -1188,9 +1201,12 @@ class Sprint1SecurityIntegrationTest {
     void addressLimitAppliesAcrossUnknownAccountsAndIgnoresSpoofedForwardingHeaders() throws Exception {
         simulateLoginBuckets();
         for (int attempt = 1; attempt <= 6; attempt++) {
-            mvc.perform(post("/api/v1/auth/login").contentType("application/json")
+            var request = post("/api/v1/auth/login").contentType("application/json")
                     .header("X-Forwarded-For", "192.0.2." + attempt).header("Forwarded", "for=192.0.2." + attempt)
-                    .content(json.writeValueAsString(java.util.Map.of("username", "missing-" + attempt, "password", AUTH_PASSWORD))))
+                    .content(json.writeValueAsString(java.util.Map.of("username", "missing-" + attempt, "password", AUTH_PASSWORD)))
+                    // MockMvc 默认 remoteAddr=127.0.0.1 属于可信回环，必须显式模拟直连公网客户端才能验证忽略 XFF。
+                    .with(builder -> { builder.setRemoteAddr("198.51.100.10"); return builder; });
+            mvc.perform(request)
                     .andExpect(jsonPath("$.code").value(attempt <= 5 ? 500 : 429));
         }
     }
@@ -1685,7 +1701,9 @@ class Sprint1SecurityIntegrationTest {
                 .build();
 
         var ex = assertThrows(BusinessException.class, () -> paymentEventService.processPaymentEvent(event));
-        assertTrue(ex.getMessage().contains("实付金额与订单应付金额不符"));
+        // 金额不符消息携带两侧金额，断言关键语义而不是固定拼接顺序。
+        assertTrue(ex.getMessage().contains("实付金额") && ex.getMessage().contains("订单应付金额")
+                && ex.getMessage().contains("不符"));
 
         var pe = paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_AMOUNT_ERR");
         assertNotNull(pe);
@@ -2629,9 +2647,12 @@ class Sprint1SecurityIntegrationTest {
     @SuppressWarnings({"rawtypes", "unchecked"})
     void untrustedForwardedHeadersCannotChangeRateLimitIdentity() throws Exception {
         TradeOrder order = unpaid("forwarded-rate", 1);
-        mvc.perform(receiptLookup("forwarded-rate", order.getQueryToken()).header("X-Forwarded-For", "192.0.2.1"))
+        mvc.perform(receiptLookup("forwarded-rate", order.getQueryToken()).header("X-Forwarded-For", "192.0.2.1")
+                        // 直连公网客户端：remoteAddr 不在可信代理列表，所有 XFF 都必须被忽略。
+                        .with(builder -> { builder.setRemoteAddr("198.51.100.9"); return builder; }))
                 .andExpect(jsonPath("$.code").value(200));
-        mvc.perform(receiptLookup("forwarded-rate", order.getQueryToken()).header("X-Forwarded-For", "198.51.100.2"))
+        mvc.perform(receiptLookup("forwarded-rate", order.getQueryToken()).header("X-Forwarded-For", "198.51.100.2")
+                        .with(builder -> { builder.setRemoteAddr("198.51.100.9"); return builder; }))
                 .andExpect(jsonPath("$.code").value(200));
         var keys = org.mockito.ArgumentCaptor.forClass(List.class);
         verify(redis, times(4)).execute(any(), keys.capture(), any(), eq("300"));

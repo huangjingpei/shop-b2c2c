@@ -62,18 +62,23 @@ class MerchantStoreUpdateTest {
         when(stores.findById(1L)).thenReturn(Optional.of(new MerchantStore()));
         var body = new MerchantStore(); body.setId(2L); body.setStatus(1); body.setCommissionRate(BigDecimal.ZERO);
         body.setNotice("allowed notice"); body.setLogoUrl("");
-        try (var security = mockStatic(SecurityUtils.class); var roles = mockStatic(StpUtil.class)) {
+        try (var security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(1L);
+            // Q13-A 起资料更新在接口层校验店长/平台管理员角色，不再直接调用 Sa-Token checkRoleOr。
+            security.when(SecurityUtils::getCurrentRoleCode).thenReturn("MERCHANT_ADMIN");
             assertEquals(200, c.updateMerchantProfile(body).getCode());
-            roles.verify(() -> StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN"));
             verify(stores).findById(1L);
             verify(stores).updateProfileOnly(1L, "allowed notice", "", null, null);
             verifyNoMoreInteractions(stores);
         }
         reset(stores);
-        try (var roles = mockStatic(StpUtil.class)) {
-            roles.when(() -> StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN"))
-                    .thenThrow(new BusinessException(403, "拒绝"));
+        try (var security = mockStatic(SecurityUtils.class)) {
+            security.when(SecurityUtils::getCurrentRoleCode).thenReturn("MERCHANT_STAFF");
+            assertEquals(403, assertThrows(BusinessException.class, () -> c.updateMerchantProfile(body)).getCode());
+            verifyNoInteractions(stores);
+        }
+        // 会话缺少角色时必须按无权限拒绝；旧实现 Set.contains(null) 会抛 NPE 并映射为 500。
+        try (var security = mockStatic(SecurityUtils.class)) {
             assertEquals(403, assertThrows(BusinessException.class, () -> c.updateMerchantProfile(body)).getCode());
             verifyNoInteractions(stores);
         }
@@ -87,7 +92,11 @@ class MerchantStoreUpdateTest {
         var c = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy);
         assertEquals(200, c.updateStatus(1L, 1).getCode());
-        assertEquals(200, c.updateCommission(1L, new BigDecimal("3.00"), "测试费率调整", 2L).getCode());
+        try (var security = mockStatic(SecurityUtils.class)) {
+            // G31 起调价操作人取自服务端会话；本用例聚焦定向更新，显式注入登录ID。
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(2L);
+            assertEquals(200, c.updateCommission(1L, new BigDecimal("3.00"), "测试费率调整", 2L).getCode());
+        }
         var channel = new MerchantController.PaymentChannelConfigDTO(); channel.setPaymentChannelType("C");
         channel.setCustomPayQrcode("");
         assertEquals(200, c.updatePaymentChannel(1L, channel).getCode());

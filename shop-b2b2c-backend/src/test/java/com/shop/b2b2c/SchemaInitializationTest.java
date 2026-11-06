@@ -25,8 +25,11 @@ class SchemaInitializationTest {
         assertEquals("false", properties.getProperty("spring.sql.init.continue-on-error"));
         assertEquals("org.apache.ibatis.logging.nologging.NoLoggingImpl", properties.getProperty("mybatis-plus.configuration.log-impl"),
                 "运行配置不得将买家联系方式、领取凭证和卡密参数打印到stdout");
-        assertEquals("", properties.getProperty("app.bootstrap-admin.username"), "管理员初始化默认关闭");
-        assertEquals("", properties.getProperty("app.bootstrap-admin.password"), "管理员初始化默认关闭");
+        // T19 起管理员账号改为外部注入，只允许空默认；原始YAML保留占位符形式，环境变量未设置即关闭。
+        assertTrue(properties.getProperty("app.bootstrap-admin.username").matches("\\$\\{BOOTSTRAP_ADMIN_USERNAME:}"),
+                "管理员初始化默认关闭，仅允许空默认的外部注入");
+        assertTrue(properties.getProperty("app.bootstrap-admin.password").matches("\\$\\{BOOTSTRAP_ADMIN_PASSWORD:}"),
+                "管理员初始化默认关闭，仅允许空默认的外部注入");
         assertFalse(new ClassPathResource("db/migrations/002_inventory_reservation.sql").exists());
         assertFalse(new ClassPathResource("db/migrations/003_order_idempotency.sql").exists());
     }
@@ -90,7 +93,9 @@ class SchemaInitializationTest {
     void baselineNeverDeletesDataOrChangesTheConfiguredDatabase() throws Exception {
         String sql = new ClassPathResource("db/schema.sql").getContentAsString(StandardCharsets.UTF_8);
         String commands = sql.replaceAll("(?m)^\\s*--.*$", "");
-        assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*(DROP|TRUNCATE|DELETE|USE)\\b").matcher(commands).find());
+        // 允许幂等的 DROP TRIGGER IF EXISTS（重跑基线需要），但禁止删除表/库/数据或切换当前库。
+        assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*(TRUNCATE|DELETE|USE)\\b").matcher(commands).find());
+        assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*DROP\\s+(TABLE|DATABASE|SCHEMA)\\b").matcher(commands).find());
         assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*CREATE\\s+DATABASE\\b").matcher(commands).find());
         assertFalse(java.util.regex.Pattern.compile("(?im)^\\s*CREATE\\s+INDEX\\b").matcher(commands).find(),
                 "重复启动不能重复执行独立CREATE INDEX");

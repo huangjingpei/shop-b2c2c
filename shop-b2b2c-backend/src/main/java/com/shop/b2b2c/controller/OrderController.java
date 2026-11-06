@@ -412,7 +412,8 @@ public class OrderController {
         }
 
         if (!"PAID".equals(order.getOrderStatus())) {
-            throw new BusinessException("订单状态非【待发货】，无法发货");
+            // 重复发货/状态不符属于可预期的并发冲突，必须显式 400，不能落到默认 500。
+            throw new BusinessException(400, "订单状态非【待发货】，无法发货");
         }
 
         order.setOrderStatus("SHIPPED");

@@ -265,3 +265,18 @@
   - 前端 `shop-admin-vue/src/utils/financeReview.mjs` 统一校验：严格模式必填、禁止选择自己、拒绝未知账号；无第二账号时明确提示“需至少分配两个财务账号”，不抛通用错误。前端只做提示与参数传递，后端权限模型不变。
   - 复核人资质校验（已实现）：`FinanceApprovalGuard.resolveReviewer` 对“操作人以外的复核人”统一查询 `sys_user`，必须为启用状态的 SUPERADMIN；禁用超管、非 SUPERADMIN、不存在的账号一律 403，四个财务入口自动共用，不允许各入口各写一遍，也不允许只靠前端候选列表放行。
 - 验证：代理未运行 mvn/编译/测试/构建，也未连库；新增 shared 用例 `shared/financeReview.test.mjs`、后端 `FinanceApprovalGuardTest`（启用超管放行 / 禁用超管 / 非超管 / 不存在账号），并同步 `MerchantFeePolicyServiceTest`/`MerchantSettlementServiceTest`/`MerchantOnboardingServiceTest`，状态为**已实现·待人工验证**。
+
+## G32 后端 19 条测试失败的定性修复（已实现·待人工验证）
+
+- 数据来源：用户 2026-11-06 的 `mvn -f shop-b2b2c-backend/pom.xml test` 结果，696 用例中 11 failures + 7 errors + 1 skipped 共 19 条非绿；报告位于 `shop-b2b2c-backend/target/surefire-reports`。
+- 真实缺陷（已修复）：
+  1. `AuthSessionService.isManagementRole()` 直接 `Set.of(...).contains(role)`，会话缺少角色时 `contains(null)` 抛 NPE 并映射为 500；改为 null 一律视为无权限（403）。
+  2. `PaymentEventServiceImpl` 并发通知触发唯一键冲突时，把所有 `DuplicateKeyException` 都判成“渠道流水号已被其他订单使用”；改为冲突后回查，同订单按幂等重放继续，只有流水号确属其他订单才报归属冲突。
+  3. `OrderController` 重复发货/非待发货状态使用无业务码的 `BusinessException`，默认映射 500；改为显式 400，与 T31 契约一致。
+- 过期用例/夹具（已更新，不放宽业务断言）：
+  - `ManagementSecurityTest`、`MerchantStoreUpdateTest`：G31 起调价操作人取自服务端会话、Q13-A 起资料更新走 `AuthSessionService` 角色校验，纯单元测试补 `SecurityUtils` 静态桩；新增“角色缺失仍 403”回归。
+  - `SchemaInitializationTest`：初始化基线允许幂等 `DROP TRIGGER IF EXISTS`（仍禁止删表/删库/TRUNCATE/DELETE/USE）；T19 后管理员账号为“仅空默认”的环境变量占位符，断言改为校验空默认形态。
+  - `Sprint1SecurityIntegrationTest`：T37 后测试侧 ObjectMapper 会把包装 Long 序列化为字符串，库存 HTTP 用例改为显式 JSON 整数；限流用例显式模拟不可信直连 IP（MockMvc 默认 127.0.0.1 属可信回环，导致 XFF 被采纳）；卡密指纹用例按 G08 已删除的回填语义改为“不写回、仅内存比对去重”；金额不符消息按关键语义断言。
+  - 店铺交错写用例补管理角色桩，修复 Q13-A 后资料更新在读取快照前被拒导致屏障超时的问题。
+- 环境限制：`SchemaMySqlTest` 在 Windows 原生跳过，不计通过；真实 MySQL 事务/锁与 H2 差异仍须用户按手动入口复跑确认。
+- 验证：代理未运行 mvn/编译/测试/构建，上述结论为静态核对的**已实现·待人工验证**，以用户复跑结果为准。

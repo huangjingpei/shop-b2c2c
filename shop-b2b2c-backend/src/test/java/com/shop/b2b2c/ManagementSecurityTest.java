@@ -44,9 +44,13 @@ class ManagementSecurityTest {
         var feePolicy = mock(MerchantFeePolicyService.class);
         var entity = new MerchantStore();
         when(store.findById(1L)).thenReturn(java.util.Optional.of(entity));
-        new MerchantController(store, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
-                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy)
-                .updateCommission(1L, new BigDecimal(value), "测试费率调整", 3L);
+        try (var security = mockStatic(SecurityUtils.class)) {
+            // G31 起调价操作人取自服务端会话，纯单元测试必须显式提供登录ID，不能依赖SaToken上下文。
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(3L);
+            new MerchantController(store, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
+                    mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy)
+                    .updateCommission(1L, new BigDecimal(value), "测试费率调整", 3L);
+        }
         verify(feePolicy).adjust(eq(1L), argThat(form -> form.getRateBps() != null
                 && new BigDecimal(form.getRateBps()).compareTo(new BigDecimal(value).multiply(new BigDecimal("100"))) == 0),
                 any());

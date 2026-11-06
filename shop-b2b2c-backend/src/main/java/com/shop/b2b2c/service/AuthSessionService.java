@@ -29,7 +29,9 @@ public class AuthSessionService {
     }
 
     public static boolean isManagementRole() {
-        return MANAGEMENT_ROLES.contains(SecurityUtils.getCurrentRoleCode());
+        // 会话角色缺失（未登录、令牌升级前的旧会话等）按无权限处理，不能把 Set.contains(null) 抛成 500。
+        String role = SecurityUtils.getCurrentRoleCode();
+        return role != null && MANAGEMENT_ROLES.contains(role);
     }
 
     public SysUser requireCurrentUser() {

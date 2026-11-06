@@ -137,7 +137,14 @@ public class PaymentEventServiceImpl implements PaymentEventService {
         try {
             pe = eventRecorder.recordInitialEvent(pe);
         } catch (DuplicateKeyException dke) {
-            throw new PaymentEventOwnershipConflict(400, "渠道流水号已被其他订单使用");
+            // 并发通知下唯一键冲突可能来自同一订单：重新读取已存在事件，同一订单按幂等重放继续，
+            // 只有流水号确实属于其他订单时才判定归属冲突，不能把同单重试误报为盗用。
+            PaymentEvent concurrent = paymentEventMapper.findByChannelAndTradeNo(channel, payTradeNo);
+            if (concurrent == null || !orderSn.equals(concurrent.getOrderSn())) {
+                throw new PaymentEventOwnershipConflict(400, "渠道流水号已被其他订单使用");
+            }
+            existing = concurrent;
+            pe = concurrent;
         }
         auditSnapshot.set(pe);
 
