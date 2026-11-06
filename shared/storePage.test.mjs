@@ -21,12 +21,13 @@ test('空店独立展示真实资料，商品查询限定本店', async () => {
 })
 test('T30 店内搜索把 trim 后的关键词作为 q 传参，仍限定本店', async () => {
   const calls = []
-  await loadStorePage('7', async (...args) => { calls.push(args); return ok([]) }, '  耳机  ')
+  // fetcher 必须让店铺校验通过（返回本店资料），商品请求才会发出。
+  await loadStorePage('7', async (...args) => { calls.push(args); return args[0].includes('/stores/') ? ok(shop) : ok([]) }, '  耳机  ')
   assert.deepEqual(calls[1], ['/api/v1/public/products', { params: { merchantId: '7', q: '耳机' } }])
 })
 test('T30 空白关键词不追加 q', async () => {
   const calls = []
-  await loadStorePage('7', async (...args) => { calls.push(args); return ok([]) }, '   ')
+  await loadStorePage('7', async (...args) => { calls.push(args); return args[0].includes('/stores/') ? ok(shop) : ok([]) }, '   ')
   assert.deepEqual(calls[1], ['/api/v1/public/products', { params: { merchantId: '7' } }])
 })
 test('正常商品保留，联系方式缺失不伪造', async () => {

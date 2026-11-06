@@ -123,6 +123,7 @@ test('商家与超管双入口按视角选择登录页', () => {
   assert.equal(loginPathFor('/console/'), '/console/login')
 })
 test('会话失效按currentPerspective回到对应入口', async () => {
+  // 守卫半段必须无 token（验证未登录跳转）；处理器半段必须持有当前 token（验证 401 清理+重定向），两段不能共用 storage。
   const s = storage({ currentPerspective: 'ADMIN' })
   const guard = createSessionGuard({
     storage: s,
@@ -131,13 +132,14 @@ test('会话失效按currentPerspective回到对应入口', async () => {
   })
   assert.equal(await guard(adminRoute), '/console/admin/login')
 
+  const s2 = storage({ token: 'old', currentPerspective: 'ADMIN' })
   const redirects = []
   const handlers = createApiResponseHandlers({
-    storage: s, base: '/console/', notify: () => {}, redirect: path => redirects.push(path)
+    storage: s2, base: '/console/', notify: () => {}, redirect: path => redirects.push(path)
   })
   assert.throws(() => handlers.fulfilled({ config: { sessionToken: 'old' }, data: { code: 401 } }))
   assert.deepEqual(redirects, ['/console/admin/login'])
-  assert.equal(s.getItem('currentPerspective'), null)
+  assert.equal(s2.getItem('currentPerspective'), null)
 })
 test('Blob证件下载直接返回二进制，不按R业务码判失败', () => {
   const handlers = createApiResponseHandlers({

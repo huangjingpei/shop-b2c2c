@@ -34,7 +34,7 @@ test('失败态提供重试且卸载时作废未完成请求', () => {
   assert.ok(source.includes('@click="loadDetail()"'), '错误卡片必须有重新加载按钮')
   const unmounted = source.slice(source.indexOf('onUnmounted('))
   assert.ok(unmounted.includes('detailSequence++') && unmounted.includes('posterSequence++'))
-  assert.equal(source.includes('快速支付暂未开放') || source.includes('支付暂未开放'), true)
+  assert.equal(source.includes('支付通道暂未开放') || source.includes('支付暂未开放'), true)
 })
 
 test('T29 付款前预占、保存 ownerToken、离开/超时释放', () => {
