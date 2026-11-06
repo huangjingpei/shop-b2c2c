@@ -2,6 +2,7 @@
 文件：AdminLayout.vue
 用途：管理端布局、角色视角切换与菜单框架。
 维护注意：本地角色与视角只控制展示，不授予店铺操作权；未绑定店铺的超管不能默认写店铺1。退出须等服务端确认，网络失败不假装退出；页面身份由路由服务端校验后同步。
+退出跳转按登录时的角色回对应入口：超管回 /admin/login，商家回 /login，不把商家带到私密入口。
 -->
 <template>
   <el-container class="layout-container">
@@ -70,6 +71,10 @@
               <el-icon><OfficeBuilding /></el-icon>
               <span>入驻商户治理与进件</span>
             </el-menu-item>
+            <el-menu-item index="/admin/onboarding">
+              <el-icon><DocumentChecked /></el-icon>
+              <span>开店申请审核</span>
+            </el-menu-item>
             <el-menu-item index="/admin/categories">
               <el-icon><Folder /></el-icon>
               <span>统一商品类目树</span>
@@ -122,7 +127,7 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue'
 import request from '../../api/request'
-import { logoutSession } from '../../utils/authSession.mjs'
+import { loginPathFor, logoutSession } from '../../utils/authSession.mjs'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
 
@@ -157,7 +162,11 @@ const handleCommand = async (cmd) => {
       storage: localStorage,
       postLogout: () => request.post('/auth/logout', undefined, { skipErrorToast: true, skipAuthRedirect: true })
     })
-    if (cleared) { await router.replace('/login'); ElMessage.success('已退出登录') }
+    if (cleared) {
+      const loginTarget = loginPathFor(import.meta.env.BASE_URL, roleCode.value === 'SUPERADMIN' ? 'ADMIN' : 'MERCHANT')
+      await router.replace(loginTarget)
+      ElMessage.success('已退出登录')
+    }
   } catch {
     ElMessage.error('退出未完成，请检查网络后重试')
   } finally { loggingOut.value = false }

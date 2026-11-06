@@ -4,6 +4,7 @@
  * 维护注意：公开列表单SQL组合筛选、营业/上架过滤及SKU归属聚合，保留数组契约，尚未分页。普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
  * T30：公开列表新增关键词 q 与商品类型过滤；关键词只在服务端按标题/副标题做包含匹配（LOCATE，不使用 IN 拼接），
  *       调用方必须先 trim 并限制长度；goodsType 白名单 1/2/3 由控制器校验，SQL 不再接受任意值。
+ * 频道多类目：categoryIds 由控制器校验为正整数列表后以 IN 参数化传入，与单个 categoryId 互斥，不得直接拼接字符串。
  */
 package com.shop.b2b2c.mapper;
 
@@ -28,6 +29,10 @@ public interface ProductMapper extends BaseMapper<Product> {
         LEFT JOIN product_sku k ON k.product_id = p.id AND k.merchant_id = p.merchant_id
         WHERE p.status = 1
         <if test="categoryId != null">AND p.category_id = #{categoryId}</if>
+        <if test="categoryIds != null and categoryIds.size() > 0">
+            AND p.category_id IN
+            <foreach collection="categoryIds" item="cid" open="(" separator="," close=")">#{cid}</foreach>
+        </if>
         <if test="merchantId != null">AND p.merchant_id = #{merchantId}</if>
         <if test="goodsType != null">AND p.goods_type = #{goodsType}</if>
         <if test="keyword != null">AND (LOCATE(LOWER(#{keyword}), LOWER(p.title)) > 0
@@ -39,6 +44,7 @@ public interface ProductMapper extends BaseMapper<Product> {
         """)
     List<com.shop.b2b2c.dto.PublicProductView> findPublicProducts(
             @org.apache.ibatis.annotations.Param("categoryId") Long categoryId,
+            @org.apache.ibatis.annotations.Param("categoryIds") List<Long> categoryIds,
             @org.apache.ibatis.annotations.Param("merchantId") Long merchantId,
             @org.apache.ibatis.annotations.Param("keyword") String keyword,
             @org.apache.ibatis.annotations.Param("goodsType") Integer goodsType);

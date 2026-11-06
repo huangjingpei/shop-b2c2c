@@ -2,6 +2,7 @@
  * 文件：authSession.mjs
  * 用途：管理端会话清理、退出确认、服务端身份路由判断与API认证错误处理。
  * 维护注意：本地角色仅供展示，不作为授权；网络失败不能假装服务端退出成功。仅移除本应用会话键，旧请求不得清除新登录；前端判断不替代后端角色及租户校验。
+ * 双入口：/login 为商家登录（含“我要开店”），/admin/login 为平台超管私密入口；loginPathFor 按 currentPerspective 选择失效跳转，避免商家被踢到超管入口或反之。
  */
 const sessionKeys = ['token', 'userId', 'roleCode', 'merchantId', 'realName', 'storeName', 'currentPerspective']
 const roles = new Set(['SUPERADMIN', 'MERCHANT_ADMIN', 'MERCHANT_STAFF'])
@@ -11,6 +12,11 @@ export function clearSession(storage) {
 export function loginPath(base = '/') {
   const prefix = '/' + String(base).split('/').filter(Boolean).join('/')
   return prefix === '/' ? '/login' : prefix + '/login'
+}
+/** 按视角返回登录页：ADMIN 走私密入口，其余（含未知）走商家入口。 */
+export function loginPathFor(base = '/', perspective = '') {
+  const path = loginPath(base)
+  return String(perspective).toUpperCase() === 'ADMIN' ? path.replace(/\/login$/, '/admin/login') : path
 }
 export function apiErrorCode(error) {
   const body = Number(error?.businessCode ?? error?.response?.data?.code)
@@ -34,23 +40,25 @@ export function canEnter(profile, route) {
   if (route.meta?.requiresMerchant && !(Number(profile.merchantId) > 0)) return false
   return Boolean(route.meta?.role || route.meta?.requiresMerchant)
 }
-export function createSessionGuard({ storage, loadProfile }) {
+export function createSessionGuard({ storage, loadProfile, loginPath: resolveLoginPath }) {
+  const fallbackLogin = typeof resolveLoginPath === 'function' ? resolveLoginPath : () => '/login'
   return async route => {
     if (route.meta?.public) return true
     const token = storage.getItem('token')
-    if (!token) return '/login'
+    if (!token) return fallbackLogin()
     try {
       const profile = await loadProfile()
-      if (storage.getItem('token') !== token) return storage.getItem('token') ? '/' : '/login'
+      if (storage.getItem('token') !== token) return storage.getItem('token') ? '/' : fallbackLogin()
       cacheProfile(storage, profile)
       if (route.path === '/') return homeFor(profile)
       return canEnter(profile, route) ? true : '/forbidden'
     } catch (error) {
       if (apiErrorCode(error) === 401) {
+        const loginTarget = fallbackLogin()
         if (storage.getItem('token') === token) clearSession(storage)
-        return storage.getItem('token') ? '/' : '/login'
+        return storage.getItem('token') ? '/' : loginTarget
       }
-      if (storage.getItem('token') !== token) return storage.getItem('token') ? '/' : '/login'
+      if (storage.getItem('token') !== token) return storage.getItem('token') ? '/' : fallbackLogin()
       return '/session-error'
     }
   }
@@ -73,14 +81,18 @@ export function createApiResponseHandlers({ storage, notify, redirect, base }) {
   function reject(error, config = {}) {
     const ownsSession = (config.sessionToken ?? null) === storage.getItem('token')
     if (apiErrorCode(error) === 401 && ownsSession) {
+      // 先按 currentPerspective 计算入口再清理会话，否则清理后只能回落到商家登录页。
+      const loginTarget = loginPathFor(base, storage.getItem('currentPerspective'))
       clearSession(storage)
-      if (!config.skipAuthRedirect) redirect(loginPath(base))
+      if (!config.skipAuthRedirect) redirect(loginTarget)
     }
     if (!config.skipErrorToast && (apiErrorCode(error) !== 401 || ownsSession)) notify(error.response?.data?.message || error.message || '请求失败')
     throw error
   }
   return {
     fulfilled(response) {
+      // 二进制下载（证件/认证视频预览）没有 R 业务包裹，直接返回 Blob，避免被当成失败响应。
+      if (response.config?.responseType === 'blob') return response.data
       if (response.data?.code === 200) return response.data
       const error = new Error(response.data?.message || '请求失败')
       error.businessCode = response.data?.code; error.response = response
@@ -89,6 +101,6 @@ export function createApiResponseHandlers({ storage, notify, redirect, base }) {
     rejected(error) { return reject(error, error.config || error.response?.config) }
   }
 }
-export function storageNavigation(event) {
-  return event.key === 'token' ? (event.newValue ? '/' : '/login') : null
+export function storageNavigation(event, perspective = '') {
+  return event.key === 'token' ? (event.newValue ? '/' : loginPathFor('/', perspective)) : null
 }

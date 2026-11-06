@@ -3,6 +3,7 @@
  * 用途：配置API角色拦截、公开存活/就绪及业务路径与CORS。
  * 维护注意：公开路由不得加入可信支付落账；受保护请求先核验数据库中的账号和授权状态；角色检查不替代对象归属校验。跨域仅允许配置的精确来源及必要请求头，Bearer授权不开放跨域Cookie。
  * T32：/api/v1/payment/create 与 /api/v1/payment/callback/** 免登录，但回调安全性由渠道验签保证；/api/v1/merchant/payment/** 走商家登录与角色拦截，资金操作在控制器内再限定店长/超管。
+ * S3：/api/v1/auth/captcha 与 /api/v1/onboarding/** 免登录；入驻接口用 X-Onboarding-Token 申请查询凭证做对象级校验，不能替代后台审核权限。
  */
 package com.shop.b2b2c.config;
 
@@ -35,8 +36,10 @@ public class SaTokenConfigure implements WebMvcConfigurer {
         })).addPathPatterns("/api/v1/**")
            .excludePathPatterns(
                "/api/v1/auth/login",
+               "/api/v1/auth/captcha",
                "/api/v1/auth/health",
                "/api/v1/auth/ready",
+               "/api/v1/onboarding/**",
                "/api/v1/public/**",
                "/api/v1/peer-pay/**",
                "/api/v1/payment/create",
@@ -52,7 +55,7 @@ public class SaTokenConfigure implements WebMvcConfigurer {
         registry.addMapping("/**")
                 .allowedOrigins(corsOrigins.allowedOrigins())
                 .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH")
-                .allowedHeaders("Authorization", "Content-Type", "Idempotency-Key", "X-Reservation-Token")
+                .allowedHeaders("Authorization", "Content-Type", "Idempotency-Key", "X-Reservation-Token", "X-Onboarding-Token")
                 .allowCredentials(false)
                 .maxAge(3600);
     }

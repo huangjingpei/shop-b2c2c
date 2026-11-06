@@ -5,7 +5,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { clearSession, loginPath, homeFor, canEnter, createSessionGuard, logoutSession,
+import { clearSession, loginPath, loginPathFor, homeFor, canEnter, createSessionGuard, logoutSession,
   createApiResponseHandlers, storageNavigation } from '../shop-admin-vue/src/utils/authSession.mjs'
 
 function storage(seed = { token: 'old', roleCode: 'SUPERADMIN', unrelated: 'keep' }) {
@@ -113,5 +113,37 @@ test('API旧请求401不干扰新登录，守卫专用请求可关闭跳转和�
 test('跨标签页只对token变化触发重新导航', () => {
   assert.equal(storageNavigation({ key: 'token', newValue: null }), '/login')
   assert.equal(storageNavigation({ key: 'token', newValue: 'new' }), '/')
+  assert.equal(storageNavigation({ key: 'token', newValue: null }, 'ADMIN'), '/admin/login')
   assert.equal(storageNavigation({ key: 'unrelated' }), null)
+})
+test('商家与超管双入口按视角选择登录页', () => {
+  assert.equal(loginPathFor('/', 'ADMIN'), '/admin/login')
+  assert.equal(loginPathFor('/console/', 'ADMIN'), '/console/admin/login')
+  assert.equal(loginPathFor('/console/', 'MERCHANT'), '/console/login')
+  assert.equal(loginPathFor('/console/'), '/console/login')
+})
+test('会话失效按currentPerspective回到对应入口', async () => {
+  const s = storage({ currentPerspective: 'ADMIN' })
+  const guard = createSessionGuard({
+    storage: s,
+    loadProfile: () => assert.fail('must not fetch'),
+    loginPath: () => loginPathFor('/console/', s.getItem('currentPerspective'))
+  })
+  assert.equal(await guard(adminRoute), '/console/admin/login')
+
+  const redirects = []
+  const handlers = createApiResponseHandlers({
+    storage: s, base: '/console/', notify: () => {}, redirect: path => redirects.push(path)
+  })
+  assert.throws(() => handlers.fulfilled({ config: { sessionToken: 'old' }, data: { code: 401 } }))
+  assert.deepEqual(redirects, ['/console/admin/login'])
+  assert.equal(s.getItem('currentPerspective'), null)
+})
+test('Blob证件下载直接返回二进制，不按R业务码判失败', () => {
+  const handlers = createApiResponseHandlers({
+    storage: storage(), notify: () => assert.fail('must not notify'),
+    redirect: () => assert.fail('must not redirect'), base: '/'
+  })
+  const blob = { type: 'image/png' }
+  assert.equal(handlers.fulfilled({ config: { responseType: 'blob' }, data: blob }), blob)
 })

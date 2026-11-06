@@ -121,6 +121,8 @@ public class MerchantController {
         applicationForm.setSubjectType(enterprise
                 ? MerchantOnboardingService.SUBJECT_ENTERPRISE : MerchantOnboardingService.SUBJECT_INDIVIDUAL);
         applicationForm.setSubjectName(dto.getOwnerName());
+        // 入驻提交校验要求店铺名称；应急开通沿用表单里的店铺名称。
+        applicationForm.setStoreName(dto.getStoreName());
         applicationForm.setIdCardNumber(dto.getIdCardNumber());
         applicationForm.setLicenseNo(dto.getLicenseNo());
         applicationForm.setLegalPerson(dto.getLegalPerson());

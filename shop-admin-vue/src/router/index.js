@@ -2,12 +2,15 @@
  * 文件：index.js
  * 用途：页面路由及导航策略配置。
  * 维护注意：history模式依赖生产代理回退与正确base；前端路由保护不替代API授权，每次受保护导航用/auth/me核验身份；403/404/验证故障页不渲染私有数据，本地角色不能作为授权。
+ * 双登录入口：/login 商家登录（含开店向导），/admin/login 平台超管私密入口；会话失效按 currentPerspective 回到对应入口。
+ * /apply 为公开开店向导，未登录可访问，不得把审核接口或商户私有数据挂到该页。
  */
 import { createRouter, createWebHistory } from 'vue-router'
 import AdminLayout from '../views/layout/AdminLayout.vue'
 import Login from '../views/login/Login.vue'
+import AdminLogin from '../views/login/AdminLogin.vue'
 import request from '../api/request'
-import { createSessionGuard } from '../utils/authSession.mjs'
+import { createSessionGuard, loginPathFor } from '../utils/authSession.mjs'
 
 const statusPage = () => import('../views/errors/StatusPage.vue')
 const routes = [
@@ -21,6 +24,18 @@ const routes = [
     path: '/login',
     name: 'Login',
     component: Login,
+    meta: { public: true }
+  },
+  {
+    path: '/admin/login',
+    name: 'AdminLogin',
+    component: AdminLogin,
+    meta: { public: true }
+  },
+  {
+    path: '/apply',
+    name: 'Apply',
+    component: () => import('../views/onboarding/ApplyWizard.vue'),
     meta: { public: true }
   },
   {
@@ -39,6 +54,12 @@ const routes = [
         name: 'AdminMerchants',
         component: () => import('../views/admin/Merchants.vue'),
         meta: { title: '入驻商户治理', role: 'SUPERADMIN' }
+      },
+      {
+        path: '/admin/onboarding',
+        name: 'AdminOnboarding',
+        component: () => import('../views/admin/Onboarding.vue'),
+        meta: { title: '开店申请审核', role: 'SUPERADMIN' }
       },
       {
         path: '/admin/categories',
@@ -103,6 +124,7 @@ const router = createRouter({
 
 router.beforeEach(createSessionGuard({
   storage: localStorage,
+  loginPath: () => loginPathFor(import.meta.env.BASE_URL, localStorage.getItem('currentPerspective')),
   loadProfile: async () => (await request.get('/auth/me', { skipAuthRedirect: true, skipErrorToast: true })).data
 }))
 

@@ -1,8 +1,11 @@
 <!--
 文件：Navbar.vue
 用途：商城公共导航与页面跳转入口。
-维护注意：前端入口不代表用户已授权；新增查单或支付链接时不能把领取凭证或私人联系方式放入可公开传播内容。
-T30：搜索类型映射为后端 goodsType（全站不传，实物=1，数字权益=2），关键词只在 route.query.q 中传递；页面不得宣传未开通的支付或免照开店能力。
+维护注意：
+1. 频道导航是前台唯一分类入口，频道定义统一放在 utils/publicCatalog.mjs 的 CATALOG_CHANNELS，禁止在模板里再写死一套类目链接。
+2. 点击频道必须改变 route.query.channel 并触发列表重新加载；选中态以当前 query 为准，不能只靠静态样式。
+3. 平台管理中心不对外暴露，前台不得保留任何入口；商家工作台地址由 VITE_MERCHANT_PORTAL_URL 配置，开发期默认指向管理端 3001 端口。
+4. 搜索类型映射为后端 goodsType（全站不传，实物=1，数字权益=2），关键词只在 route.query.q 中传递；页面不得宣传未开通的支付或免照开店能力。
 -->
 <template>
   <header class="bg-white border-b border-slate-200 sticky top-0 z-50">
@@ -19,12 +22,8 @@ T30：搜索类型映射为后端 goodsType（全站不传，实物=1，数字�
             <span>⚡ 免登录极速查单</span>
           </router-link>
           <span class="text-slate-300">|</span>
-          <a href="/console/" target="_blank" class="hover:text-orange-600 flex items-center space-x-1">
+          <a :href="merchantPortalUrl" target="_blank" rel="noopener" class="hover:text-orange-600 flex items-center space-x-1">
             <span>🏪 商家工作台</span>
-          </a>
-          <span class="text-slate-300">|</span>
-          <a href="/console/" target="_blank" class="hover:text-orange-600 flex items-center space-x-1">
-            <span>👑 平台管理中心</span>
           </a>
         </div>
       </div>
@@ -96,36 +95,49 @@ T30：搜索类型映射为后端 goodsType（全站不传，实物=1，数字�
       </div>
     </div>
 
-    <!-- 主导航条 -->
+    <!-- 频道导航条（全站唯一分类入口） -->
     <div class="bg-slate-900 text-white text-sm font-semibold">
-      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center">
-        <!-- 分类导航悬浮按钮 -->
-        <div class="bg-orange-600 text-white px-5 py-2.5 flex items-center space-x-2 font-bold cursor-pointer">
-          <span>☰ 全部商品分类</span>
-        </div>
-
-        <!-- 栏目导航链接 -->
-        <nav class="flex items-center space-x-8 px-6 text-slate-200 text-xs font-medium">
-          <router-link to="/" class="hover:text-white py-2.5 transition text-white font-bold">全品类大厅</router-link>
-          <router-link to="/" class="hover:text-white py-2.5 transition">源头厂货直发</router-link>
-          <router-link to="/" class="hover:text-white py-2.5 transition">3C数码潮品</router-link>
-          <router-link to="/" class="hover:text-white py-2.5 transition">服装鞋包百货</router-link>
-          <router-link to="/" class="hover:text-white py-2.5 transition">食品生鲜批发</router-link>
-          <router-link to="/" class="hover:text-white py-2.5 transition text-amber-300 font-semibold">⚡ 虚拟数字权益</router-link>
-        </nav>
+      <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center overflow-x-auto">
+        <router-link
+          v-for="channel in channels"
+          :key="channel.key"
+          :to="channelRoute(channel)"
+          class="px-4 py-2.5 text-xs font-bold whitespace-nowrap transition-colors border-b-2"
+          :class="activeChannelKey === channel.key
+            ? 'bg-orange-600 text-white border-orange-400'
+            : 'text-slate-200 hover:text-white hover:bg-slate-800 border-transparent'"
+        >
+          <span v-if="channel.key === 'virtual'">⚡ </span>{{ channel.label }}
+        </router-link>
       </div>
     </div>
   </header>
 </template>
 
 <script setup>
-import { ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { GOODS_TYPE_BY_SEARCH } from '../utils/publicCatalog.mjs'
+import { computed, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { CATALOG_CHANNELS, GOODS_TYPE_BY_SEARCH, readCatalogQuery } from '../utils/publicCatalog.mjs'
+import { resolveMerchantPortalUrl } from '../utils/portalLinks.mjs'
 
+const route = useRoute()
 const router = useRouter()
 const searchType = ref('all')
 const keyword = ref('')
+
+const channels = CATALOG_CHANNELS
+const activeChannelKey = computed(() => readCatalogQuery(route.query).channelKey)
+
+/** 全品类不带 channel 参数，保持首页地址干净；其余频道用 channel 键值生成可分享链接。 */
+const channelRoute = (channel) => ({ path: '/', query: channel.key === 'all' ? {} : { channel: channel.key } })
+
+/** 商家工作台：开发期直接指向管理端端口，生产由部署注入同源私密路径。 */
+const merchantPortalUrl = resolveMerchantPortalUrl({
+  configured: import.meta.env.VITE_MERCHANT_PORTAL_URL,
+  dev: import.meta.env.DEV,
+  protocol: window.location.protocol,
+  hostname: window.location.hostname
+})
 
 const handleSearch = () => {
   const query = {}

@@ -34,6 +34,12 @@ public class MerchantOnboardingAudit {
 
     private String reason;
 
+    /** 驳回/补件原因码快照，与申请单 rejectCode 同字典。 */
+    private String rejectCode;
+
+    /** 动作完成后的审核阶段 NONE/PRIMARY/SECONDARY/PASSED。 */
+    private String reviewStage;
+
     private String materialHash;
 
     private LocalDateTime createdAt;

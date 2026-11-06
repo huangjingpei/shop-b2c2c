@@ -136,7 +136,7 @@ T29：点击代付前调用 pre-lock 预占库存，ownerToken 存 sessionStorag
                   <div class="text-[11px] text-white/90 leading-snug">{{ adBanner.adSubTitle }}</div>
                 </div>
                 <a 
-                  :href="adBanner.targetUrl || '/console/'" 
+                  :href="adBanner.targetUrl || '/'" 
                   class="ml-2 px-3 py-1.5 rounded-lg bg-white text-orange-600 text-xs font-bold hover:bg-orange-50"
                 >
                   去开店 ›

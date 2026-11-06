@@ -1,41 +1,18 @@
 <!--
 文件：Home.vue
-用途：商城类目及商品浏览入口。
-维护注意：类型3须标识人工交付，不能宣传自动发卡；列表可见性和库存仅作展示，交易资格与最终库存由后端裁决。
-T30：读取 route.query 的 q/goodsType 并随类目一起请求后端，业务失败显示错误与重试而不是空列表；递增序号作废迟到响应；
-页面不得再宣传未开通的支付直结、资金存管、免照开店或自动秒发能力。
+用途：商城频道与商品浏览入口。
+维护注意：
+1. 分类入口已收敛为顶部导航一处，本页不再重复渲染类目树或类目标签行；频道选中态与筛选由 route.query.channel 驱动。
+2. 类型3须标识人工交付，不能宣传自动发卡；列表可见性和库存仅作展示，交易资格与最终库存由后端裁决。
+3. 读取 route.query 的 q/channel/goodsType 并随频道条件请求后端，业务失败显示错误与重试而不是空列表；递增序号作废迟到响应。
+4. 页面不得再宣传未开通的支付直结、资金存管、免照开店或自动秒发能力。
 -->
 <template>
   <div class="space-y-6">
-    <!-- 首页黄金三角区 (左侧品类树 + 中间轮播Banner + 右侧快捷入驻/查单卡片) -->
+    <!-- 首页黄金区 (中间轮播Banner + 右侧快捷入驻/查单卡片) -->
     <div class="grid grid-cols-1 lg:grid-cols-12 gap-5">
-      <!-- 左侧全品类树导航 (宽 3 列) -->
-      <div class="hidden lg:block lg:col-span-3 bg-white rounded-xl border border-slate-200/80 p-3 shadow-sm">
-        <div class="text-xs font-bold text-slate-800 uppercase px-3 py-2 border-b border-slate-100 flex items-center justify-between">
-          <span>行业主营类目</span>
-          <span class="text-[10px] text-orange-600 font-normal">全网严选源头</span>
-        </div>
-        <div class="divide-y divide-slate-50 mt-1">
-          <button
-            v-for="cat in categories"
-            :key="cat.id"
-            @click="selectCategory(cat.id)"
-            class="w-full text-left px-3 py-2.5 rounded-lg text-xs font-medium transition flex items-center justify-between group"
-            :class="selectedCat === cat.id ? 'bg-orange-50 text-orange-700 font-bold' : 'text-slate-700 hover:bg-slate-50'"
-          >
-            <div class="flex items-center space-x-2">
-              <span class="text-base group-hover:scale-110 transition-transform">
-                {{ getCatIcon(cat.name) }}
-              </span>
-              <span>{{ cat.name }}</span>
-            </div>
-            <span class="text-slate-300 group-hover:text-orange-500 transition-colors">›</span>
-          </button>
-        </div>
-      </div>
-
-      <!-- 中间品牌营销大横幅 (宽 6 列) -->
-      <div class="lg:col-span-6 bg-gradient-to-tr from-slate-900 via-indigo-950 to-slate-900 rounded-xl text-white p-6 md:p-8 flex flex-col justify-between shadow-sm relative overflow-hidden">
+      <!-- 中间品牌营销大横幅 (宽 8 列) -->
+      <div class="lg:col-span-8 bg-gradient-to-tr from-slate-900 via-indigo-950 to-slate-900 rounded-xl text-white p-6 md:p-8 flex flex-col justify-between shadow-sm relative overflow-hidden">
         <div class="relative z-10 max-w-lg">
           <span class="inline-block px-2.5 py-0.5 rounded-full bg-orange-500/20 text-orange-400 text-xs font-bold uppercase tracking-wider mb-3 border border-orange-500/30">
             全品类货源直采中心
@@ -49,9 +26,9 @@ T30：读取 route.query 的 q/goodsType 并随类目一起请求后端，业务
           </p>
 
           <div class="mt-6 flex flex-wrap gap-2.5">
-            <button @click="selectCategory(null)" class="px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs transition shadow-sm">
+            <router-link to="/" class="px-4 py-2 rounded-lg bg-orange-500 hover:bg-orange-600 text-white font-bold text-xs transition shadow-sm">
               浏览全品类货源
-            </button>
+            </router-link>
             <router-link to="/quick-query" class="px-4 py-2 rounded-lg bg-white/10 hover:bg-white/20 text-white font-semibold text-xs backdrop-blur-sm transition">
               免登录提取卡密/查单 ›
             </router-link>
@@ -62,8 +39,8 @@ T30：读取 route.query 的 q/goodsType 并随类目一起请求后端，业务
         <div class="absolute -right-10 -bottom-10 w-64 h-64 bg-orange-500/10 rounded-full blur-3xl pointer-events-none"></div>
       </div>
 
-      <!-- 右侧快捷工作台与保障 (宽 3 列) -->
-      <div class="lg:col-span-3 flex flex-col gap-4">
+      <!-- 右侧快捷工作台与保障 (宽 4 列) -->
+      <div class="lg:col-span-4 flex flex-col gap-4">
         <!-- 商家与买家快捷卡片 -->
         <div class="bg-white rounded-xl border border-slate-200/80 p-5 shadow-sm flex flex-col justify-between flex-1">
           <div>
@@ -79,8 +56,9 @@ T30：读取 route.query 的 q/goodsType 并随类目一起请求后端，业务
 
             <div class="space-y-2 mt-4">
               <a
-                href="/console/"
+                :href="merchantPortalUrl"
                 target="_blank"
+                rel="noopener"
                 class="w-full block text-center py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition shadow-sm"
               >
                 进入商家工作台 / 开店
@@ -156,31 +134,22 @@ T30：读取 route.query 的 q/goodsType 并随类目一起请求后端，业务
       </div>
     </div>
 
-    <!-- 商品瀑布流控制台 (分类标签选择 + 数量展示) -->
+    <!-- 当前频道说明条：分类入口只在顶部导航，这里只展示当前筛选结果与返回入口 -->
     <div class="bg-white rounded-xl border border-slate-200/80 p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
-      <div class="flex items-center space-x-2 overflow-x-auto">
-        <button
-          @click="selectCategory(null)"
-          class="px-4 py-1.5 rounded-lg text-xs font-bold transition shrink-0"
-          :class="selectedCat === null ? 'bg-orange-500 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'"
-        >
-          全部商品 ({{ products.length }})
-        </button>
-        <button
-          v-for="cat in categories"
-          :key="cat.id"
-          @click="selectCategory(cat.id)"
-          class="px-4 py-1.5 rounded-lg text-xs font-bold transition shrink-0"
-          :class="selectedCat === cat.id ? 'bg-orange-500 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'"
-        >
-          {{ cat.name }}
-        </button>
+      <div class="flex items-center flex-wrap gap-x-3 gap-y-1">
+        <span class="text-sm font-black text-slate-900">{{ activeChannel.channelLabel }}</span>
+        <span class="text-xs text-slate-400">
+          <span v-if="searchKeyword">关键词“<strong class="text-slate-800">{{ searchKeyword }}</strong>” · </span>
+          共 <strong class="text-slate-800">{{ products.length }}</strong> 款货源
+        </span>
       </div>
-
-      <div class="text-xs text-slate-400 text-right">
-        <span v-if="searchKeyword">关键词“<strong class="text-slate-800">{{ searchKeyword }}</strong>” · </span>
-        共找到 <strong class="text-slate-800">{{ products.length }}</strong> 款精选货源
-      </div>
+      <router-link
+        v-if="hasFilter"
+        to="/"
+        class="text-xs font-bold text-orange-600 hover:text-orange-700 shrink-0"
+      >
+        返回全品类大厅 ›
+      </router-link>
     </div>
 
     <!-- 16688 经典高密度商品卡片流 (严格遵循 16688 UI/UX) -->
@@ -200,14 +169,18 @@ T30：读取 route.query 的 q/goodsType 并随类目一起请求后端，业务
     <div v-else-if="products.length === 0" class="text-center py-20 bg-white rounded-xl border border-slate-200">
       <div class="text-3xl mb-2">📦</div>
       <p class="text-slate-500 text-sm font-medium">
-        {{ searchKeyword ? `未找到与“${searchKeyword}”匹配的货源，请更换关键词` : '该类目下暂无在售商品' }}
+        {{ searchKeyword
+          ? `未找到与“${searchKeyword}”匹配的货源，请更换关键词`
+          : activeChannel.channelKey === 'all'
+            ? '当前暂无在售商品，请稍后再来'
+            : `“${activeChannel.channelLabel}”频道下暂无在售商品` }}
       </p>
       <button
-        v-if="searchKeyword"
-        @click="clearSearch"
+        v-if="hasFilter"
+        @click="clearFilters"
         class="mt-3 px-4 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition"
       >
-        清除搜索
+        查看全品类
       </button>
     </div>
     <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
@@ -288,58 +261,48 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { loadPublicCatalog, readCatalogQuery } from '../utils/publicCatalog.mjs'
+import { resolveMerchantPortalUrl } from '../utils/portalLinks.mjs'
 
 const route = useRoute()
 const router = useRouter()
+const merchantPortalUrl = resolveMerchantPortalUrl({
+  configured: import.meta.env.VITE_MERCHANT_PORTAL_URL,
+  dev: import.meta.env.DEV,
+  protocol: window.location.protocol,
+  hostname: window.location.hostname
+})
 const loading = ref(false)
 const errorMsg = ref('')
-const selectedCat = ref(null)
-const categories = ref([])
 const products = ref([])
-const searchKeyword = computed(() => readCatalogQuery(route.query).keyword)
+const catalogQuery = computed(() => readCatalogQuery(route.query))
+const activeChannel = catalogQuery
+const searchKeyword = computed(() => catalogQuery.value.keyword)
+const hasFilter = computed(() => catalogQuery.value.channelKey !== 'all' || !!catalogQuery.value.keyword)
 let requestSequence = 0
-
-const getCatIcon = (name) => {
-  if (name.includes('数码') || name.includes('硬件')) return '💻'
-  if (name.includes('服装') || name.includes('鞋包')) return '👕'
-  if (name.includes('日用') || name.includes('百货')) return '🏠'
-  if (name.includes('食品') || name.includes('零食')) return '🍪'
-  if (name.includes('权益') || name.includes('卡券')) return '⚡'
-  return '📦'
-}
 
 const loadData = async () => {
   const sequence = ++requestSequence
   loading.value = true
   errorMsg.value = ''
-  const query = readCatalogQuery(route.query)
+  const query = catalogQuery.value
   const result = await loadPublicCatalog(
-    { categoryId: selectedCat.value, keyword: query.keyword, goodsType: query.goodsType },
+    { categoryIds: query.categoryIds, keyword: query.keyword, goodsType: query.goodsType },
     (url, config) => axios.get(url, config)
   )
-  // T30：条件已变化时丢弃迟到响应，避免旧请求覆盖新搜索的错误态或列表。
+  // 条件已变化时丢弃迟到响应，避免旧请求覆盖新频道/新搜索的错误态或列表。
   if (sequence !== requestSequence) return
-  categories.value = result.categories
   products.value = result.products
   errorMsg.value = result.error
   loading.value = false
 }
 
-const selectCategory = (catId) => {
-  selectedCat.value = catId
-  loadData()
-}
-
-const clearSearch = () => {
-  selectedCat.value = null
+const clearFilters = () => {
   router.push({ path: '/' })
 }
 
 watch(
-  () => [route.query.q, route.query.goodsType],
+  () => [route.query.q, route.query.channel, route.query.goodsType],
   () => {
-    // 导航栏新搜索是全站范围，先回到全类目再请求。
-    selectedCat.value = null
     loadData()
   }
 )

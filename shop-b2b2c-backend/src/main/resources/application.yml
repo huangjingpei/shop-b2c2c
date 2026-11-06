@@ -37,6 +37,12 @@ spring:
       encoding: UTF-8
       continue-on-error: false # SQL执行失败立即阻断启动，防止缺表/缺索引却报告就绪
 
+  # 商家入驻上传：证件照片≤5MB、实人认证视频≤20MB；请求级兜底 25MB/28MB，文件落私有目录，不进公开静态目录
+  servlet:
+    multipart:
+      max-file-size: ${SHOP_MULTIPART_MAX_FILE_SIZE:25MB}
+      max-request-size: ${SHOP_MULTIPART_MAX_REQUEST_SIZE:28MB}
+
   data:
     redis:
       host: ${REDIS_HOST:localhost}
@@ -134,6 +140,17 @@ springdoc:
 
 # T34 服务费账本与结算
 shop:
+  # 登录图形验证码（单实例内存存储）：开发默认不强制，生产必须把 required 设为 true；
+  # 无论开关是否打开，只要前端提交了 captchaId/captchaCode 就会校验并一次性失效。
+  auth:
+    captcha-required: ${SHOP_AUTH_CAPTCHA_REQUIRED:false}
+    captcha-ttl-seconds: ${SHOP_AUTH_CAPTCHA_TTL_SECONDS:300}
+  # 商家入驻证件：私有目录由后端鉴权读取，必须纳入备份且不得暴露为静态资源；
+  # 目录相对于进程工作目录，生产建议使用绝对路径并限制为应用账号可读写。
+  onboarding:
+    attachment-dir: ${SHOP_ONBOARDING_ATTACHMENT_DIR:./data/onboarding-attachments}
+    max-attachment-bytes: ${SHOP_ONBOARDING_MAX_ATTACHMENT_BYTES:5242880}
+    max-video-bytes: ${SHOP_ONBOARDING_MAX_VIDEO_BYTES:20971520}
   settlement:
     # 服务费价税分离税率；未显式配置时按0.06计算，不允许默认0税额
     fee-tax-rate: ${SETTLEMENT_FEE_TAX_RATE:0.06}

@@ -1,7 +1,9 @@
 /*
  * 文件：AuthController.java
- * 用途：管理员和商家登录、退出、当前身份及存活探针接口。
- * 维护注意：密码用BCrypt验证；登录先限制连接IP，再校验参数并限制账号，Redis故障拒绝登录；退出撤销服务端会话；me校验账号状态和授权变化；health仅为存活响应，不代表数据库和Redis就绪。Q13-A：员工仅返回店名/编码/公告/Logo/电话白名单，身份证默认脱敏。T36：限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For，直连客户端自报头不生效。
+ * 用途：管理员和商家登录、退出、当前身份、图形验证码及存活探针接口。
+ * 维护注意：密码用BCrypt验证；登录先限制连接IP，再校验参数、图形验证码并限制账号，Redis故障拒绝登录；退出撤销服务端会话；me校验账号状态和授权变化；health仅为存活响应，不代表数据库和Redis就绪。Q13-A：员工仅返回店名/编码/公告/Logo/电话白名单，身份证默认脱敏。T36：限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For，直连客户端自报头不生效。
+ * 登录入口 scope：MERCHANT 仅允许商家角色，ADMIN 仅允许 SUPERADMIN；商家页与超管私密页共用同一密码校验，但不得互相登录。
+ * 验证码：captchaId/captchaCode 由前端两个登录页提交；shop.auth.captcha-required 打开时缺失即拒绝，关闭时仍校验显式提交的验证码（一次性失效）。
  */
 package com.shop.b2b2c.controller;
 
@@ -34,11 +36,22 @@ public class AuthController {
     private final MerchantStoreMapper storeMapper;
     private final com.shop.b2b2c.service.AuthLoginLimiter loginLimiter;
     private final com.shop.b2b2c.service.ClientIpResolver ipResolver;
+    private final com.shop.b2b2c.service.CaptchaService captchaService;
 
     @Data
     public static class LoginDTO {
         private String username;
         private String password;
+        /** MERCHANT/ADMIN；为空时保持历史兼容行为（不限制入口角色）。 */
+        private String scope;
+        private String captchaId;
+        private String captchaCode;
+    }
+
+    @Operation(summary = "获取登录图形验证码（一次性，单实例内存存储）")
+    @GetMapping("/captcha")
+    public R<Map<String, String>> captcha() {
+        return R.ok(captchaService.issue());
     }
 
     @Operation(summary = "应用存活探针（不检查依赖；部署就绪使用/api/v1/auth/ready）")
@@ -59,6 +72,7 @@ public class AuthController {
                 || dto.getPassword() == null || dto.getPassword().isEmpty() || dto.getPassword().length() > 1024) {
             throw new BusinessException(400, "请填写有效的账号和密码");
         }
+        captchaService.verify(dto.getCaptchaId(), dto.getCaptchaCode());
         String username = dto.getUsername().strip();
         loginLimiter.checkAccount(username);
         SysUser user = userMapper.findByUsername(username)
@@ -74,6 +88,14 @@ public class AuthController {
 
         if (user.getRoleCode() == null || !com.shop.b2b2c.service.AuthSessionService.ROLES.contains(user.getRoleCode())) {
             throw new BusinessException(403, "账号角色不受支持");
+        }
+        // 商家入口与超管私密入口互斥：有密码也不能跨入口登录。
+        String scope = dto.getScope() == null ? "" : dto.getScope().trim().toUpperCase();
+        if ("ADMIN".equals(scope) && !"SUPERADMIN".equals(user.getRoleCode())) {
+            throw new BusinessException(403, "该登录入口仅限平台管理员");
+        }
+        if ("MERCHANT".equals(scope) && "SUPERADMIN".equals(user.getRoleCode())) {
+            throw new BusinessException(403, "该登录入口仅限入驻商家，请使用平台管理入口");
         }
         // 每次登录独立令牌：角色和店铺快照不能被同账号后续登录覆盖。
         StpUtil.login(user.getId());

@@ -401,16 +401,16 @@ class Sprint1SecurityIntegrationTest {
     @Test
     void publicCatalogCombinesFiltersAndPreservesStableDisplayOrder() throws Exception {
         publicCatalogFixture();
-        assertEquals(List.of(1L, 2L, 3L, 4L, 7L), products.listPublicProducts(null, null, null, null).getData().stream()
+        assertEquals(List.of(1L, 2L, 3L, 4L, 7L), products.listPublicProducts(null, null, null, null, null).getData().stream()
                 .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
-        assertEquals(List.of(3L, 4L), products.listPublicProducts(2L, null, null, null).getData().stream()
+        assertEquals(List.of(3L, 4L), products.listPublicProducts(2L, null, null, null, null).getData().stream()
                 .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
-        assertEquals(List.of(1L, 3L, 7L), products.listPublicProducts(null, 1L, null, null).getData().stream()
+        assertEquals(List.of(1L, 3L, 7L), products.listPublicProducts(null, 1L, null, null, null).getData().stream()
                 .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
-        assertEquals(List.of(3L), products.listPublicProducts(2L, 1L, null, null).getData().stream()
+        assertEquals(List.of(3L), products.listPublicProducts(2L, 1L, null, null, null).getData().stream()
                 .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
-        assertTrue(products.listPublicProducts(999L, 1L, null, null).getData().isEmpty());
-        assertTrue(products.listPublicProducts(null, 999L, null, null).getData().isEmpty());
+        assertTrue(products.listPublicProducts(999L, 1L, null, null, null).getData().isEmpty());
+        assertTrue(products.listPublicProducts(null, 999L, null, null, null).getData().isEmpty());
         jdbc.update("UPDATE product SET sort_order=-1 WHERE id=3");
         mvc.perform(get("/api/v1/public/products").param("merchantId", "1"))
                 .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data[0].id").value("3"))
@@ -428,15 +428,15 @@ class Sprint1SecurityIntegrationTest {
     void publicCatalogSearchesTitleCaseInsensitivelyAndFiltersGoodsType() throws Exception {
         publicCatalogFixture();
         jdbc.update("UPDATE product SET goods_type=2 WHERE id=4");
-        assertEquals(List.of(4L), products.listPublicProducts(null, null, "CATALOG-4", null).getData().stream()
+        assertEquals(List.of(4L), products.listPublicProducts(null, null, "CATALOG-4", null, null).getData().stream()
                 .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
-        assertTrue(products.listPublicProducts(null, null, "catalog", 1).getData().stream()
+        assertTrue(products.listPublicProducts(null, null, "catalog", 1, null).getData().stream()
                 .map(com.shop.b2b2c.dto.PublicProductView::getId).noneMatch(id -> id == 4L));
-        assertEquals(List.of(4L), products.listPublicProducts(null, null, "catalog", 2).getData().stream()
+        assertEquals(List.of(4L), products.listPublicProducts(null, null, "catalog", 2, null).getData().stream()
                 .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
-        assertTrue(products.listPublicProducts(null, null, "not-exists", null).getData().isEmpty());
+        assertTrue(products.listPublicProducts(null, null, "not-exists", null, null).getData().isEmpty());
         // 下架/非营业店铺的商品即使关键词命中也不得返回
-        assertTrue(products.listPublicProducts(null, null, "catalog-5", null).getData().isEmpty());
+        assertTrue(products.listPublicProducts(null, null, "catalog-5", null, null).getData().isEmpty());
         mvc.perform(get("/api/v1/public/products").param("goodsType", "4"))
                 .andExpect(jsonPath("$.code").value(400));
         mvc.perform(get("/api/v1/public/products").param("q", "x".repeat(51)))
@@ -448,7 +448,7 @@ class Sprint1SecurityIntegrationTest {
         publicCatalogFixture();
         jdbc.update("INSERT INTO product_sku(id,merchant_id,product_id,sku_code,spec_data,price,stock_quantity) VALUES(10,1,1,'LARGE','{}',10,2147483647)");
         jdbc.update("INSERT INTO product_sku(id,merchant_id,product_id,sku_code,spec_data,price,stock_quantity) VALUES(11,2,1,'BAD-OWNER','{}',10,500)");
-        var rows = products.listPublicProducts(1L, 1L, null, null).getData();
+        var rows = products.listPublicProducts(1L, 1L, null, null, null).getData();
         assertEquals(List.of(1L, 7L), rows.stream().map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
         assertEquals(Long.valueOf(2147483648L), rows.get(0).getTotalStock());
         assertEquals(Long.valueOf(0L), rows.get(1).getTotalStock());
@@ -458,12 +458,12 @@ class Sprint1SecurityIntegrationTest {
     void publicCatalogOmitsAllNonOperatingStoreStates() {
         for (int status : new int[] {0, 2, 3, 99}) {
             jdbc.update("UPDATE merchant_store SET status=? WHERE id=1", status);
-            assertTrue(products.listPublicProducts(null, 1L, null, null).getData().isEmpty());
-            assertEquals(List.of(2L), products.listPublicProducts(null, null, null, null).getData().stream()
+            assertTrue(products.listPublicProducts(null, 1L, null, null, null).getData().isEmpty());
+            assertEquals(List.of(2L), products.listPublicProducts(null, null, null, null, null).getData().stream()
                     .map(com.shop.b2b2c.dto.PublicProductView::getId).toList());
         }
         jdbc.update("UPDATE merchant_store SET status=1 WHERE id=1");
-        assertEquals(1, products.listPublicProducts(1L, 1L, null, null).getData().size());
+        assertEquals(1, products.listPublicProducts(1L, 1L, null, null, null).getData().size());
     }
 
     @Test
@@ -2438,7 +2438,7 @@ class Sprint1SecurityIntegrationTest {
         jdbc.update("UPDATE product SET status=1 WHERE id=1");
         jdbc.update("UPDATE merchant_store SET status=3 WHERE id=1");
         assertThrows(BusinessException.class, () -> products.getProductDetail(1L));
-        assertTrue(products.listPublicProducts(null, 1L, null, null).getData().isEmpty());
+        assertTrue(products.listPublicProducts(null, 1L, null, null, null).getData().isEmpty());
         assertThrows(BusinessException.class, () -> payments.preLockInventory("blocked"));
         OrderController.CheckoutDTO checkout = new OrderController.CheckoutDTO();
         checkout.setProductId(1L); checkout.setSkuId(1L); checkout.setQuantity(1); checkout.setBuyerContact("buyer");

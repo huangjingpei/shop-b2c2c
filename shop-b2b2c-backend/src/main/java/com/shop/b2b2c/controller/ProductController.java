@@ -1,7 +1,7 @@
 /*
  * 文件：ProductController.java
  * 用途：商品浏览、商家发布、本店卡密去重导入、成功批次记录、卡密脱敏列表、按SKU限量查看明文及导出审计入口。公开列表复用固定白名单单SQL组合查询。
- * 维护注意：自动卡密发布初始库存为0；导入委托独立READ_COMMITTED资产事务，禁止在入口加外层事务。先验证租户再去重增库存，公开详情验证交易资格和店铺白名单，类型3不走卡密导入。T15：列表绝不解密正文，只返回指纹尾号派生的脱敏标识；明文查看/导出必须在接口层要求店长或超管，导出需显式 confirm 并由服务层写审计。脱敏仅是接口返回，不等于加密或密钥轮换。
+ * 维护注意：自动卡密发布初始库存为0；导入委托独立READ_COMMITTED资产事务，禁止在入口加外层事务。先验证租户再去重增库存，公开详情验证交易资格和店铺白名单，类型3不走卡密导入。T15：列表绝不解密正文，只返回指纹尾号派生的脱敏标识；明文查看/导出必须在接口层要求店长或超管，导出需显式 confirm 并由服务层写审计。脱敏仅是接口返回，不等于加密或密钥轮换。公开列表的 categoryIds 用于频道聚合多个类目，只接受逗号分隔正整数且最多10个，与 categoryId 互斥。
  */
 package com.shop.b2b2c.controller;
 
@@ -69,15 +69,44 @@ public class ProductController {
             @RequestParam(required = false) Long categoryId,
             @RequestParam(required = false) Long merchantId,
             @RequestParam(required = false) String q,
-            @RequestParam(required = false) Integer goodsType) {
+            @RequestParam(required = false) Integer goodsType,
+            @RequestParam(required = false) String categoryIds) {
         if ((categoryId != null && categoryId <= 0) || (merchantId != null && merchantId <= 0)) {
             throw new BusinessException(400, "分类或店铺编号不正确");
         }
         if (goodsType != null && goodsType != 1 && goodsType != 2 && goodsType != 3) {
             throw new BusinessException(400, "商品类型只能是 1、2 或 3");
         }
+        List<Long> categoryList = normalizeCategoryIds(categoryIds);
+        if (categoryList != null && categoryId != null) {
+            throw new BusinessException(400, "categoryId 与 categoryIds 不能同时使用");
+        }
         String keyword = normalizeKeyword(q);
-        return R.ok(productMapper.findPublicProducts(categoryId, merchantId, keyword, goodsType));
+        return R.ok(productMapper.findPublicProducts(categoryId, categoryList, merchantId, keyword, goodsType));
+    }
+
+    /**
+     * 频道多类目：前端一个频道可能覆盖多个类目（如“3C数码潮品”=数码周边+3C数码）。
+     * 只接受逗号分隔的正整数，最多10个；空串视为未筛选，避免把全表扫描或非法值转嫁给数据库。
+     */
+    private static List<Long> normalizeCategoryIds(String raw) {
+        if (raw == null) return null;
+        String trimmed = raw.trim();
+        if (trimmed.isEmpty()) return null;
+        String[] parts = trimmed.split(",");
+        if (parts.length > 10) throw new BusinessException(400, "categoryIds 最多10个分类");
+        List<Long> ids = new java.util.ArrayList<>(parts.length);
+        for (String part : parts) {
+            Long id;
+            try {
+                id = Long.valueOf(part.trim());
+            } catch (NumberFormatException e) {
+                throw new BusinessException(400, "categoryIds 必须是逗号分隔的正整数");
+            }
+            if (id <= 0) throw new BusinessException(400, "categoryIds 必须是逗号分隔的正整数");
+            ids.add(id);
+        }
+        return ids;
     }
 
     /** T30：关键词去首尾空白；空串视为未搜索，超过 50 字符直接 400，避免把模糊匹配负担转嫁给数据库。 */
