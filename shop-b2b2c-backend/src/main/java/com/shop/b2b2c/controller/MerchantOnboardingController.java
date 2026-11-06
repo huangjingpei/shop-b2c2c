@@ -7,6 +7,7 @@
  * 3. 审核动作只允许 START_REVIEW/APPROVE/REJECT/SUPPLEMENT_REQUIRED；APPROVE 可只传审核意见，系统自动生成店铺编码、登录账号（申请手机号）与初始密码，显式开店参数仍优先；REJECT/SUPPLEMENT 必须携带原因。
  * 4. 申请创建与材料修改不允许直接设置 merchantId 或 APPROVED 状态，开店只能由审核通过触发。
  * 5. 证件附件只能经本控制器超管鉴权下载（inline），不得暴露私有目录路径；审核通过响应中的 initialPassword 只出现一次，前端不得留存。
+ * 6. O3 协议同意记录只读查询（append-only 证据链）：返回签署人、版本、哈希、IP/UA 与签署时间，不提供修改/删除入口。
  */
 package com.shop.b2b2c.controller;
 
@@ -39,6 +40,7 @@ public class MerchantOnboardingController {
 
     private final MerchantOnboardingService onboardingService;
     private final com.shop.b2b2c.service.OnboardingAttachmentService attachmentService;
+    private final com.shop.b2b2c.service.MerchantAgreementService agreementService;
 
     @Data
     public static class ReviewDTO {
@@ -77,6 +79,13 @@ public class MerchantOnboardingController {
     @GetMapping("/api/v1/admin/merchant-onboarding/applications/{id}/audits")
     public R<List<MerchantOnboardingAudit>> audits(@PathVariable Long id) {
         return R.ok(onboardingService.audits(id));
+    }
+
+    @Operation(summary = "【超管】协议同意记录（append-only 证据链）")
+    @GetMapping("/api/v1/admin/merchant-onboarding/applications/{id}/consents")
+    public R<List<com.shop.b2b2c.entity.MerchantAgreementConsent>> consents(@PathVariable Long id) {
+        onboardingService.findById(id);
+        return R.ok(agreementService.listConsents(id));
     }
 
     @Operation(summary = "【超管】证件附件列表（不含文件本体）")

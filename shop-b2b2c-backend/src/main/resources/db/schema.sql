@@ -836,6 +836,42 @@ CREATE TABLE IF NOT EXISTS `merchant_onboarding_audit` (
   CONSTRAINT fk_onboarding_audit_app FOREIGN KEY (`application_id`) REFERENCES `merchant_onboarding_application` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商家入驻审核审计';
 
+-- 29-2. 协议版本（O3）：管理端发布/下线；同类型仅一条 PUBLISHED 为当前生效
+CREATE TABLE IF NOT EXISTS `merchant_agreement_version` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `protocol_type` VARCHAR(32) NOT NULL COMMENT 'MERCHANT_SERVICE/PRIVACY/SETTLEMENT/PROHIBITED_GOODS',
+  `version` VARCHAR(32) NOT NULL COMMENT '语义化版本或发布日期序号',
+  `title` VARCHAR(128) NOT NULL,
+  `content_hash` VARCHAR(128) NOT NULL COMMENT '协议正文 SHA-256；同意时校验，版本不一致拒绝',
+  `content_url` VARCHAR(512) NULL COMMENT '协议快照地址；不得指向可变页面',
+  `effective_from` DATETIME NOT NULL,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'DRAFT' COMMENT 'DRAFT/PUBLISHED/OFFLINE',
+  `created_by` BIGINT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_agreement_type_version` (`protocol_type`, `version`),
+  KEY `idx_agreement_type_status` (`protocol_type`, `status`, `effective_from`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='协议版本';
+
+-- 29-3. 协议同意记录（O3）：append-only，禁止更新/删除；开通闸门的签署证据
+CREATE TABLE IF NOT EXISTS `merchant_agreement_consent` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `application_id` BIGINT UNSIGNED NULL COMMENT '申请人维度签署；开通后补签填店铺维度',
+  `merchant_id` BIGINT UNSIGNED NULL,
+  `protocol_type` VARCHAR(32) NOT NULL,
+  `protocol_version` VARCHAR(32) NOT NULL,
+  `content_hash` VARCHAR(128) NOT NULL COMMENT '签署时协议正文哈希快照',
+  `subject_name` VARCHAR(128) NOT NULL COMMENT '签署主体（实名主体/店铺名）',
+  `consent_method` VARCHAR(16) NOT NULL DEFAULT 'CHECKBOX' COMMENT 'CHECKBOX/ESIGN；阶段一固定 CHECKBOX',
+  `ip` VARCHAR(64) NULL,
+  `user_agent` VARCHAR(255) NULL,
+  `agreed_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_consent_app_protocol` (`application_id`, `protocol_type`, `protocol_version`),
+  KEY `idx_consent_merchant` (`merchant_id`, `agreed_at`),
+  CONSTRAINT fk_consent_app FOREIGN KEY (`application_id`) REFERENCES `merchant_onboarding_application` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='协议同意记录（append-only，禁止更新/删除）';
+
 -- 30. 商家收款账户（T39 阶段一）：登记 + 人工核验；户名必须等于实名主体，不写渠道进件假值
 CREATE TABLE IF NOT EXISTS `merchant_settlement_account` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

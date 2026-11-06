@@ -7,6 +7,8 @@
 3. 个人店实人认证阶段一为人工审核：展示后端下发的随机数字口令，要求本人用前置摄像头录制朗读视频（MP4/WEBM）后上传，不得提示“可代认证”。
 4. 审核通过后的初始密码只在结果页展示一次，不得写入 localStorage 或复制到日志；页面刷新后后端不再返回。
 5. 上传请求必须带 X-Onboarding-Token；证件只上传到平台私有目录，页面不提供公开文件地址。
+6. O3 协议：提交审核前必须阅读并勾选同意全部当前生效协议（GET /onboarding/protocols），逐项 POST /consents 由服务端校验版本与哈希；
+   协议版本更新（409）时自动刷新协议列表并清空勾选，用户须重新阅读后再次同意；平台未发布协议时不阻断提交。
 -->
 <template>
   <div class="apply-page">
@@ -112,7 +114,7 @@
 
         <div class="panel-actions">
           <el-button @click="step = 0" :disabled="locked">上一步</el-button>
-          <el-button type="primary" @click="step = 2" :disabled="!draft.token">下一步</el-button>
+          <el-button type="primary" @click="goSubmitStep" :disabled="!draft.token">下一步</el-button>
         </div>
       </section>
 
@@ -130,11 +132,23 @@
           <el-descriptions-item label="已上传">{{ uploadedKindsText }}</el-descriptions-item>
           <el-descriptions-item label="查询凭证">{{ maskToken(draft.token) }}</el-descriptions-item>
         </el-descriptions>
+        <div v-if="protocols.length" class="protocol-box">
+          <div class="protocol-title">开店协议签署</div>
+          <p class="protocol-tip">请逐一点击阅读并勾选同意以下协议；协议内容如有更新，需重新阅读后再次同意。签署记录（版本、哈希、IP、时间）由平台留存作为证据。</p>
+          <div v-for="item in protocols" :key="item.protocolType" class="protocol-item">
+            <el-checkbox v-model="consentChecks[item.protocolType]">
+              我已阅读并同意
+              <a v-if="item.contentUrl" :href="item.contentUrl" target="_blank" rel="noopener" class="protocol-link">《{{ item.title }}》（{{ item.version }}）</a>
+              <span v-else>《{{ item.title }}》（{{ item.version }}）</span>
+            </el-checkbox>
+          </div>
+        </div>
         <el-alert class="submit-alert" type="info" :closable="false"
           title="请妥善保存查询凭证：查询进度需要“凭证 + 手机号”，凭证只在创建申请时显示一次。" />
         <div class="panel-actions">
           <el-button @click="step = 1">上一步</el-button>
-          <el-button type="primary" :loading="submitting" @click="submitApplication">提交审核</el-button>
+          <el-button type="primary" :loading="submitting" :disabled="protocols.length > 0 && !allConsented"
+            @click="submitApplication">提交审核</el-button>
         </div>
       </section>
 
@@ -164,7 +178,7 @@
           <div class="password-tip">登录账号为申请手机号 {{ form.contactPhone }}；请首次登录后立即修改密码。</div>
         </div>
 
-        <el-descriptions v-if="statusView.status === 'APPROVED'" :column="2" border class="result-desc">
+        <el-descriptions v-if="statusView.status === 'APPROVED' || statusView.status === 'OPENED'" :column="2" border class="result-desc">
           <el-descriptions-item label="店铺名称">{{ statusView.storeName }}</el-descriptions-item>
           <el-descriptions-item label="登录账号">{{ form.contactPhone }}</el-descriptions-item>
           <el-descriptions-item label="审核时间">{{ formatDate(statusView.reviewedAt) }}</el-descriptions-item>
@@ -198,6 +212,8 @@ const submitting = ref(false)
 const locked = ref(false)
 const attachments = ref([])
 const statusView = ref({})
+const protocols = ref([])
+const consentChecks = reactive({})
 
 const form = reactive({
   subjectType: 'INDIVIDUAL',
@@ -231,6 +247,7 @@ const statusText = computed(() => ({
   SUBMITTED: '已提交，等待审核',
   REVIEWING: '人工审核中',
   APPROVED: '审核通过，店铺已开通',
+  OPENED: '店铺已开通',
   REJECTED: '已驳回',
   SUPPLEMENT_REQUIRED: '需要补件',
   WITHDRAWN: '已撤回'
@@ -238,6 +255,7 @@ const statusText = computed(() => ({
 
 const statusTagType = computed(() => ({
   APPROVED: 'success',
+  OPENED: 'success',
   REJECTED: 'danger',
   SUPPLEMENT_REQUIRED: 'warning',
   REVIEWING: 'warning'
@@ -245,6 +263,9 @@ const statusTagType = computed(() => ({
 
 // 驳回为终态，只能重新发起申请；只有草稿/补件可修改材料并重新提交（与后端状态机一致）。
 const canResubmit = computed(() => ['SUPPLEMENT_REQUIRED', 'DRAFT'].includes(statusView.value.status))
+
+// 全部当前生效协议均已勾选才能提交；未发布协议时后端视为签署齐全，不阻断。
+const allConsented = computed(() => protocols.value.every(item => !!consentChecks[item.protocolType]))
 
 const uploadedKindsText = computed(() => {
   const labels = {
@@ -388,6 +409,37 @@ async function uploadFile(options, kind) {
   }
 }
 
+async function loadProtocols() {
+  try {
+    const res = await request.get('/onboarding/protocols')
+    protocols.value = res.data || []
+  } catch {
+    protocols.value = []
+  }
+}
+
+async function goSubmitStep() {
+  await loadProtocols()
+  step.value = 2
+}
+
+/** 逐项签署当前生效协议；任一失败（如 409 版本更新）刷新协议并清空勾选，强制重新阅读。 */
+async function submitConsents() {
+  try {
+    for (const item of protocols.value) {
+      await request.post(`/onboarding/applications/${draft.id}/consents`, {
+        protocolType: item.protocolType,
+        version: item.version,
+        contentHash: item.contentHash
+      }, { headers: { 'X-Onboarding-Token': draft.token } })
+    }
+  } catch (error) {
+    await loadProtocols()
+    protocols.value.forEach(item => { consentChecks[item.protocolType] = false })
+    throw error
+  }
+}
+
 async function submitApplication() {
   const required = ['ID_CARD_FRONT', 'ID_CARD_BACK']
   if (isBusiness.value) required.push('LICENSE')
@@ -397,8 +449,15 @@ async function submitApplication() {
     step.value = 1
     return
   }
+  if (protocols.value.length && !allConsented.value) {
+    ElMessage.warning('请先阅读并勾选同意全部开店协议')
+    return
+  }
   submitting.value = true
   try {
+    if (protocols.value.length) {
+      await submitConsents()
+    }
     const res = await request.post(`/onboarding/applications/${draft.id}/submit`, null, {
       headers: { 'X-Onboarding-Token': draft.token }
     })
@@ -424,7 +483,7 @@ async function refreshStatus() {
     if (['DRAFT', 'SUPPLEMENT_REQUIRED'].includes(res.data.status)) {
       locked.value = false
     }
-    if (res.data.status === 'APPROVED') {
+    if (res.data.status === 'APPROVED' || res.data.status === 'OPENED') {
       locked.value = true
     }
   } catch {
@@ -480,7 +539,7 @@ onMounted(async () => {
   loadDraft()
   if (!draft.token) return
   await refreshStatus()
-  if (['SUBMITTED', 'REVIEWING', 'APPROVED', 'WITHDRAWN', 'REJECTED'].includes(statusView.value.status)) {
+  if (['SUBMITTED', 'REVIEWING', 'APPROVED', 'OPENED', 'WITHDRAWN', 'REJECTED'].includes(statusView.value.status)) {
     locked.value = true
     step.value = 3
   } else {
@@ -675,6 +734,40 @@ onMounted(async () => {
 .tip {
   color: #92400e !important;
   font-size: 12px !important;
+}
+
+.protocol-box {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fafbfc;
+}
+
+.protocol-title {
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.protocol-tip {
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.7;
+  margin: 0 0 10px;
+}
+
+.protocol-item {
+  padding: 4px 0;
+}
+
+.protocol-link {
+  color: #ff5000;
+  text-decoration: none;
+}
+
+.protocol-link:hover {
+  text-decoration: underline;
 }
 
 .submit-alert {
