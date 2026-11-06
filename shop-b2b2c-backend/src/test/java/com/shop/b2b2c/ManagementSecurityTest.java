@@ -9,6 +9,8 @@ import com.shop.b2b2c.common.*;
 import com.shop.b2b2c.controller.MerchantController;
 import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.mapper.*;
+import com.shop.b2b2c.service.MerchantOnboardingService;
+import com.shop.b2b2c.service.MerchantSettlementAccountService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -26,7 +28,8 @@ class ManagementSecurityTest {
         var store = mock(MerchantStoreMapper.class);
         var account = mock(MerchantPaymentAccountMapper.class);
         var user = mock(SysUserMapper.class);
-        var controller = new MerchantController(store, account, user);
+        var controller = new MerchantController(store, account, user,
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class));
         assertThrows(BusinessException.class, () -> controller.updateCommission(1L, value == null ? null : new BigDecimal(value)));
         verifyNoInteractions(store, account, user);
     }
@@ -37,7 +40,8 @@ class ManagementSecurityTest {
         var store = mock(MerchantStoreMapper.class);
         var entity = new MerchantStore();
         when(store.findById(1L)).thenReturn(java.util.Optional.of(entity));
-        new MerchantController(store, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class))
+        new MerchantController(store, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class))
                 .updateCommission(1L, new BigDecimal(value));
         verify(store).updateCommissionOnly(1L, new BigDecimal(value));
         verify(store, never()).save(any());
@@ -67,7 +71,8 @@ class ManagementSecurityTest {
     @Test
     void invalidConfigurationsNeverReadOrWriteTheStore() {
         var stores = mock(MerchantStoreMapper.class);
-        var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class));
+        var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class));
         var fee = new MerchantController.ServiceFeeConfigDTO(); fee.setMonthlyFee(new BigDecimal("-1"));
         assertThrows(BusinessException.class, () -> controller.updateServiceFee(1L, fee));
         fee.setMonthlyFee(BigDecimal.ZERO); fee.setFeeStatus("invented");
@@ -85,7 +90,8 @@ class ManagementSecurityTest {
     void missingMerchantCredentialsCannotCreateDefaultPasswordAccount() {
         var stores = mock(MerchantStoreMapper.class);
         var users = mock(SysUserMapper.class);
-        var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), users);
+        var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), users,
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class));
         var dto = new MerchantController.CreateMerchantDTO();
         dto.setStoreCode("test"); dto.setStoreName("test"); dto.setOwnerName("owner");
         dto.setIdCardNumber("identity"); dto.setContactPhone("phone"); dto.setAdminUsername("admin");
@@ -116,7 +122,8 @@ class ManagementSecurityTest {
         when(stores.save(any())).thenAnswer(invocation -> {
             MerchantStore store = invocation.getArgument(0); store.setId(5L); return store;
         });
-        var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), users);
+        var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), users,
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class));
         var dto = new MerchantController.CreateMerchantDTO();
         dto.setStoreCode("test"); dto.setStoreName("test"); dto.setOwnerName("owner");
         dto.setIdCardNumber("identity"); dto.setContactPhone("phone"); dto.setAdminUsername("admin");

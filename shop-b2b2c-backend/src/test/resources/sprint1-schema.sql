@@ -47,6 +47,13 @@ CREATE TABLE IF NOT EXISTS `merchant_payment_account` (
   `bank_name` VARCHAR(128) NOT NULL COMMENT '开户银行支行名称',
   `apply_status` VARCHAR(32) NOT NULL DEFAULT 'PASSED' COMMENT '进件状态: AUDITING-审核中, PASSED-已开通, REJECTED-已驳回',
   `reject_reason` VARCHAR(255) DEFAULT NULL COMMENT '驳回原因',
+  `settlement_account_id` BIGINT NULL COMMENT 'T39 阶段二预留',
+  `binding_status` VARCHAR(24) NOT NULL DEFAULT 'UNBOUND',
+  `channel_merchant_id` VARCHAR(64) NULL,
+  `bound_at` TIMESTAMP NULL,
+  `effective_from` TIMESTAMP NULL,
+  `effective_to` TIMESTAMP NULL,
+  `raw_result` TEXT NULL,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
 );
@@ -594,5 +601,42 @@ CREATE TABLE IF NOT EXISTS merchant_onboarding_audit (
   operator_id BIGINT NULL,
   reason VARCHAR(512) NULL,
   material_hash VARCHAR(128) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 30. 商家收款账户（T39 阶段一）
+CREATE TABLE IF NOT EXISTS merchant_settlement_account (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT NOT NULL,
+  account_type VARCHAR(16) NOT NULL,
+  holder_name VARCHAR(128) NOT NULL,
+  bank_name VARCHAR(128) NULL,
+  bank_branch VARCHAR(128) NULL,
+  account_no_cipher VARCHAR(512) NOT NULL,
+  account_fingerprint VARCHAR(128) NOT NULL,
+  account_no_masked VARCHAR(64) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  reject_reason VARCHAR(512) NULL,
+  is_default TINYINT NOT NULL DEFAULT 0,
+  effective_from TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  effective_to TIMESTAMP NULL,
+  verified_at TIMESTAMP NULL,
+  verified_by BIGINT NULL,
+  version INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_settlement_account_fingerprint UNIQUE (merchant_id, account_fingerprint)
+);
+
+-- 31. 收款账户审核审计（T39）
+CREATE TABLE IF NOT EXISTS merchant_settlement_account_audit (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  account_id BIGINT NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  action VARCHAR(32) NOT NULL,
+  account_type VARCHAR(16) NULL,
+  account_fingerprint VARCHAR(128) NULL,
+  operator_id BIGINT NULL,
+  reason VARCHAR(512) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

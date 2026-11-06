@@ -9,6 +9,8 @@ import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.controller.MerchantController;
 import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.mapper.*;
+import com.shop.b2b2c.service.MerchantOnboardingService;
+import com.shop.b2b2c.service.MerchantSettlementAccountService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -20,7 +22,8 @@ import static org.mockito.Mockito.*;
 
 class ServiceFeeConfigTest {
     private MerchantController controller(MerchantStoreMapper stores) {
-        return new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class));
+        return new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class));
     }
 
     @ParameterizedTest

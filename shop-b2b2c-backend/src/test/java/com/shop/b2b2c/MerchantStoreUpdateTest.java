@@ -11,6 +11,8 @@ import com.shop.b2b2c.common.SecurityUtils;
 import com.shop.b2b2c.controller.MerchantController;
 import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.mapper.*;
+import com.shop.b2b2c.service.MerchantOnboardingService;
+import com.shop.b2b2c.service.MerchantSettlementAccountService;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
@@ -20,7 +22,8 @@ import static org.mockito.Mockito.*;
 
 class MerchantStoreUpdateTest {
     private MerchantController controller(MerchantStoreMapper stores) {
-        return new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class));
+        return new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class));
     }
 
     @Test

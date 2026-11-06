@@ -1,11 +1,10 @@
 /*
  * 文件：MerchantController.java
  * 用途：平台商户配置及商家本店资料接口。
- * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效；进件账户仍为本地模拟，不能将PASSED视为真实渠道开通。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。Q13-A：员工资料读取走白名单，身份证/银行卡默认脱敏，资料修改仅店长。
+ * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效。T39 起超管开通也必须走入驻申请与审核留痕，阶段一收款账户写入 merchant_settlement_account，不再生成 SUB+时间戳/PASSED 假进件值。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。Q13-A：员工资料读取走白名单，身份证/银行卡默认脱敏，资料修改仅店长。
  */
 package com.shop.b2b2c.controller;
 
-import cn.dev33.satoken.secure.BCrypt;
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.PiiMasking;
 import com.shop.b2b2c.common.R;
@@ -13,12 +12,14 @@ import com.shop.b2b2c.common.ManagementGuards;
 import com.shop.b2b2c.common.ServiceFeeStatus;
 import java.util.Set;
 import com.shop.b2b2c.common.SecurityUtils;
+import com.shop.b2b2c.entity.MerchantOnboardingApplication;
 import com.shop.b2b2c.entity.MerchantPaymentAccount;
 import com.shop.b2b2c.entity.MerchantStore;
-import com.shop.b2b2c.entity.SysUser;
 import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import com.shop.b2b2c.mapper.SysUserMapper;
+import com.shop.b2b2c.service.MerchantOnboardingService;
+import com.shop.b2b2c.service.MerchantSettlementAccountService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.Data;
@@ -39,6 +40,8 @@ public class MerchantController {
     private final MerchantStoreMapper storeMapper;
     private final MerchantPaymentAccountMapper paymentAccountMapper;
     private final SysUserMapper userMapper;
+    private final MerchantOnboardingService onboardingService;
+    private final MerchantSettlementAccountService settlementAccountService;
 
     // ==========================================
     // 平台超级管理员视角 API (/api/v1/admin/merchants)
@@ -63,12 +66,14 @@ public class MerchantController {
         private BigDecimal commissionRate;
         private String adminUsername;
         private String adminPassword;
+        private String licenseNo;
+        private String legalPerson;
         private String bankAccountName;
         private String bankAccountNumber;
         private String bankName;
     }
 
-    @Operation(summary = "【超管】审批/新增入驻商户并开通二级分账账户")
+    @Operation(summary = "【超管】应急开通商户（仍走入驻申请与审核留痕）")
     @PostMapping("/api/v1/admin/merchants")
     @Transactional(rollbackFor = Exception.class)
     public R<MerchantStore> createMerchant(@RequestBody CreateMerchantDTO dto) {
@@ -85,7 +90,14 @@ public class MerchantController {
         if (dto.getMerchantType() != null && (dto.getMerchantType() < 1 || dto.getMerchantType() > 3)) {
             throw new BusinessException(400, "商户类型不合法");
         }
-        if (dto.getCommissionRate() != null) ManagementGuards.percent(dto.getCommissionRate());
+        if (dto.getCommissionRate() != null) {
+            ManagementGuards.percent(dto.getCommissionRate());
+            if (dto.getCommissionRate().compareTo(new BigDecimal("10")) > 0) {
+                throw new BusinessException(400, "佣金费率不得超过 10%");
+            }
+        }
+        ManagementGuards.text(dto.getLicenseNo(), 64, false);
+        ManagementGuards.text(dto.getLegalPerson(), 64, false);
         ManagementGuards.text(dto.getBankAccountName(), 64, false);
         ManagementGuards.text(dto.getBankName(), 128, false);
         ManagementGuards.text(dto.getBankAccountNumber(), 64, dto.getBankAccountNumber() != null);
@@ -96,43 +108,46 @@ public class MerchantController {
             throw new BusinessException("登录账号已存在");
         }
 
-        // 1. 创建店铺
-        MerchantStore store = new MerchantStore();
-        store.setStoreCode(dto.getStoreCode());
-        store.setStoreName(dto.getStoreName());
-        store.setMerchantType(dto.getMerchantType() != null ? dto.getMerchantType() : 1);
-        store.setOwnerName(dto.getOwnerName());
-        store.setIdCardNumber(dto.getIdCardNumber());
-        store.setContactPhone(dto.getContactPhone());
-        store.setStatus(1); // 正常营业
-        store.setCommissionRate(dto.getCommissionRate() != null ? dto.getCommissionRate() : new BigDecimal("3.00"));
-        store = storeMapper.save(store);
+        Long operatorId = SecurityUtils.getCurrentUserId();
+        MerchantOnboardingService.ApplicationForm applicationForm = new MerchantOnboardingService.ApplicationForm();
+        boolean enterprise = dto.getMerchantType() != null && dto.getMerchantType() == 3;
+        applicationForm.setSubjectType(enterprise
+                ? MerchantOnboardingService.SUBJECT_ENTERPRISE : MerchantOnboardingService.SUBJECT_INDIVIDUAL);
+        applicationForm.setSubjectName(dto.getOwnerName());
+        applicationForm.setIdCardNumber(dto.getIdCardNumber());
+        applicationForm.setLicenseNo(dto.getLicenseNo());
+        applicationForm.setLegalPerson(dto.getLegalPerson());
+        applicationForm.setContactPhone(dto.getContactPhone());
 
-        // 2. 创建商户主管理员账号 (使用 Sa-Token BCrypt 加密)
-        SysUser user = new SysUser();
-        user.setMerchantId(store.getId());
-        user.setUsername(dto.getAdminUsername());
-        String rawPwd = dto.getAdminPassword();
-        user.setPassword(BCrypt.hashpw(rawPwd));
-        user.setRealName(dto.getOwnerName() + " (店长)");
-        user.setRoleCode("MERCHANT_ADMIN");
-        user.setIsActive(true);
-        userMapper.save(user);
+        // 应急开通也必须先形成申请、审核审计与通过记录，不再直接“建店即营业”。
+        MerchantOnboardingApplication application = onboardingService.create(applicationForm, operatorId);
+        onboardingService.submit(application.getId(), operatorId);
 
-        // 3. 创建二级商户收付通进件记录
+        MerchantOnboardingService.Provisioning provisioning = new MerchantOnboardingService.Provisioning();
+        provisioning.setStoreCode(dto.getStoreCode());
+        provisioning.setStoreName(dto.getStoreName());
+        provisioning.setMerchantType(dto.getMerchantType());
+        provisioning.setAdminUsername(dto.getAdminUsername());
+        provisioning.setAdminPassword(dto.getAdminPassword());
+        provisioning.setRateBps(dto.getCommissionRate() == null ? 300
+                : dto.getCommissionRate().multiply(new BigDecimal("100")).intValue());
+        onboardingService.approve(application.getId(), provisioning, "超管应急开通，保留完整审核留痕", operatorId);
+
+        MerchantStore store = storeMapper.findById(application.getMerchantId())
+                .orElseThrow(() -> new BusinessException(500, "店铺创建后未找到"));
+
+        // 阶段一只登记商家自有收款账户，不生成 sub_mchid、不写 PASSED 假进件值。
         if (dto.getBankAccountNumber() != null) {
-            MerchantPaymentAccount account = new MerchantPaymentAccount();
-            account.setMerchantId(store.getId());
-            account.setChannel("WECHAT");
-            account.setSubMchid("SUB" + System.currentTimeMillis());
-            account.setBankAccountName(dto.getBankAccountName() != null ? dto.getBankAccountName() : dto.getOwnerName());
-            account.setBankAccountNumber(dto.getBankAccountNumber());
-            account.setBankName(dto.getBankName() != null ? dto.getBankName() : "中国工商银行");
-            account.setApplyStatus("PASSED");
-            paymentAccountMapper.save(account);
+            MerchantSettlementAccountService.RegisterForm accountForm = new MerchantSettlementAccountService.RegisterForm();
+            accountForm.setAccountType("BANK");
+            accountForm.setHolderName(dto.getBankAccountName() != null ? dto.getBankAccountName() : dto.getOwnerName());
+            accountForm.setBankName(dto.getBankName());
+            accountForm.setAccountNo(dto.getBankAccountNumber());
+            accountForm.setDefault(true);
+            settlementAccountService.register(store.getId(), accountForm, operatorId);
         }
 
-        // 响应体默认脱敏，数据库仍保存进件原件；超管需要原文时走受控审批流程，不复用列表接口。
+        // 响应体默认脱敏；店铺主表只保存脱敏值，证件原文仅以密文留在入驻申请中。
         store.setIdCardNumber(PiiMasking.idCard(store.getIdCardNumber()));
         return R.ok("商户开通成功", store);
     }
@@ -221,6 +236,8 @@ public class MerchantController {
                 paymentAccount.setBankAccountNumber(PiiMasking.bankAccount(paymentAccount.getBankAccountNumber()));
             }
             map.put("paymentAccount", paymentAccount);
+            // T39 阶段一收款账户：只返回脱敏值，店长可见，员工不返回。
+            map.put("settlementAccounts", settlementAccountService.maskedList(merchantId));
         } else {
             // Q13-A：员工只能读取展示资料，不返回经营者姓名、身份证、费率与收款账户。
             map.put("store", AuthController.staffStoreView(store));

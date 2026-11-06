@@ -48,8 +48,15 @@ CREATE TABLE IF NOT EXISTS `merchant_payment_account` (
   `bank_account_name` VARCHAR(64) NOT NULL COMMENT '结算开户人姓名',
   `bank_account_number` VARCHAR(64) NOT NULL COMMENT '结算银行卡号',
   `bank_name` VARCHAR(128) NOT NULL COMMENT '开户银行支行名称',
-  `apply_status` VARCHAR(32) NOT NULL DEFAULT 'PASSED' COMMENT '进件状态: AUDITING-审核中, PASSED-已开通, REJECTED-已驳回',
+  `apply_status` VARCHAR(32) NOT NULL DEFAULT 'PASSED' COMMENT '进件状态: AUDITING-审核中, PASSED-已开通, REJECTED-已驳回；阶段一不写假PASSED',
   `reject_reason` VARCHAR(255) DEFAULT NULL COMMENT '驳回原因',
+  `settlement_account_id` BIGINT UNSIGNED NULL COMMENT 'T39 阶段二预留：关联 merchant_settlement_account，阶段一先不写值',
+  `binding_status` VARCHAR(24) NOT NULL DEFAULT 'UNBOUND' COMMENT 'T39 阶段二预留：UNBOUND/BINDING/BOUND/REJECTED/DISABLED，只允许渠道真实结果推进',
+  `channel_merchant_id` VARCHAR(64) NULL COMMENT 'T39 阶段二预留：渠道真实商户号返回值',
+  `bound_at` DATETIME NULL COMMENT 'T39 阶段二预留：绑定完成时间',
+  `effective_from` DATETIME NULL COMMENT 'T39 阶段二预留：绑定生效时间',
+  `effective_to` DATETIME NULL COMMENT 'T39 阶段二预留：绑定失效时间',
+  `raw_result` TEXT NULL COMMENT 'T39 阶段二预留：渠道原始返回，供人工核对',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_merchant_channel` (`merchant_id`, `channel`),
@@ -719,3 +726,46 @@ CREATE TABLE IF NOT EXISTS `merchant_onboarding_audit` (
   KEY `idx_onboarding_audit_app` (`application_id`, `created_at`),
   CONSTRAINT fk_onboarding_audit_app FOREIGN KEY (`application_id`) REFERENCES `merchant_onboarding_application` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商家入驻审核审计';
+
+-- 30. 商家收款账户（T39 阶段一）：登记 + 人工核验；户名必须等于实名主体，不写渠道进件假值
+CREATE TABLE IF NOT EXISTS `merchant_settlement_account` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `account_type` VARCHAR(16) NOT NULL COMMENT 'BANK/WECHAT/ALIPAY',
+  `holder_name` VARCHAR(128) NOT NULL COMMENT '开户名/收款人，硬校验必须等于实名主体',
+  `bank_name` VARCHAR(128) NULL,
+  `bank_branch` VARCHAR(128) NULL,
+  `account_no_cipher` VARCHAR(512) NOT NULL COMMENT '银行卡号/收款账号密文',
+  `account_fingerprint` VARCHAR(128) NOT NULL COMMENT '账号去重指纹',
+  `account_no_masked` VARCHAR(64) NOT NULL COMMENT '后四位脱敏展示值',
+  `status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/VERIFIED/REJECTED/DISABLED',
+  `reject_reason` VARCHAR(512) NULL,
+  `is_default` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '同一商户默认账户唯一',
+  `effective_from` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `effective_to` DATETIME NULL COMMENT '换账户时停用旧账户，不原地覆盖历史',
+  `verified_at` DATETIME NULL,
+  `verified_by` BIGINT NULL,
+  `version` INT NOT NULL DEFAULT 0,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_settlement_account_fingerprint` (`merchant_id`, `account_fingerprint`),
+  KEY `idx_settlement_merchant_status` (`merchant_id`, `status`, `is_default`),
+  CONSTRAINT fk_settlement_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商家收款账户';
+
+-- 31. 收款账户审核审计（T39）：登记/核验/驳回/停用留痕，不复制账号明文
+CREATE TABLE IF NOT EXISTS `merchant_settlement_account_audit` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `account_id` BIGINT UNSIGNED NOT NULL,
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `action` VARCHAR(32) NOT NULL COMMENT 'REGISTER/VERIFY/REJECT/DISABLE',
+  `account_type` VARCHAR(16) NULL,
+  `account_fingerprint` VARCHAR(128) NULL,
+  `operator_id` BIGINT NULL,
+  `reason` VARCHAR(512) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_settlement_audit_account` (`account_id`, `created_at`),
+  CONSTRAINT fk_settlement_audit_account FOREIGN KEY (`account_id`) REFERENCES `merchant_settlement_account` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='收款账户审核审计';
