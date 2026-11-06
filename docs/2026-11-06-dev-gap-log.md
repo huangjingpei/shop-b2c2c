@@ -45,8 +45,9 @@
 - 发现位置：[TradeOrderMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/TradeOrderMapper.java)、T24 前端分页（S4）。
 - 现象：T11 已补 `created_at + id` tiebreaker 与组合索引，但接口仍是 page/pageSize offset 分页，未改为游标 keyset。
 - 不属本卡范围的原因：T24 属 S4，keyset 会改变前后端契约，本轮不得提前修改前端或接口形状。
-- 建议归属：T24；实施时后端新增 `created_at + id` 游标参数，前端同步传 cursor，并保留旧分页兼容期。
-- 影响面：同秒订单翻页重复/漏行已消除；深页 offset 性能仍随数据量增长，十万级订单需 T24 解决。
+- 建议归属：T24；实施时后端新增 `created_at + id` 游标参数，前端同步传 cursor。按用户 2026-11-06 开发期无兼容负担口径，T24 未保留旧 page/pageSize 兼容期。
+- 关闭情况：T24 已随 S4 实现（提交 0710544），商家/平台订单接口改 `cursor + pageSize + status`，返回 `page.total/hasMore/nextCursor`，非法参数 400；前端同批改为游标追加。未运行测试，待人工验证。
+- 影响面：同秒订单翻页重复/漏行已消除；深页 offset 性能问题随 T24 移除。
 
 ## G06 T07 重复支付已留痕，退款执行归属 T33
 
