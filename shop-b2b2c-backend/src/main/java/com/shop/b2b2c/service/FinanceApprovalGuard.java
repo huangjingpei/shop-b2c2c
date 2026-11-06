@@ -6,11 +6,14 @@
  *  2. 关闭时允许同人操作，但调用方必须把返回的 SAME_OPERATOR 持久化到业务记录，并已由本类写 WARN 审计日志。
  *  3. 打开时未选复核人返回 428（明确缺参，不再是泛化 403），同人返回 403；不同人始终放行并返回 DUAL_APPROVAL。
  *  4. 调用方必须通过 resolveReviewer 取得实际落库的复核人：未传时按操作人处理（仅开关关闭时允许）。
- *  5. 不得在业务层自建第二套“单管理员”判断；所有财务复核都必须经过本类。
+ *  5. 不同人的复核人必须在服务端校验：启用状态 + SUPERADMIN；禁用、非超管、不存在一律 403，不能只信任前端候选列表。
+ *  6. 不得在业务层自建第二套“单管理员”判断；所有财务复核都必须经过本类。
  */
 package com.shop.b2b2c.service;
 
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.entity.SysUser;
+import com.shop.b2b2c.mapper.SysUserMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -26,10 +29,13 @@ public class FinanceApprovalGuard {
     public static final int CODE_MISSING_REVIEWER = 428;
 
     private final boolean dualApprovalRequired;
+    private final SysUserMapper userMapper;
 
     public FinanceApprovalGuard(
-            @Value("${shop.finance.dual-approval-required:false}") boolean dualApprovalRequired) {
+            @Value("${shop.finance.dual-approval-required:false}") boolean dualApprovalRequired,
+            SysUserMapper userMapper) {
         this.dualApprovalRequired = dualApprovalRequired;
+        this.userMapper = userMapper;
     }
 
     public boolean isDualApprovalRequired() {
@@ -72,8 +78,17 @@ public class FinanceApprovalGuard {
     /**
      * 返回应持久化到业务记录的复核人：未传时按操作人处理。
      * 严格模式下未传会在 verify 阶段被拒绝，因此本方法只用于校验通过后的落库。
+     * 不同人复核必须在此完成账号资质校验，避免前端候选列表被绕过。
      */
     public Long resolveReviewer(Long operatorId, Long reviewerId) {
-        return reviewerId == null ? operatorId : reviewerId;
+        if (reviewerId == null || reviewerId.equals(operatorId)) {
+            return reviewerId == null ? operatorId : reviewerId;
+        }
+        SysUser reviewer = userMapper.selectById(reviewerId);
+        if (reviewer == null || !Boolean.TRUE.equals(reviewer.getIsActive())
+                || !"SUPERADMIN".equals(reviewer.getRoleCode())) {
+            throw new BusinessException(403, "复核人必须是启用状态的超级管理员");
+        }
+        return reviewerId;
     }
 }

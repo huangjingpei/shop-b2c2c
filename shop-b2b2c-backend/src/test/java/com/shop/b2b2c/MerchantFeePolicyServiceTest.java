@@ -14,9 +14,11 @@ import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.entity.MerchantFeeAudit;
 import com.shop.b2b2c.entity.MerchantFeePolicy;
 import com.shop.b2b2c.entity.MerchantStore;
+import com.shop.b2b2c.entity.SysUser;
 import com.shop.b2b2c.mapper.MerchantFeeAuditMapper;
 import com.shop.b2b2c.mapper.MerchantFeePolicyMapper;
 import com.shop.b2b2c.mapper.MerchantStoreMapper;
+import com.shop.b2b2c.mapper.SysUserMapper;
 import com.shop.b2b2c.service.FinanceApprovalGuard;
 import com.shop.b2b2c.service.MerchantFeePolicyService;
 import org.junit.jupiter.api.Test;
@@ -44,12 +46,23 @@ class MerchantFeePolicyServiceTest {
     private final MerchantFeePolicyMapper policyMapper = mock(MerchantFeePolicyMapper.class);
     private final MerchantFeeAuditMapper auditMapper = mock(MerchantFeeAuditMapper.class);
     private final MerchantStoreMapper storeMapper = mock(MerchantStoreMapper.class);
+    private final SysUserMapper userMapper = mock(SysUserMapper.class);
     private final MerchantFeePolicyService service = new MerchantFeePolicyService(
-            policyMapper, auditMapper, storeMapper, new FinanceApprovalGuard(false));
+            policyMapper, auditMapper, storeMapper, guard(false));
+
+    /** 用例里的复核人 8L 统一按“启用 SUPERADMIN”返回，聚焦费率规则本身。 */
+    private FinanceApprovalGuard guard(boolean dualApprovalRequired) {
+        SysUser reviewer = new SysUser();
+        reviewer.setId(8L);
+        reviewer.setRoleCode("SUPERADMIN");
+        reviewer.setIsActive(true);
+        when(userMapper.selectById(8L)).thenReturn(reviewer);
+        return new FinanceApprovalGuard(dualApprovalRequired, userMapper);
+    }
 
     private MerchantFeePolicyService strictService() {
         return new MerchantFeePolicyService(policyMapper, auditMapper, storeMapper,
-                new FinanceApprovalGuard(true));
+                guard(true));
     }
 
     @Test

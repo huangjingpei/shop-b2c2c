@@ -254,7 +254,7 @@
 - 约束：**单管理员模式仅在开发/试点可用，生产禁止**；生产必须至少配置两个具备财务权限的后台账号，否则确认类操作无法完成。
 - 验证：代理未运行编译/测试，状态为已实现·待人工验证。
 
-## G31 生产双人复核的后台操作入口缺少复核人选择（已实现·待人工验证）
+## G31 生产双人复核的后台操作入口缺少复核人选择（已实现·待人工验证，含复核人资质校验）
 
 - 发现位置：`shop-admin-vue/src/views/admin/Merchants.vue` 佣金弹窗与开店弹窗、[MerchantController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantController.java) 的 `updateCommission`/`createMerchant`、[MerchantOnboardingController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantOnboardingController.java) 的 `rateConfirmedBy`、管理端结算确认与充值确认页面。
 - 原现象：后台佣金弹窗只传 `rate` 与内联默认原因，不带复核人；生产开关打开时服务端按“未传复核人=操作人”判定为同人并 403。入驻审核、结算确认、充值确认也没有前端复核人入口。
@@ -263,4 +263,5 @@
   - 调价、开店初始费率、结算批次确认、充值确认的请求均支持显式复核人；服务层统一经 `resolveReviewer` 落实际复核人，`prepared_by` / `requested_by` 仍独立记录申请人。
   - 新增 `GET /api/v1/admin/settlement/reviewers`，仅 SUPERADMIN 可读，返回开关状态与“启用且非当前账号”的 SUPERADMIN 候选；新增管理端“财务复核与结算”页（充值确认、结算批次确认），商户管理页调价/开店弹窗补复核人下拉。
   - 前端 `shop-admin-vue/src/utils/financeReview.mjs` 统一校验：严格模式必填、禁止选择自己、拒绝未知账号；无第二账号时明确提示“需至少分配两个财务账号”，不抛通用错误。前端只做提示与参数传递，后端权限模型不变。
-- 验证：代理未运行 mvn/编译/测试/构建，也未连库；新增 shared 用例 `shared/financeReview.test.mjs`、后端 `MerchantFeePolicyServiceTest`/`MerchantSettlementServiceTest`/`MerchantOnboardingServiceTest` 同步，状态为**已实现·待人工验证**。
+  - 复核人资质校验（已实现）：`FinanceApprovalGuard.resolveReviewer` 对“操作人以外的复核人”统一查询 `sys_user`，必须为启用状态的 SUPERADMIN；禁用超管、非 SUPERADMIN、不存在的账号一律 403，四个财务入口自动共用，不允许各入口各写一遍，也不允许只靠前端候选列表放行。
+- 验证：代理未运行 mvn/编译/测试/构建，也未连库；新增 shared 用例 `shared/financeReview.test.mjs`、后端 `FinanceApprovalGuardTest`（启用超管放行 / 禁用超管 / 非超管 / 不存在账号），并同步 `MerchantFeePolicyServiceTest`/`MerchantSettlementServiceTest`/`MerchantOnboardingServiceTest`，状态为**已实现·待人工验证**。

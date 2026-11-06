@@ -19,6 +19,7 @@ import com.shop.b2b2c.entity.MerchantSettlementBatch;
 import com.shop.b2b2c.entity.MerchantSettlementItem;
 import com.shop.b2b2c.entity.TradeOrder;
 import com.shop.b2b2c.entity.TradeRefund;
+import com.shop.b2b2c.entity.SysUser;
 import com.shop.b2b2c.mapper.MerchantAccountLedgerMapper;
 import com.shop.b2b2c.mapper.MerchantAccountMapper;
 import com.shop.b2b2c.mapper.MerchantCollectionStatusAuditMapper;
@@ -26,6 +27,7 @@ import com.shop.b2b2c.mapper.MerchantRechargeOrderMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementBatchMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementItemMapper;
 import com.shop.b2b2c.mapper.PaymentEventMapper;
+import com.shop.b2b2c.mapper.SysUserMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
 import com.shop.b2b2c.mapper.TradeRefundMapper;
 import com.shop.b2b2c.service.FinanceApprovalGuard;
@@ -66,7 +68,18 @@ class MerchantSettlementServiceTest {
     private final PaymentEventMapper eventMapper = mock(PaymentEventMapper.class);
     private final MerchantCollectionStatusAuditMapper auditMapper =
             mock(MerchantCollectionStatusAuditMapper.class);
+    private final SysUserMapper userMapper = mock(SysUserMapper.class);
     private final ServiceFeeSnapshotService snapshotService = new ServiceFeeSnapshotService();
+
+    /** 用例里的复核人 8L 统一按“启用 SUPERADMIN”返回，聚焦结算与账本规则本身。 */
+    private FinanceApprovalGuard guard(boolean dualApprovalRequired) {
+        SysUser reviewer = new SysUser();
+        reviewer.setId(8L);
+        reviewer.setRoleCode("SUPERADMIN");
+        reviewer.setIsActive(true);
+        when(userMapper.selectById(8L)).thenReturn(reviewer);
+        return new FinanceApprovalGuard(dualApprovalRequired, userMapper);
+    }
 
     private MerchantAccountService accountService() {
         return accountService(false);
@@ -74,7 +87,7 @@ class MerchantSettlementServiceTest {
 
     private MerchantAccountService accountService(boolean dualApprovalRequired) {
         return new MerchantAccountService(accountMapper, ledgerMapper, rechargeMapper, orderMapper, auditMapper,
-                snapshotService, new FinanceApprovalGuard(dualApprovalRequired));
+                snapshotService, guard(dualApprovalRequired));
     }
 
     private SettlementService settlementService() {
@@ -83,7 +96,7 @@ class MerchantSettlementServiceTest {
 
     private SettlementService settlementService(boolean dualApprovalRequired) {
         return new SettlementService(batchMapper, itemMapper, ledgerMapper, orderMapper, refundMapper,
-                eventMapper, snapshotService, new FinanceApprovalGuard(dualApprovalRequired));
+                eventMapper, snapshotService, guard(dualApprovalRequired));
     }
 
     @Test
@@ -341,6 +354,25 @@ class MerchantSettlementServiceTest {
                 () -> settlementService(true).confirm(10L, 3L, 3L));
 
         assertEquals(403, ex.getCode());
+        assertEquals("DRAFT", batch.getStatus());
+        verify(batchMapper, never()).updateById(any());
+    }
+
+    @Test
+    void settlementRejectsReviewerThatIsNotActiveSuperAdmin() {
+        MerchantSettlementBatch batch = draftBatch(10L);
+        when(batchMapper.lockById(10L)).thenReturn(batch);
+        SysUser disabled = new SysUser();
+        disabled.setId(9L);
+        disabled.setRoleCode("SUPERADMIN");
+        disabled.setIsActive(false);
+        when(userMapper.selectById(9L)).thenReturn(disabled);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> settlementService(false).confirm(10L, 3L, 9L));
+
+        assertEquals(403, ex.getCode());
+        assertTrue(ex.getMessage().contains("启用状态的超级管理员"));
         assertEquals("DRAFT", batch.getStatus());
         verify(batchMapper, never()).updateById(any());
     }
