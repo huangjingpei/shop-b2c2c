@@ -15,6 +15,7 @@
 - 不属本卡范围的原因：T28 属 S4，涉及迟到响应代付/海报链路，提前实现会扩大 S0 业务范围。
 - 建议归属：T28；实施时必须基于本次抽取的 [productDetail.mjs](file:///e:/shop-b2b2c/shop-storefront-vue/src/utils/productDetail.mjs) 增加请求序号/取消令牌，避免回退本次的 finally 复位。
 - 影响面：公开商品详情页在极慢请求与新商品快速切换时仍可能出现旧响应覆盖新商品；不影响 S0 主链路恢复。
+- 关闭记录：T28 已与 T01 同批完成（提交 b4e1993），productDetail.mjs 增加 isCurrent 请求序号守卫，旧响应不覆盖新商品且不复位新请求 loading。
 
 ## G02 T04 与 T19 同文件，后续须合并模板修改
 
