@@ -70,6 +70,8 @@
 
 金额统一 `BigDecimal`，入库前 `setScale(2, HALF_UP)`；比较使用 `compareTo`，禁止浮点。`PRECISION` 是容差分类，不代表自动通过。
 
+**方向约定（防反接）**：`ReconciliationClassifier.classify` 前三个参数固定为平台侧（应有金额/币种/记账时间），后三个固定为渠道侧（实际金额/币种/交易时间）；`platformExpected=null` 表示我方无单据 → `ONE_SIDED_CHANNEL`，`channelActual=null` 表示渠道无单据 → `ONE_SIDED_LOCAL`。`ReconciliationService` 的三处调用（订单↔事件、事件↔流水、退款↔流水）均按“平台在前、渠道在后”传参，2026-11-07 全量测试已核对；修改调用方或用例时不得交换参数顺序。
+
 ## 5. 差异留痕
 
 新增 `reconciliation_difference_audit`，记录：差异 ID、动作、前状态、后状态、操作人、说明、时间。

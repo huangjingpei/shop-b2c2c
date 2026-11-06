@@ -443,7 +443,7 @@
 - 发现位置：`shop-b2b2c-backend/src/main/resources/application.yml`（工作区本地改动，未提交入库；本文件不回显任何凭据值）。
 - 风险：数据源账号/口令以字面量写入配置文件，易随文件复制、打包、备份流转；一旦误提交即泄露，且轮换只能改文件发版，无法按环境独立注入。
 - 建议：改为环境变量占位（按 G03 的注入方式），本地配置不入库；轮换凭据后确认仓库与构建产物无明文残留。
-- 现状：仅登记，本轮未修改该配置文件；提交时明确排除。
+- 现状（2026-11-07）：用户全量测试暴露工作区 `application.yml` 被本地改为字面量账号，导致 `DatasourceCredentialContractTest` 失败；已把受跟踪文件恢复为 `${SPRING_DATASOURCE_USERNAME}` / `${SPRING_DATASOURCE_PASSWORD}` 占位符，未提交任何凭据。本地调试连接真实库时请用环境变量注入（`SPRING_DATASOURCE_USERNAME`、`SPRING_DATASOURCE_PASSWORD`），或用未纳入版本库的本地 profile（如 `application-local.yml` + `--spring.profiles.active=local`）；不要改动受跟踪的 `application.yml`。
 
 ## G44 recordEventStatus 用 updateById，null 字段不会写回（已登记未做）
 

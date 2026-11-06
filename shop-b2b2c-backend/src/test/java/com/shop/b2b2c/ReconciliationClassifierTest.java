@@ -39,15 +39,17 @@ class ReconciliationClassifierTest {
     }
 
     @Test
-    void missingChannelRecordIsOneSidedChannel() {
-        assertEquals(ReconciliationClassifier.ONE_SIDED_CHANNEL,
+    void missingChannelRecordIsOneSidedLocal() {
+        // 方案 §4：ONE_SIDED_LOCAL = 我方有、渠道无。classify 第 1 组参数固定为平台侧（见方法签名）。
+        assertEquals(ReconciliationClassifier.ONE_SIDED_LOCAL,
                 ReconciliationClassifier.classify(new BigDecimal("100.00"), "CNY", DAY_ONE,
                         null, "CNY", DAY_ONE));
     }
 
     @Test
-    void missingLocalRecordIsOneSidedLocal() {
-        assertEquals(ReconciliationClassifier.ONE_SIDED_LOCAL,
+    void missingLocalRecordIsOneSidedChannel() {
+        // 方案 §4：ONE_SIDED_CHANNEL = 渠道有、我方无。
+        assertEquals(ReconciliationClassifier.ONE_SIDED_CHANNEL,
                 ReconciliationClassifier.classify(null, "CNY", DAY_ONE,
                         new BigDecimal("100.00"), "CNY", DAY_ONE));
     }
