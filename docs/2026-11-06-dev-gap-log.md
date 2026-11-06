@@ -271,7 +271,7 @@
 - 数据来源：用户 2026-11-06 的 `mvn -f shop-b2b2c-backend/pom.xml test` 结果，696 用例中 11 failures + 7 errors + 1 skipped 共 19 条非绿；报告位于 `shop-b2b2c-backend/target/surefire-reports`。
 - 真实缺陷（已修复）：
   1. `AuthSessionService.isManagementRole()` 直接 `Set.of(...).contains(role)`，会话缺少角色时 `contains(null)` 抛 NPE 并映射为 500；改为 null 一律视为无权限（403）。
-  2. `PaymentEventServiceImpl` 并发通知触发唯一键冲突时，把所有 `DuplicateKeyException` 都判成“渠道流水号已被其他订单使用”；改为冲突后回查，同订单按幂等重放继续，只有流水号确属其他订单才报归属冲突。
+  2. `PaymentEventServiceImpl` 并发通知触发唯一键冲突时，把所有 `DuplicateKeyException` 都判成“渠道流水号已被其他订单使用”；改为冲突后回查，同订单按幂等重放继续，只有流水号确属其他订单才报归属冲突。**该修法把冲突 catch 留在主事务内，已在 G33 取代重做。**
   3. `OrderController` 重复发货/非待发货状态使用无业务码的 `BusinessException`，默认映射 500；改为显式 400，与 T31 契约一致。
 - 过期用例/夹具（已更新，不放宽业务断言）：
   - `ManagementSecurityTest`、`MerchantStoreUpdateTest`：G31 起调价操作人取自服务端会话、Q13-A 起资料更新走 `AuthSessionService` 角色校验，纯单元测试补 `SecurityUtils` 静态桩；新增“角色缺失仍 403”回归。
@@ -280,3 +280,41 @@
   - 店铺交错写用例补管理角色桩，修复 Q13-A 后资料更新在读取快照前被拒导致屏障超时的问题。
 - 环境限制：`SchemaMySqlTest` 在 Windows 原生跳过，不计通过；真实 MySQL 事务/锁与 H2 差异仍须用户按手动入口复跑确认。
 - 验证：代理未运行 mvn/编译/测试/构建，上述结论为静态核对的**已实现·待人工验证**，以用户复跑结果为准。
+
+## G33 错误码口径：先授权后存在性（已实现·待人工验证）
+
+- 数据来源：用户复跑 `mvn -f shop-b2b2c-backend/pom.xml test`，706 用例中
+  `MerchantStoreUpdateTest.everyExistingStoreOperationRejectsMissingRecordWithoutAnyUpdate:41` 期望 404 实际 403。
+- 定性：403 来自 [MerchantController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantController.java) 的
+  `updateMerchantProfile` 先调用 `AuthSessionService.requireManagementRole()`；用例未桩 `SecurityUtils.getCurrentRoleCode`，
+  角色为 null 被授权判定先拒绝，并非“查不到记录被当成无权”。
+- 统一口径：**先身份/授权，后资源存在性**。无权限/未绑定 → 403（不泄露资源是否存在）；有权限但资源不存在 → 404；
+  参数非法 → 400；内部不变量失败（如创建后回查不到）→ 500。该口径适用于带资源 ID 的后台读写入口。
+- 处理：`MerchantStoreUpdateTest` 补 `MERCHANT_ADMIN` 角色桩后验证“有权但记录缺失”返回 404；无角色 403 仍由
+  `updateMerchantProfile` 自身用例断言，不把两种拒绝混同。
+- 未处理偏差（按“不顺手改别的”登记，不与本卡混改）：`MerchantController.getMerchantProfile` 的店铺缺失仍为无业务码 500；
+  `AuthController` 口令错误仍为 500；`OrderController` 部分资源缺失仍为 500。后续按本口径统一。
+- 验证：代理未运行 mvn/编译/测试/构建，也未连库；状态为**已实现·待人工验证**，复跑入口
+  `mvn -f shop-b2b2c-backend/pom.xml test`。
+
+## G34 并发支付事件占位与 rollback-only（已实现·待人工验证）
+
+- 数据来源：用户复跑后 `Sprint1SecurityIntegrationTest.concurrentNotificationsFulfillExactlyOnce:1985 → race:3880`
+  抛 `UnexpectedRollbackException: Transaction rolled back because it has been marked as rollback-only`。
+- 定性（`fcd9710` 引入的真实缺陷）：`PaymentEventRecorder.recordInitialEvent` 默认 REQUIRED，参与主事务并在主事务内
+  catch 唯一键冲突；Spring 对参与事务的内层 `@Transactional` 方法抛异常会把外层标为 rollback-only，外层
+  `TransactionTemplate` 提交即抛 `UnexpectedRollbackException`。
+- 处理：
+  - `PaymentEventServiceImpl.claimEvent` 在业务事务之外做事务前预检，并以独立 `TransactionTemplate` 插入事件占位；
+    冲突只在独立事务完成后回查：同单 → 幂等重放，跨单 → 400 归属冲突；主事务内不再捕获唯一键异常。
+  - `recordInitialEvent` 已删除；`recordEventStatus` 仍随主事务提交 SUCCESS，失败审计仍走 `recordFailureAudit` 独立事务。
+  - `DUPLICATE_PAYMENT` 判定改为“本次新建事件且订单实际渠道+流水号不同”，避免占位线程被并发重放线程抢先履约时误判第二笔资金。
+- 语义保持：同单重放幂等成功、跨单流水号盗用仍拒绝、订单已支付后的第二笔资金仍落 `DUPLICATE_PAYMENT`、
+  金额/币种/迟到款/履约失败仍落对应失败态且不把 SUCCESS 降级。
+- 用例：`concurrentNotificationsFulfillExactlyOnce` 增断言“并发同单只落 1 条事件且最终 SUCCESS”，
+  `race()` 任一线程抛 `UnexpectedRollbackException` 即失败；跨单冲突沿用既有用例。
+- 残余风险：①占位提交与主事务之间进程崩溃会残留 `PROCESSING` 事件，当前对账扫描只覆盖“SUCCESS 但订单未支付”；
+  ②MySQL REPEATABLE READ 下主事务首条普通读会建立快照，若交付明细在行锁后被普通读读取，极端交错时可能读到旧明细，
+  需在真实 MySQL 并发用例复核（H2 为 READ COMMITTED，本轮未运行）。
+- 验证：代理未运行 mvn/编译/测试/构建，也未连库；状态为**已实现·待人工验证**，复跑入口
+  `mvn -f shop-b2b2c-backend/pom.xml test`。

@@ -2,6 +2,8 @@
  * 文件：MerchantStoreUpdateTest.java
  * 用途：店铺配置定向更新的权限、归属、空请求/编号、缺失记录及重复设置单元边界。
  * 维护注意：仓储及会话使用Mock；不允许为了测试吞授权异常。SQL并发保留与清日期由隔离集成用例验证，不连接业务库。
+ * 错误码口径（G33）：先身份/授权后资源存在性——无权限 403（不泄露资源是否存在），有权限但资源不存在 404，
+ * 参数非法 400，内部不变量失败 500。因此本用例必须先补管理角色桩，才能验证“有权但记录缺失”返回 404。
  */
 package com.shop.b2b2c;
 
@@ -33,6 +35,9 @@ class MerchantStoreUpdateTest {
         var c = controller(stores);
         try (var security = mockStatic(SecurityUtils.class); var roles = mockStatic(StpUtil.class)) {
             security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(99L);
+            // G33 口径：先授权后存在性。补店长角色桩后，资料更新才会进入“记录缺失”判定并返回 404；
+            // 无角色仍应由 updateMerchantProfile 自身用例断言 403，不能在本用例混同。
+            security.when(SecurityUtils::getCurrentRoleCode).thenReturn("MERCHANT_ADMIN");
             for (Runnable operation : List.<Runnable>of(() -> c.updateStatus(99L, 3),
                     () -> c.updateCommission(99L, BigDecimal.ZERO, "测试费率调整", 2L),
                     () -> c.updateServiceFee(99L, new MerchantController.ServiceFeeConfigDTO()),
