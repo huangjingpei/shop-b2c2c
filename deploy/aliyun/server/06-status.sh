@@ -36,17 +36,18 @@ else
 fi
 
 sec "Nginx 反向代理探测"
-PROXY_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: mall.graddu.com" "http://127.0.0.1/api/v1/auth/ready" || echo 000)"
+SERVER_DOMAIN="${GMALL_SERVER_NAME:-mall.graddu.com}"
+PROXY_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SERVER_DOMAIN}" "http://127.0.0.1/api/v1/auth/ready" || echo 000)"
 if [[ "${PROXY_RESP}" == "200" ]]; then
   ok "Nginx 代理 -> 后端 API (HTTP 200)"
 else
   warn_ "Nginx 代理探测返回 HTTP ${PROXY_RESP}"
 fi
 
-ADMIN_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: mall.graddu.com" "http://127.0.0.1/" || echo 000)"
+ADMIN_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SERVER_DOMAIN}" "http://127.0.0.1/console/" || echo 000)"
 ok "B 端管理后台首页响应: HTTP ${ADMIN_RESP}"
 
-MOBILE_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: mall.graddu.com" "http://127.0.0.1/m/" || echo 000)"
+MOBILE_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SERVER_DOMAIN}" "http://127.0.0.1/m/" || echo 000)"
 ok "C 端移动商城首页响应: HTTP ${MOBILE_RESP}"
 
 sec "数据库与缓存连接"

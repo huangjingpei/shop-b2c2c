@@ -844,3 +844,60 @@
 - 未完成事项：40 个修复单元的“后端单测”维度已验证通过，其余维度（真实 MySQL、前端生产构建、部署与 Nginx、真实渠道/分账、浏览器交互）仍待人工验证，卡片整体不标验收通过；验证项中 V03 已验证通过，V01/V02/V04–V09 仍待用户执行或环境负责人确认；§5 业务确认项中 Q01–Q21 与 S01–S12 已于 2026-11-06 全部确认或撤回，无残留待确认项。
 - S5 重构依据：[商家结算设计](2026-11-06-merchant-settlement-design.md) 与 [分期实施](2026-11-06-merchant-settlement-implementation-plan.md)；两者只作设计依据，不代表已实现。
 
+---
+
+## 9. 全仓扫描结论（2026-11-06，只读）
+
+扫描基线：`9b4797f` 之后的工作区；代理未运行 mvn/编译/测试/构建、未连接数据库、未运行部署脚本。用户 2026-11-06 已手动执行 `mvn -f shop-b2b2c-backend/pom.xml test`，**713 用例全部通过**（H2 隔离），因此“签名不同步/实体方法不存在”一类问题已被“main+test 全量编译成功”这一事实排除，本节只记录仍能静态证实的问题。
+
+### 9.1 问题表
+
+| 模块 | 发现问题 | 类型 | 风险等级 | 建议 | 处理 |
+| --- | --- | --- | --- | --- | --- |
+| 后端·库存调整 DTO ↔ 管理端 | [InventoryAdjustmentDTOs.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/dto/InventoryAdjustmentDTOs.java) 的 `WholeLong` 只接 `VALUE_NUMBER_INT`，而 T37 后管理端 [inventoryAdjustment.mjs](file:///e:/shop-b2b2c/shop-admin-vue/src/utils/inventoryAdjustment.mjs) 按十进制字符串提交商品/SKU 编号，人工调库存必然 400；此前测试用 `ObjectNode` 显式写整数绕过了该契约冲突，故未在 713 绿测中暴露 | 真缺陷 | 一般（可用性；不产生资金） | 上线前必修 | **已修**：同时接受 JSON 整数与 `[1-9][0-9]*` 字符串，拒绝 ≤0/小数/前导零/溢出且不回显原文；补 `inventoryAcceptsStringifiedLongIdsFromAdminUi` |
+| 后端·幂等序列化 | [OrderIdempotencyService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/OrderIdempotencyService.java#L48-L53) 使用 Jackson 2.15.4 已弃用的 `configure(MapperFeature, boolean)` | 过期用件 | 一般（仅编译告警，行为不变） | 上线前必修（低风险清理） | **已修**：改 `setConfig(getSerializationConfig().with(...))` / `getDeserializationConfig().with(...)`，保持属性名字典序；全仓无同型弃用调用 |
+| 部署·腾讯云状态脚本 | [06-status.sh](file:///e:/shop-b2b2c/deploy/tencent/server/06-status.sh) 直连与代理仍探 `/api/v1/auth/health`，与阿里云状态脚本、两云 `04-deploy.sh` 的 `/api/v1/auth/ready` 不一致；[deploy.sh](file:///e:/shop-b2b2c/deploy/tencent/deploy.sh#L199) 完成提示同 | 过期用件 | 一般（运维误判就绪状态） | 上线前必修 | **已修**：统一为 `/api/v1/auth/ready`，标题改“就绪探测” |
+| 部署·阿里云状态脚本 | [06-status.sh](file:///e:/shop-b2b2c/deploy/aliyun/server/06-status.sh#L39-L49) 硬编码 `Host: mall.graddu.com`，且 B 端后台探 `/` 而非实际入口 `/console/` | 过期用件 | 一般（换域名/配置后探测失真） | 上线前必修 | **已修**：改用 `${GMALL_SERVER_NAME:-mall.graddu.com}`，后台探 `/console/` |
+| 前端·公开列表筛选 | [publicCatalog.mjs](file:///e:/shop-b2b2c/shop-storefront-vue/src/utils/publicCatalog.mjs) 的 `normalizeCategoryId` 用 `Number()` 校验类目 Long，超过 2^53 会静默丢筛选条件；现网类目 ID 很小 | 整洁性 | 一般 | 可登记 | 不动，登记为缺口 G35 |
+| 部署·财务复核开关校验 | 两云 `02-init-infra.sh` 生成的 `.env` 已固定 `FINANCE_DUAL_APPROVAL_REQUIRED=true`，但 [04-deploy.sh](file:///e:/shop-b2b2c/deploy/aliyun/server/04-deploy.sh#L59-L68) 等必填键清单未包含它；手工维护 `.env` 漏写时生产按 `application.yml` 默认 `false` 静默启用单管理员 | 整洁性（配置硬化缺口） | 权限/资金 | 可登记 | 不动，登记为缺口 G36（手工部署路径须人工核对） |
+| 部署·网关模板 | 两云 per-cloud Nginx（[nginx-gmall.conf](file:///e:/shop-b2b2c/deploy/aliyun/server/nginx-gmall.conf)、[nginx-shop.conf](file:///e:/shop-b2b2c/deploy/tencent/server/nginx-shop.conf)）无 `/healthz`、`/readyz` 别名，仅通用模板 [nginx.prod.conf](file:///e:/shop-b2b2c/deploy/nginx/nginx.prod.conf#L27-L38) 有；脚本实际探 `/api/v1/auth/*`，不误判，但模板与文档存在漂移 | 过期用件 | 一般 | 可登记 | 不动，登记为缺口 G37 |
+
+### 9.2 未发现问题（成组列出，说明查了什么）
+
+| 组 | 覆盖范围 | 检查方式与结论 |
+| --- | --- | --- |
+| 后端签名与调用点 | S0–S5 改过签名的 service/controller/DTO 及全部调用点 | 用户实测 713 用例通过 ⇒ `main` + `test` 全量编译成功，不存在“签名不同步/实体无此方法/无此字段”类编译错 |
+| Mapper 列引用 | `src/main/java/**/mapper/*.java` 注解 SQL 与非注解 SQL | 只读脚本提取表名/列名并比对 `schema.sql`：无引用不存在列；`merchantid`、`amount_anomaly_count`、`request_key`、`desc`、`NULL` 等候选经人工确认为别名、状态字面量或 SQL 关键字噪声 |
+| schema.sql / H2 夹具 / 实体三方 | `db/schema.sql`（38 表）、`src/test/resources/sprint1-schema.sql`、`src/main/java/**/entity/*.java` | 逐表逐列比对：实体列全部存在于运行时基线，H2 夹具无缺列；`payment_event.reconcile_attempts/next_reconcile_at` 与 V5 一致 |
+| 前端的接口路径与方法 | `shop-admin-vue`、`shop-storefront-vue` 全部 `api/*.mjs` 与 `*.vue` 调用 | 路径前缀统一补 `/api/v1` 后逐条比对后端路由，未命中项均为 vue-router 前端路由，不是后端接口 |
+| 分页游标 | [OrderController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/OrderController.java) keyset ↔ [orderList.mjs](file:///e:/shop-b2b2c/shop-admin-vue/src/utils/orderList.mjs) | `cursor/pageSize/status` 参数名、`page.total/hasMore/nextCursor` 返回、非法参数 400 一致 |
+| 预占所有权 | `X-Reservation-Token` 前后端与 CORS | [PeerPayDTOs.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/dto/PeerPayDTOs.java)、收银台调用、`app.security.cors-allowed-headers` 均含该头；`Idempotency-Key` 同 |
+| 复核人参数与 428 | [financeReview.mjs](file:///e:/shop-b2b2c/shop-admin-vue/src/utils/financeReview.mjs) ↔ `FinanceApprovalGuard`、`SettlementDTOs.ConfirmRequest` | 字段名 `confirmedBy/rateConfirmedBy` 一致；严格模式缺参 428、同人 403、未知/禁用账号 403；前端只做提示与参数传递 |
+| Long 字符串化 | 全局 Jackson、审计 actorId、卡密/批次 ID、管理端提交 | 包装 Long 输出字符串、基本 long/Integer 仍为 number；前端解析与提交路径一致，库存调整是唯一缺口（已修） |
+| 部署配置键与限流 | 两云 `.env` 必填键、`application.yml`/`application-prod.yml`、Nginx 限流 | 必填键与后端占位符一一对应；健康路径统一 `/api/v1/auth/ready`（存活 `/health`）；限流路径 `/api/v1/auth/login`，`X-Forwarded-For` 覆盖而非追加；Nginx 阈值（阿里云 5r/m、腾讯 10r/m）严于后端 100 次/300 秒 |
+| 其它弃用 API | 全仓 Java | 除上述 `OrderIdempotencyService` 外，未发现其他 `configure(MapperFeature…)`/`MapperFeature` 开关式弃用调用 |
+
+### 9.3 验证状态
+
+- 本次改动（库存 DTO 双格式、幂等 ObjectMapper、两云状态脚本）**均未由代理编译/运行**，状态为“已实现·待人工验证”。
+- 用户复跑入口：`mvn -f shop-b2b2c-backend/pom.xml test`（预期：新增 `inventoryAcceptsStringifiedLongIdsFromAdminUi` 通过，其余 713 条不回退）。
+- 部署脚本改动属 shell 文本，未运行；`deploy/tests` 隔离用例仍由用户按 §7 入口执行。
+- 本次未扩改前端与部署模板；G35–G37 只登记，不顺手改造。
+
+### 9.4 尚未扫描（不推测、不记为无问题）
+
+以下范围本轮**没有**做静态或运行期核对，结论为空，不得引用为“已检查无问题”：
+
+| 范围 | 未覆盖原因 |
+| --- | --- |
+| 真实 MySQL 运行期 | 未连库：REPEATABLE READ 快照/行锁交错、外键级联、V1–V5 迁移两次执行与失败恢复 |
+| 前端组件与交互 | 只核对了 API 路径/参数与工具模块；Vue 模板渲染、Pinia store、路由守卫、浏览器端点击流未逐组件核对，也未运行构建 |
+| 前端生产构建与共享用例执行 | 未运行 Vite 构建与 `node --test`；依赖安装/样式 PostCSS 未验证 |
+| 部署脚本实际执行 | 未运行 `deploy.sh`、Nginx、certbot、mysqldump/恢复、systemd 安装；`deploy/tests` 隔离用例未执行 |
+| PowerShell 备份脚本 | 未在 Windows 实际执行，编码/退出码矩阵未复核 |
+| CI 运行器 | `.github/workflows/ci.yml` 未实际托管运行，分支保护未配置 |
+| 真实支付渠道与分账 | 微信/支付宝 SDK、验签、回调、查单/关单、退款、四方对账与分账资质均未接触 |
+| 定时任务运行期行为 | 预占到期、支付事件补偿、幂等清理在真实调度与并发下未观察 |
+| 性能与容量 | 未做基准、慢查询与连接池压测 |
+
+

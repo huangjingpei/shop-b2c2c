@@ -603,14 +603,25 @@ class Sprint1SecurityIntegrationTest {
         return new com.shop.b2b2c.dto.InventoryAdjustmentDTOs.Adjust(1L, 1L, delta, expected, "stock-taking");
     }
     /**
-     * HTTP 用例必须显式发送 JSON 整数标识与数量：T37 后测试侧 ObjectMapper 会把包装 Long 序列化成字符串，
-     * 而库存 DTO 按契约只接受 JSON 整数，直接 writeValueAsString(Adjust) 会在参数解析阶段得到 400。
+     * HTTP 用例需显式构造 JSON：T37 后测试侧 ObjectMapper 会把包装 Long 序列化成字符串，
+     * 库存 DTO 现按前端契约同时接受 JSON 整数与十进制数字字符串；小数仍必须在参数解析阶段返回 400。
      */
     private com.fasterxml.jackson.databind.node.ObjectNode inventoryBody(int delta, int expected) {
         var body = json.createObjectNode();
         body.put("productId", 1); body.put("skuId", 1);
         body.put("delta", delta); body.put("expectedStock", expected); body.put("reason", "stock-taking");
         return body;
+    }
+
+    @Test
+    void inventoryAcceptsStringifiedLongIdsFromAdminUi() throws Exception {
+        physicalProduct(); authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        var body = inventoryBody(2, 1);
+        body.put("productId", "1"); body.put("skuId", "1");
+        mvc.perform(post("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token)
+                .header("Idempotency-Key", "stock-string-id-key-1").contentType("application/json").content(json.writeValueAsString(body)))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.afterStock").value(3));
+        assertEquals(3, skus.selectById(1).getStockQuantity());
     }
     private void physicalProduct() { jdbc.update("UPDATE product SET goods_type=1 WHERE id=1"); }
 

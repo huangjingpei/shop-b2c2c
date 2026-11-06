@@ -27,17 +27,17 @@ else
   bad "${SERVICE_NAME} 未运行"
 fi
 
-sec "健康探测 (端口 ${PORT})"
-API_RESP="$(curl -fsS --max-time 3 "http://127.0.0.1:${PORT}/api/v1/auth/health" 2>/dev/null || echo '')"
+sec "就绪探测 (端口 ${PORT})"
+API_RESP="$(curl -fsS --max-time 3 "http://127.0.0.1:${PORT}/api/v1/auth/ready" 2>/dev/null || echo '')"
 if echo "${API_RESP}" | grep -q '"code":200'; then
-  ok "后端 /api/v1/auth/health 正常返回 200"
+  ok "后端 /api/v1/auth/ready 正常返回 200"
 else
   bad "后端端口 ${PORT} 响应异常或无法连接"
 fi
 
 sec "Nginx 反向代理探测"
 SERVER_DOMAIN="${SHOP_SERVER_NAME:-1688.graddu.com}"
-PROXY_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SERVER_DOMAIN}" "http://127.0.0.1/api/v1/auth/health" || echo 000)"
+PROXY_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SERVER_DOMAIN}" "http://127.0.0.1/api/v1/auth/ready" || echo 000)"
 if [[ "${PROXY_RESP}" == "200" ]]; then
   ok "Nginx 代理 -> 后端 API (HTTP 200)"
 else

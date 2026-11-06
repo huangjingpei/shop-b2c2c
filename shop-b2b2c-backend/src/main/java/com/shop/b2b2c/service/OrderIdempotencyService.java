@@ -45,9 +45,12 @@ public class OrderIdempotencyService {
                                   PlatformTransactionManager manager) {
         this.mapper = mapper;
         this.orderMapperProvider = orderMapperProvider;
-        this.json = json.copy().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
-                .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS)
-                .configure(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY, true);
+        ObjectMapper stable = json.copy().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                .enable(SerializationFeature.ORDER_MAP_ENTRIES_BY_KEYS);
+        // Jackson 2.15 起 ObjectMapper.configure(MapperFeature...) 已弃用，改用 setConfig + with 保持原有序化行为。
+        stable.setConfig(stable.getSerializationConfig().with(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY));
+        stable.setConfig(stable.getDeserializationConfig().with(MapperFeature.SORT_PROPERTIES_ALPHABETICALLY));
+        this.json = stable;
         this.transaction = new TransactionTemplate(manager);
     }
     public static void requireKey(String key) {

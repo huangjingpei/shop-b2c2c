@@ -350,3 +350,28 @@
     极端交错时可能读到旧明细；H2 为 READ COMMITTED，不代表生产行为。该条保留为“未验证”，不得记为已验证。
 - 验证：代理未运行 mvn/编译/测试/构建，也未连库；上述结论为静态核对的**已实现·待人工验证**，复跑入口
   `mvn -f shop-b2b2c-backend/pom.xml test`；H2 通过不替代真实 MySQL 与渠道联调。
+
+## G35 公开列表类目 ID 用 Number 校验，超 2^53 静默丢失筛选（已登记未做）
+
+- 发现位置：[publicCatalog.mjs](file:///e:/shop-b2b2c/shop-storefront-vue/src/utils/publicCatalog.mjs) 的 `normalizeCategoryId`，用例 [publicCatalog.test.mjs](file:///e:/shop-b2b2c/shared/publicCatalog.test.mjs)。
+- 现象：以 `Number()` 校验类目 Long 后回填查询参数；超过 `2^53-1` 的类目 ID 会被转成失真 number，条件被静默丢弃，用户看到的是未筛选列表且无提示。
+- 未改原因：现网类目 ID 很小，改动会牵动商城端查询参数与请求序列化，本轮扫描只做登记，不顺手扩大改造。
+- 建议归属：T37 后续统一 ID 文本处理；改时按 `inventoryAdjustment.mjs` 的 `idText` 口径，拒绝已失真 number 并保留十进制字符串。
+- 影响面：不影响当前交易与资金；仅极端大 ID 时筛选失效。
+
+## G36 部署必填键未含 FINANCE_DUAL_APPROVAL_REQUIRED（已登记未做）
+
+- 发现位置：[04-deploy.sh](file:///e:/shop-b2b2c/deploy/aliyun/server/04-deploy.sh#L59-L68) 与腾讯云同名脚本的 `REQUIRED_ENV_KEYS`；[application.yml](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/application.yml#L149) 默认 `false`。
+- 现象：两云 `02-init-infra.sh` 生成的 `.env` 已写 `FINANCE_DUAL_APPROVAL_REQUIRED=true`，但手工维护 `.env`（或复用旧 `.env`）时缺失该键不会被部署预检拦截，生产会按默认 `false` 允许同人复核并只落 `SAME_OPERATOR`。
+- 未改原因：补齐需同时改两云两脚本与部署契约用例，属配置硬化，不是本轮扫描发现的运行期缺陷；按“规则未定不扩大改造”只登记。
+- 建议归属：T19/T23 部署键校验同批；补入必填键并加一条“缺失即终止”的隔离用例，不改变后端开关语义。
+- 影响面：手工部署路径存在静默单管理员风险；`02-init-infra.sh` 标准路径不受影响。文档已注明手工部署须核对实际生效值。
+
+## G37 两云 Nginx 模板缺 /healthz、/readyz 别名（已登记未做）
+
+- 发现位置：[nginx-gmall.conf](file:///e:/shop-b2b2c/deploy/aliyun/server/nginx-gmall.conf)、[nginx-shop.conf](file:///e:/shop-b2b2c/deploy/tencent/server/nginx-shop.conf)、[nginx.prod.conf](file:///e:/shop-b2b2c/deploy/nginx/nginx.prod.conf#L27-L38)。
+- 现象：只有通用模板提供 `/healthz`→`/api/v1/auth/health`、`/readyz`→`/api/v1/auth/ready`；两云实际安装的 per-cloud 模板没有这两个别名，只透传 `/api/`。
+- 未改原因：部署脚本与状态脚本都直接探 `/api/v1/auth/ready`，不会误判；别名属模板与文档漂移，改动会影响两云站点模板与网关用例，本轮只登记。
+- 建议归属：T20/T36 网关模板同批；若保留别名，须两云同步并补 `test_nginx_gateway.py` 断言，避免只改一处。
+- 影响面：外部监控若使用 `/readyz` 会在两云 404；改用 `/api/v1/auth/ready` 可正常工作。
+

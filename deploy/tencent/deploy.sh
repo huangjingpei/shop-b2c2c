@@ -196,7 +196,7 @@ if [[ "${MODE}" == "full" || "${MODE}" == "deploy" ]]; then
 $(printf '\033[0;32m[deploy]\033[0m') Shop-B2B2C 部署完成！
   C 端商城与收银台: ${SHOP_PUBLIC_BASE_URL}/
   B 端管理运营后台: ${SHOP_PUBLIC_BASE_URL}${ADMIN_PORTAL_PATH:-/console}/
-  API 健康探测接口: ${SHOP_PUBLIC_BASE_URL}/api/v1/auth/health
+  API 就绪探测接口: ${SHOP_PUBLIC_BASE_URL}/api/v1/auth/ready
   管理员账号      : ${BOOTSTRAP_ADMIN_USERNAME}（首次部署由 BOOTSTRAP_ADMIN_PASSWORD 创建，口令不在日志输出）
   
   查看状态命令: bash deploy/tencent/deploy.sh --status
