@@ -2,6 +2,7 @@
 文件：Navbar.vue
 用途：商城公共导航与页面跳转入口。
 维护注意：前端入口不代表用户已授权；新增查单或支付链接时不能把领取凭证或私人联系方式放入可公开传播内容。
+T30：搜索类型映射为后端 goodsType（全站不传，实物=1，数字权益=2），关键词只在 route.query.q 中传递；页面不得宣传未开通的支付或免照开店能力。
 -->
 <template>
   <header class="bg-white border-b border-slate-200 sticky top-0 z-50">
@@ -11,7 +12,7 @@
         <div class="flex items-center space-x-3">
           <span>欢迎来到 16688 全品类电商与源头货源批发网！</span>
           <span class="text-slate-300">|</span>
-          <span class="text-orange-600 font-medium">支持个人免照开店 · 资金微信直付通存管</span>
+          <span class="text-orange-600 font-medium">商家自主入驻展示 · 交易状态以后端记录为准</span>
         </div>
         <div class="flex items-center space-x-4">
           <router-link to="/quick-query" class="hover:text-orange-600 flex items-center space-x-1 font-medium text-slate-700">
@@ -110,7 +111,7 @@
           <router-link to="/" class="hover:text-white py-2.5 transition">3C数码潮品</router-link>
           <router-link to="/" class="hover:text-white py-2.5 transition">服装鞋包百货</router-link>
           <router-link to="/" class="hover:text-white py-2.5 transition">食品生鲜批发</router-link>
-          <router-link to="/" class="hover:text-white py-2.5 transition text-amber-300 font-semibold">⚡ 虚拟数字权益(秒发)</router-link>
+          <router-link to="/" class="hover:text-white py-2.5 transition text-amber-300 font-semibold">⚡ 虚拟数字权益</router-link>
         </nav>
       </div>
     </div>
@@ -120,17 +121,19 @@
 <script setup>
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { GOODS_TYPE_BY_SEARCH } from '../utils/publicCatalog.mjs'
 
 const router = useRouter()
 const searchType = ref('all')
 const keyword = ref('')
 
 const handleSearch = () => {
-  if (keyword.value.trim()) {
-    router.push({ path: '/', query: { q: keyword.value.trim() } })
-  } else {
-    router.push({ path: '/' })
-  }
+  const query = {}
+  const trimmed = keyword.value.trim()
+  if (trimmed) query.q = trimmed
+  const goodsType = GOODS_TYPE_BY_SEARCH[searchType.value]
+  if (goodsType) query.goodsType = String(goodsType)
+  router.push({ path: '/', query })
 }
 
 const setSearch = (w) => {

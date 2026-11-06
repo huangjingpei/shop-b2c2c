@@ -19,6 +19,16 @@ test('空店独立展示真实资料，商品查询限定本店', async () => {
   assert.deepEqual(calls, [['/api/v1/public/stores/7'], ['/api/v1/public/products', { params: { merchantId: '7' } }]])
   assert.deepEqual(state, { store: shop, products: [], error: '', productsError: '' })
 })
+test('T30 店内搜索把 trim 后的关键词作为 q 传参，仍限定本店', async () => {
+  const calls = []
+  await loadStorePage('7', async (...args) => { calls.push(args); return ok([]) }, '  耳机  ')
+  assert.deepEqual(calls[1], ['/api/v1/public/products', { params: { merchantId: '7', q: '耳机' } }])
+})
+test('T30 空白关键词不追加 q', async () => {
+  const calls = []
+  await loadStorePage('7', async (...args) => { calls.push(args); return ok([]) }, '   ')
+  assert.deepEqual(calls[1], ['/api/v1/public/products', { params: { merchantId: '7' } }])
+})
 test('正常商品保留，联系方式缺失不伪造', async () => {
   const product = { id: 3, merchantId: 7 }
   const state = await loadStorePage('7', async url => ok(url.includes('/stores/') ? shop : [product]))

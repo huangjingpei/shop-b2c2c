@@ -3,6 +3,7 @@
 用途：商品/SKU选择、待付款建单及买家代付分享。
 维护注意：建单重试保留幂等键，业务成功才重置；checkout只建UNPAID单，真实支付未开放；不得根据HTTP成功显示已到账或发卡。类型3为人工服务，参数和金额最终由服务端校验。
 T28：详情加载使用请求序号，快速切换商品时旧响应不得覆盖当前商品；失败显示错误态并可重试；不预填手机号；复制走 @shared/clipboard.mjs，失败只提示手动复制，不把卡密原文带入提示。
+T30：交付标签与结算说明不得宣传未开通的支付直结、资金存管、秒发或指定快递能力，只说明商品类型与真实状态。
 -->
 <template>
   <div v-if="loading" class="text-center py-16 text-slate-400 text-sm">
@@ -42,13 +43,13 @@ T28：详情加载使用请求序号，快速切换商品时旧响应不得覆�
               v-if="product.goodsType === 2"
               class="px-2.5 py-1 rounded bg-amber-500 text-white font-bold text-xs flex items-center space-x-1"
             >
-              <span>⚡ 虚拟数字权益 · 付款秒发卡密</span>
+              <span>⚡ 虚拟数字权益 · 交付以商家规则为准</span>
             </span>
             <span
               v-else-if="product.goodsType === 1"
               class="px-2.5 py-1 rounded bg-blue-600 text-white font-bold text-xs"
             >
-              📦 实体物流商品 · 顺丰/中通极速发货
+              📦 实体物流商品 · 物流方式以商家发货信息为准
             </span>
           </div>
         </div>
@@ -158,8 +159,8 @@ T28：详情加载使用请求序号，快速切换商品时旧响应不得覆�
         <!-- 极速结算收银台面板 -->
         <div class="mt-6 pt-4 border-t border-slate-100">
           <div class="flex items-center justify-between text-xs text-slate-500 mb-3">
-            <span>结算支付通道 (微信/支付宝官方二级直结)</span>
-            <span class="font-bold text-slate-700">持牌专户担保 · 零二清</span>
+            <span>结算支付通道 (支付能力暂未开放)</span>
+            <span class="font-bold text-slate-700">下单仅创建待付款订单</span>
           </div>
 
           <div class="flex items-center space-x-3">
@@ -205,7 +206,7 @@ T28：详情加载使用请求序号，快速切换商品时旧响应不得覆�
         <!-- 如果是虚拟卡密商品，立即交付 -->
         <div v-if="successResult.cards && successResult.cards.length > 0" class="mt-5">
           <div class="flex items-center justify-between text-xs font-bold text-slate-700 mb-1.5">
-            <span>⚡ 已自动秒发虚拟卡密：</span>
+            <span>⚡ 已分配的虚拟卡密：</span>
             <button @click="copyAllCards" class="text-orange-600 hover:underline">一键复制全部</button>
           </div>
           <div class="p-3 bg-amber-50 rounded-lg border border-amber-200 font-mono text-xs text-amber-900 space-y-1 select-all">

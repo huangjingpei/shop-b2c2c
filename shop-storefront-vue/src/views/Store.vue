@@ -2,6 +2,7 @@
 文件：Store.vue
 用途：按商户浏览店铺商品。
 维护注意：先读取公开白名单店铺资料再读取本店商品；无演示公告、电话或认证承诺。路由切换使旧请求失效，商品失败不能当作空店，交易资格仍由后端校验。
+T30：店内搜索只把关键词 q 交给后端并在本店范围内过滤，失败显示错误态而不是空店；搜索只读，不改动商品数据。
 -->
 <template>
   <div v-if="loading" class="text-center py-12 text-slate-400 text-sm">
@@ -36,13 +37,32 @@
     </div>
 
     <!-- 本店商品列表 -->
-    <h2 class="text-base font-bold text-slate-900 mb-4">本店已上架商品<span v-if="!productsError"> ({{ products.length }})</span></h2>
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+      <h2 class="text-base font-bold text-slate-900">本店已上架商品<span v-if="!productsError"> ({{ products.length }})</span></h2>
+      <div class="flex rounded-lg overflow-hidden border border-slate-300 bg-white">
+        <input
+          v-model="searchKeyword"
+          type="text"
+          placeholder="搜索本店商品标题"
+          maxlength="50"
+          class="px-3 py-1.5 text-xs text-slate-800 outline-none w-48"
+          @keyup.enter="applySearch"
+        />
+        <button
+          type="button"
+          class="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition"
+          @click="applySearch"
+        >
+          搜索
+        </button>
+      </div>
+    </div>
     <div v-if="productsError" role="alert" class="text-center py-12 text-slate-500">
       {{ productsError }}
       <button type="button" class="ml-3 text-brand-600" @click="retry++">重新加载</button>
     </div>
     <div v-else-if="products.length === 0" class="text-center py-16 bg-white rounded-xl border border-slate-200 text-sm text-slate-400">
-      该商户暂未上架商品
+      {{ appliedKeyword ? `本店未找到与“${appliedKeyword}”匹配的商品` : '该商户暂未上架商品' }}
     </div>
     <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
       <div
@@ -57,7 +77,7 @@
             v-if="p.goodsType === 2"
             class="absolute top-2 left-2 px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500 text-white"
           >
-            ⚡ 自动秒发
+            ⚡ 虚拟卡密
           </span>
         </div>
         <div class="p-4 flex-1 flex flex-col justify-between">
@@ -90,6 +110,13 @@ const products = ref([])
 const error = ref('')
 const productsError = ref('')
 const retry = ref(0)
+const searchKeyword = ref('')
+const appliedKeyword = ref('')
+
+const applySearch = () => {
+  appliedKeyword.value = searchKeyword.value.trim()
+  retry.value++
+}
 
 watch([() => route.params.id, retry], async ([id], _, onCleanup) => {
   let active = true
@@ -99,7 +126,7 @@ watch([() => route.params.id, retry], async ([id], _, onCleanup) => {
   products.value = []
   error.value = ''
   productsError.value = ''
-  const result = await loadStorePage(id, axios.get)
+  const result = await loadStorePage(id, axios.get, appliedKeyword.value)
   // Vue复用组件或卸载时，迟到响应不得覆盖新店铺资料。
   if (!active) return
   store.value = result.store

@@ -2,6 +2,8 @@
 文件：Home.vue
 用途：商城类目及商品浏览入口。
 维护注意：类型3须标识人工交付，不能宣传自动发卡；列表可见性和库存仅作展示，交易资格与最终库存由后端裁决。
+T30：读取 route.query 的 q/goodsType 并随类目一起请求后端，业务失败显示错误与重试而不是空列表；递增序号作废迟到响应；
+页面不得再宣传未开通的支付直结、资金存管、免照开店或自动秒发能力。
 -->
 <template>
   <div class="space-y-6">
@@ -40,7 +42,7 @@
           </span>
           <h1 class="text-2xl md:text-3xl font-black tracking-tight leading-tight">
             源头厂家现货直供<br />
-            <span class="text-orange-400">实物批发 & 虚拟数字权益秒发</span>
+            <span class="text-orange-400">实物批发 & 虚拟数字权益</span>
           </h1>
           <p class="mt-2.5 text-xs text-slate-300 leading-relaxed">
             支持单件起订、多规格变体直发；小微商家自主入驻展示，规范交易与代付保障。
@@ -71,7 +73,7 @@
               </div>
               <div>
                 <div class="text-xs font-bold text-slate-900">16688 商家与买家中枢</div>
-                <div class="text-[11px] text-slate-400">支持个人免照开店入驻</div>
+                <div class="text-[11px] text-slate-400">商家自主入驻展示 · 资质以平台审核为准</div>
               </div>
             </div>
 
@@ -96,15 +98,15 @@
           <div class="mt-4 pt-3 border-t border-slate-100 text-[11px] text-slate-500 space-y-1">
             <div class="flex items-center space-x-1.5 text-slate-700 font-medium">
               <span class="text-green-600">✓</span>
-              <span>微信/支付宝官方二级直结 (零二清)</span>
+              <span>支付通道暂未开放，下单不会实际扣款</span>
             </div>
             <div class="flex items-center space-x-1.5 text-slate-700 font-medium">
               <span class="text-green-600">✓</span>
-              <span>实物顺丰发货 / 虚拟卡密自动秒发</span>
+              <span>履约方式以商品类型与商家说明为准</span>
             </div>
             <div class="flex items-center space-x-1.5 text-slate-700 font-medium">
               <span class="text-green-600">✓</span>
-              <span>依据《电商法》第十条个人免照开店</span>
+              <span>入驻资质与审核结果以平台规则为准</span>
             </div>
           </div>
         </div>
@@ -128,8 +130,8 @@
           ⚡
         </div>
         <div>
-          <div class="font-bold text-xs text-slate-900">虚拟卡密自动秒发</div>
-          <div class="text-[11px] text-slate-400 mt-0.5">付款成功即刻核销交货</div>
+          <div class="font-bold text-xs text-slate-900">虚拟卡密商品</div>
+          <div class="text-[11px] text-slate-400 mt-0.5">交付以商家规则与付款状态为准</div>
         </div>
       </div>
 
@@ -138,8 +140,8 @@
           🛡️
         </div>
         <div>
-          <div class="font-bold text-xs text-slate-900">持牌官方专户存管</div>
-          <div class="text-[11px] text-slate-400 mt-0.5">微信收付通二级分账 零二清</div>
+          <div class="font-bold text-xs text-slate-900">订单状态可追溯</div>
+          <div class="text-[11px] text-slate-400 mt-0.5">支付与结算能力仍在筹备中</div>
         </div>
       </div>
 
@@ -148,8 +150,8 @@
           📦
         </div>
         <div>
-          <div class="font-bold text-xs text-slate-900">现货实物发货</div>
-          <div class="text-[11px] text-slate-400 mt-0.5">全国顺丰/圆通快递追踪</div>
+          <div class="font-bold text-xs text-slate-900">实物商品</div>
+          <div class="text-[11px] text-slate-400 mt-0.5">物流方式以商家发货信息为准</div>
         </div>
       </div>
     </div>
@@ -176,17 +178,37 @@
       </div>
 
       <div class="text-xs text-slate-400 text-right">
-        共找到 <strong class="text-slate-800">{{ products.length }}</strong> 款精选源头现货
+        <span v-if="searchKeyword">关键词“<strong class="text-slate-800">{{ searchKeyword }}</strong>” · </span>
+        共找到 <strong class="text-slate-800">{{ products.length }}</strong> 款精选货源
       </div>
     </div>
 
     <!-- 16688 经典高密度商品卡片流 (严格遵循 16688 UI/UX) -->
-    <div v-if="loading" class="text-center py-16 text-slate-400 text-sm">
+    <div v-if="errorMsg" class="text-center py-16 bg-white rounded-xl border border-rose-200">
+      <div class="text-3xl mb-2">⚠️</div>
+      <p class="text-rose-600 text-sm font-medium">{{ errorMsg }}</p>
+      <button
+        @click="loadData()"
+        class="mt-3 px-4 py-1.5 rounded-lg bg-orange-600 hover:bg-orange-700 text-white text-xs font-bold transition"
+      >
+        重新加载
+      </button>
+    </div>
+    <div v-else-if="loading" class="text-center py-16 text-slate-400 text-sm">
       正在检索全平台货源数据...
     </div>
     <div v-else-if="products.length === 0" class="text-center py-20 bg-white rounded-xl border border-slate-200">
       <div class="text-3xl mb-2">📦</div>
-      <p class="text-slate-500 text-sm font-medium">该类目下暂无现货，正在火速补货中</p>
+      <p class="text-slate-500 text-sm font-medium">
+        {{ searchKeyword ? `未找到与“${searchKeyword}”匹配的货源，请更换关键词` : '该类目下暂无在售商品' }}
+      </p>
+      <button
+        v-if="searchKeyword"
+        @click="clearSearch"
+        class="mt-3 px-4 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold transition"
+      >
+        清除搜索
+      </button>
     </div>
     <div v-else class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
       <div
@@ -203,7 +225,7 @@
               v-if="p.goodsType === 2"
               class="px-2 py-0.5 rounded text-[11px] font-bold bg-amber-500 text-white shadow-sm flex items-center space-x-1"
             >
-              <span>⚡ 自动秒发卡密</span>
+              <span>虚拟卡密商品</span>
             </span>
             <span
               v-else-if="p.goodsType === 1"
@@ -262,13 +284,20 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
+import { loadPublicCatalog, readCatalogQuery } from '../utils/publicCatalog.mjs'
 
+const route = useRoute()
+const router = useRouter()
 const loading = ref(false)
+const errorMsg = ref('')
 const selectedCat = ref(null)
 const categories = ref([])
 const products = ref([])
+const searchKeyword = computed(() => readCatalogQuery(route.query).keyword)
+let requestSequence = 0
 
 const getCatIcon = (name) => {
   if (name.includes('数码') || name.includes('硬件')) return '💻'
@@ -280,27 +309,40 @@ const getCatIcon = (name) => {
 }
 
 const loadData = async () => {
+  const sequence = ++requestSequence
   loading.value = true
-  try {
-    const [cRes, pRes] = await Promise.all([
-      axios.get('/api/v1/public/categories'),
-      axios.get('/api/v1/public/products', {
-        params: { categoryId: selectedCat.value }
-      })
-    ])
-    categories.value = cRes.data.data
-    products.value = pRes.data.data
-  } catch (e) {
-    console.error(e)
-  } finally {
-    loading.value = false
-  }
+  errorMsg.value = ''
+  const query = readCatalogQuery(route.query)
+  const result = await loadPublicCatalog(
+    { categoryId: selectedCat.value, keyword: query.keyword, goodsType: query.goodsType },
+    (url, config) => axios.get(url, config)
+  )
+  // T30：条件已变化时丢弃迟到响应，避免旧请求覆盖新搜索的错误态或列表。
+  if (sequence !== requestSequence) return
+  categories.value = result.categories
+  products.value = result.products
+  errorMsg.value = result.error
+  loading.value = false
 }
 
 const selectCategory = (catId) => {
   selectedCat.value = catId
   loadData()
 }
+
+const clearSearch = () => {
+  selectedCat.value = null
+  router.push({ path: '/' })
+}
+
+watch(
+  () => [route.query.q, route.query.goodsType],
+  () => {
+    // 导航栏新搜索是全站范围，先回到全类目再请求。
+    selectedCat.value = null
+    loadData()
+  }
+)
 
 onMounted(() => {
   loadData()

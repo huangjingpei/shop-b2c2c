@@ -290,7 +290,7 @@ T29：点击代付前调用 pre-lock 预占库存，ownerToken 存 sessionStorag
           <!-- 双轨履约交付提示 -->
           <div class="pt-2 text-[11px] text-slate-400 border-t border-slate-50 flex items-center justify-between">
             <span v-if="detail.goodsType !== 1" class="text-amber-700 font-medium">
-              ⚡ 线上数字服务 / 自动发卡
+              ⚡ 线上数字服务 / 交付以商家说明为准
             </span>
             <span v-else class="text-blue-700 font-medium">
               📦 实物包裹 · 极速快递发货

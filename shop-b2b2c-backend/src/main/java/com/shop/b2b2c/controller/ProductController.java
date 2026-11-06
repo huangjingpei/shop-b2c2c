@@ -67,11 +67,26 @@ public class ProductController {
     @GetMapping("/api/v1/public/products")
     public R<List<com.shop.b2b2c.dto.PublicProductView>> listPublicProducts(
             @RequestParam(required = false) Long categoryId,
-            @RequestParam(required = false) Long merchantId) {
+            @RequestParam(required = false) Long merchantId,
+            @RequestParam(required = false) String q,
+            @RequestParam(required = false) Integer goodsType) {
         if ((categoryId != null && categoryId <= 0) || (merchantId != null && merchantId <= 0)) {
             throw new BusinessException(400, "分类或店铺编号不正确");
         }
-        return R.ok(productMapper.findPublicProducts(categoryId, merchantId));
+        if (goodsType != null && goodsType != 1 && goodsType != 2 && goodsType != 3) {
+            throw new BusinessException(400, "商品类型只能是 1、2 或 3");
+        }
+        String keyword = normalizeKeyword(q);
+        return R.ok(productMapper.findPublicProducts(categoryId, merchantId, keyword, goodsType));
+    }
+
+    /** T30：关键词去首尾空白；空串视为未搜索，超过 50 字符直接 400，避免把模糊匹配负担转嫁给数据库。 */
+    private static String normalizeKeyword(String q) {
+        if (q == null) return null;
+        String trimmed = q.trim();
+        if (trimmed.isEmpty()) return null;
+        if (trimmed.length() > 50) throw new BusinessException(400, "搜索关键词不能超过50个字符");
+        return trimmed;
     }
 
     @Operation(summary = "【公开】商品详情与 SKU 变体信息")

@@ -2,6 +2,8 @@
  * 文件：ProductMapper.java
  * 用途：Product领域的MyBatis基础持久化接口。
  * 维护注意：公开列表单SQL组合筛选、营业/上架过滤及SKU归属聚合，保留数组契约，尚未分页。普通save不是并发控制，资金/库存更新须专用事务与条件SQL。
+ * T30：公开列表新增关键词 q 与商品类型过滤；关键词只在服务端按标题/副标题做包含匹配（LOCATE，不使用 IN 拼接），
+ *       调用方必须先 trim 并限制长度；goodsType 白名单 1/2/3 由控制器校验，SQL 不再接受任意值。
  */
 package com.shop.b2b2c.mapper;
 
@@ -27,6 +29,9 @@ public interface ProductMapper extends BaseMapper<Product> {
         WHERE p.status = 1
         <if test="categoryId != null">AND p.category_id = #{categoryId}</if>
         <if test="merchantId != null">AND p.merchant_id = #{merchantId}</if>
+        <if test="goodsType != null">AND p.goods_type = #{goodsType}</if>
+        <if test="keyword != null">AND (LOCATE(LOWER(#{keyword}), LOWER(p.title)) > 0
+            OR LOCATE(LOWER(#{keyword}), LOWER(COALESCE(p.sub_title, ''))) > 0)</if>
         GROUP BY p.id, p.title, p.sub_title, p.goods_type, p.main_image, p.min_price,
                  p.merchant_id, s.store_name, s.store_code, s.logo_url, p.sort_order
         ORDER BY p.sort_order ASC, p.id ASC
@@ -34,7 +39,9 @@ public interface ProductMapper extends BaseMapper<Product> {
         """)
     List<com.shop.b2b2c.dto.PublicProductView> findPublicProducts(
             @org.apache.ibatis.annotations.Param("categoryId") Long categoryId,
-            @org.apache.ibatis.annotations.Param("merchantId") Long merchantId);
+            @org.apache.ibatis.annotations.Param("merchantId") Long merchantId,
+            @org.apache.ibatis.annotations.Param("keyword") String keyword,
+            @org.apache.ibatis.annotations.Param("goodsType") Integer goodsType);
 
     default Optional<Product> findById(Long id) {
         return Optional.ofNullable(selectById(id));

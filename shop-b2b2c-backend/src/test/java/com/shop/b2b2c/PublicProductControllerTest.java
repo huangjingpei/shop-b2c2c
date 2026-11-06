@@ -29,11 +29,11 @@ class PublicProductControllerTest {
                 var categories = mock(CategoryMapper.class);
                 var assets = mock(CardAssetService.class);
                 var rows = List.of(new PublicProductView(), new PublicProductView());
-                when(products.findPublicProducts(category, merchant)).thenReturn(rows);
+                when(products.findPublicProducts(category, merchant, null, null)).thenReturn(rows);
                 var result = new ProductController(products, skus, cards, stores, categories, assets)
-                        .listPublicProducts(category, merchant);
+                        .listPublicProducts(category, merchant, null, null);
                 assertSame(rows, result.getData()); assertEquals(200, result.getCode());
-                verify(products).findPublicProducts(category, merchant);
+                verify(products).findPublicProducts(category, merchant, null, null);
                 verifyNoMoreInteractions(products); verifyNoInteractions(skus, cards, stores, categories, assets);
             }
         }
@@ -46,11 +46,49 @@ class PublicProductControllerTest {
                 mock(ProductVirtualCardMapper.class), mock(MerchantStoreMapper.class),
                 mock(CategoryMapper.class), mock(CardAssetService.class));
         for (Long invalid : new Long[] {0L, -1L, Long.MIN_VALUE}) {
-            var categoryError = assertThrows(BusinessException.class, () -> controller.listPublicProducts(invalid, 1L));
-            var merchantError = assertThrows(BusinessException.class, () -> controller.listPublicProducts(1L, invalid));
+            var categoryError = assertThrows(BusinessException.class, () -> controller.listPublicProducts(invalid, 1L, null, null));
+            var merchantError = assertThrows(BusinessException.class, () -> controller.listPublicProducts(1L, invalid, null, null));
             assertEquals(400, categoryError.getCode()); assertEquals(400, merchantError.getCode());
         }
         verifyNoInteractions(products);
+    }
+
+    @Test
+    void searchKeywordIsTrimmedAndLengthLimitedBeforeQuery() {
+        var products = mock(ProductMapper.class);
+        var controller = new ProductController(products, mock(ProductSkuMapper.class),
+                mock(ProductVirtualCardMapper.class), mock(MerchantStoreMapper.class),
+                mock(CategoryMapper.class), mock(CardAssetService.class));
+        var rows = List.of(new PublicProductView());
+        when(products.findPublicProducts(null, null, "手机", 2)).thenReturn(rows);
+
+        assertSame(rows, controller.listPublicProducts(null, null, "  手机  ", 2).getData());
+        verify(products).findPublicProducts(null, null, "手机", 2);
+
+        reset(products);
+        when(products.findPublicProducts(null, null, null, null)).thenReturn(List.of());
+        assertTrue(controller.listPublicProducts(null, null, "   ", null).getData().isEmpty());
+        verify(products).findPublicProducts(null, null, null, null);
+
+        assertThrows(BusinessException.class, () -> controller.listPublicProducts(null, null, "x".repeat(51), null));
+        assertEquals(400, assertThrows(BusinessException.class,
+                () -> controller.listPublicProducts(null, null, null, 0)).getCode());
+        assertEquals(400, assertThrows(BusinessException.class,
+                () -> controller.listPublicProducts(null, null, null, 4)).getCode());
+        verify(products, never()).findPublicProducts(null, null, "x".repeat(51), null);
+    }
+
+    @Test
+    void goodsTypeWhitelistAllowsOnlyOneTwoThree() {
+        var products = mock(ProductMapper.class);
+        var controller = new ProductController(products, mock(ProductSkuMapper.class),
+                mock(ProductVirtualCardMapper.class), mock(MerchantStoreMapper.class),
+                mock(CategoryMapper.class), mock(CardAssetService.class));
+        for (int type : new int[] {1, 2, 3}) {
+            when(products.findPublicProducts(null, null, null, type)).thenReturn(List.of());
+            assertEquals(200, controller.listPublicProducts(null, null, null, type).getCode());
+        }
+        assertThrows(BusinessException.class, () -> controller.listPublicProducts(null, null, null, -1));
     }
 
     @Test

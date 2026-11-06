@@ -2,8 +2,9 @@
  * 文件：storePage.mjs
  * 用途：独立读取公开店铺与本店商品，统一空店、不可用和读取失败的展示状态。
  * 维护注意：ID保持十进制字符串避免大整数损失；同时检查HTTP与业务响应。商品读取失败保留已取得的真实店铺资料，禁止回退演示数据或记录完整请求异常。
+ * T30：店内搜索在请求参数追加 q（trim 后为空不传），关键词长度与非法类型交由后端校验；结果仍是本店范围，前端不得跨店过滤。
  */
-export async function loadStorePage(id, get) {
+export async function loadStorePage(id, get, keyword = null) {
   const state = { store: null, products: [], error: '', productsError: '' }
   if (typeof id !== 'string' || !/^[1-9]\d*$/.test(id) || BigInt(id) > 9223372036854775807n) {
     return { ...state, error: '店铺编号不正确' }
@@ -17,7 +18,10 @@ export async function loadStorePage(id, get) {
     return { ...state, error: '店铺资料加载失败，请稍后重试' }
   }
   try {
-    const { data } = await get('/api/v1/public/products', { params: { merchantId: id } })
+    const params = { merchantId: id }
+    const trimmed = typeof keyword === 'string' ? keyword.trim() : ''
+    if (trimmed) params.q = trimmed
+    const { data } = await get('/api/v1/public/products', { params })
     if (data?.code !== 200 || !Array.isArray(data.data)
         || data.data.some(p => !p || String(p.merchantId) !== id)) throw new Error('Invalid product response')
     state.products = data.data
