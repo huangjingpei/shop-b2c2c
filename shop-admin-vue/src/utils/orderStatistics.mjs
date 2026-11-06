@@ -9,7 +9,7 @@ export function amountText(value) {
   return whole + '.' + cents.padEnd(2, '0')
 }
 const count = value => Number.isSafeInteger(value) && value >= 0 ? value : '—'
-export const STATISTICS_NOTICE = '按订单状态汇总，退款状态订单仍计历史支付；实际退款、净额及已结算收入尚无资金账本，不能作为到账证明。'
+export const STATISTICS_NOTICE = '按订单状态汇总，服务端默认统计近90天；退款状态订单仍计历史支付。实际退款、净额及已结算收入尚无资金账本，不能作为到账证明。'
 export function sharingRecordLabel(status) {
   return ({ PENDING: '记录待处理', PROCESSING: '记录处理中', FAILED: '记录失败', FINISHED: '记录完成（待对账）' })[status] ?? '未识别记录'
 }

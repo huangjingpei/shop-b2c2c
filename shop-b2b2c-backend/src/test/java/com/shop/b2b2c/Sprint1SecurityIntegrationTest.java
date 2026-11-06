@@ -1044,6 +1044,13 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.estimatedCommission").value("0.30")).andExpect(jsonPath("$.data.closedOrders").value(1))
                 .andExpect(jsonPath("$.data.actualRefundAmount").isEmpty()).andExpect(jsonPath("$.data.financialLedgerAvailable").value(false))
                 .andExpect(jsonPath("$.data.orders").doesNotExist()).andExpect(jsonPath("$.data.queryToken").doesNotExist());
+        // T25：时间范围非法或跨度超过 366 天直接 400，不能静默全表扫描。
+        mvc.perform(get("/api/v1/merchant/orders/statistics").header("Authorization", "Bearer " + token)
+                        .param("from", "2030-01-02T00:00:00").param("to", "2030-01-01T00:00:00"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        mvc.perform(get("/api/v1/merchant/orders/statistics").header("Authorization", "Bearer " + token)
+                        .param("from", "2024-01-01T00:00:00").param("to", "2026-01-01T00:00:00"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
         mvc.perform(get("/api/v1/admin/orders").header("Authorization", "Bearer " + token)).andExpect(status().isForbidden());
     }
 

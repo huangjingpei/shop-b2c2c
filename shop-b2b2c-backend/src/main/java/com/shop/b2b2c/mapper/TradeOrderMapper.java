@@ -6,6 +6,8 @@
  *  2. 所有写者须保持订单行锁顺序，支付 CAS 须检查影响行数，事务外 FOR UPDATE 无并发保护。
  *  3. T08 起普通订单支付 CAS 也校验 lock_expire_time > 当前时间，不对 NULL 截止时间放行；
  *     截止时间由订单创建/预占路径写入 createdAt+15，迁移脚本不回填历史订单。
+ *  4. T24 列表只走 keyset（created_at+id 游标）；T25 统计只走 aggregateOrderStatistics 的库内 GROUP BY，
+ *     不再提供全表订单投影方法，金额异常必须在 SQL 里单独计数而不是并入汇总。
  */
 package com.shop.b2b2c.mapper;
 
@@ -14,7 +16,11 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.shop.b2b2c.entity.TradeOrder;
 import com.shop.b2b2c.common.OrderCursor;
 import com.shop.b2b2c.common.PeerStatus;
+import com.shop.b2b2c.dto.OrderStatisticsAggregate;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
+import java.time.LocalDateTime;
 
 import java.util.List;
 import java.util.Optional;
@@ -163,16 +169,31 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
                         .lt(TradeOrder::getId, before.id())));
     }
 
-    default List<TradeOrder> findStatisticsProjectionByMerchantId(Long merchantId) {
-        return selectList(new LambdaQueryWrapper<TradeOrder>()
-                .select(TradeOrder::getOrderStatus, TradeOrder::getPeerStatus,
-                        TradeOrder::getPayAmount, TradeOrder::getCommissionAmount)
-                .eq(TradeOrder::getMerchantId, merchantId));
-    }
-
-    default List<TradeOrder> findStatisticsProjectionAll() {
-        return selectList(new LambdaQueryWrapper<TradeOrder>()
-                .select(TradeOrder::getOrderStatus, TradeOrder::getPeerStatus,
-                        TradeOrder::getPayAmount, TradeOrder::getCommissionAmount));
-    }
+    /**
+     * T25：统计只做库内 GROUP BY，不再把订单行加载进 JVM。金额汇总只计入合法值
+     * （非 NULL、非负、最多两位小数），异常单数单独计数；退款状态仍按历史已付款计入 turnover，
+     * 但不计预计佣金，与 OrderStatistics 原逐单口径保持一致。
+     */
+    @Select("<script>"
+            + "SELECT order_status, peer_status, COUNT(*) AS order_count, "
+            + "COALESCE(SUM(CASE WHEN pay_amount IS NOT NULL AND pay_amount &gt;= 0 "
+            + "AND pay_amount = ROUND(pay_amount, 2) THEN pay_amount ELSE 0 END), 0) AS pay_amount_sum, "
+            + "COALESCE(SUM(CASE WHEN pay_amount IS NOT NULL AND pay_amount &gt;= 0 AND pay_amount = ROUND(pay_amount, 2) "
+            + "AND commission_amount IS NOT NULL AND commission_amount &gt;= 0 "
+            + "AND commission_amount = ROUND(commission_amount, 2) THEN commission_amount ELSE 0 END), 0) AS commission_amount_sum, "
+            + "COALESCE(SUM(CASE WHEN "
+            + "(order_status IN ('PAID','SHIPPED','COMPLETED','REFUNDED') AND (pay_amount IS NULL OR pay_amount &lt; 0 OR pay_amount &lt;&gt; ROUND(pay_amount, 2))) "
+            + "OR (order_status IN ('PAID','SHIPPED','COMPLETED') AND (commission_amount IS NULL OR commission_amount &lt; 0 OR commission_amount &lt;&gt; ROUND(commission_amount, 2))) "
+            + "OR (order_status = 'UNPAID' AND COALESCE(peer_status, '') NOT IN ('EXPIRED','CANCELLED') "
+            + "AND (pay_amount IS NULL OR pay_amount &lt; 0 OR pay_amount &lt;&gt; ROUND(pay_amount, 2))) "
+            + "THEN 1 ELSE 0 END), 0) AS amount_anomaly_count "
+            + "FROM trade_order WHERE 1 = 1 "
+            + "<if test='merchantId != null'>AND merchant_id = #{merchantId} </if>"
+            + "<if test='from != null'>AND created_at &gt;= #{from} </if>"
+            + "<if test='to != null'>AND created_at &lt; #{to} </if>"
+            + "GROUP BY order_status, peer_status"
+            + "</script>")
+    List<OrderStatisticsAggregate> aggregateOrderStatistics(@Param("merchantId") Long merchantId,
+                                                            @Param("from") LocalDateTime from,
+                                                            @Param("to") LocalDateTime to);
 }

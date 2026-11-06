@@ -23,14 +23,14 @@
       </el-col>
       <el-col :span="6">
         <el-card shadow="hover" class="stat-card">
-          <div class="stat-title">历史已支付订单数</div>
+          <div class="stat-title">近90天已支付订单数</div>
           <div class="stat-num">{{ stats.paidOrders }} 笔</div>
           <div class="stat-desc">含退款状态，不含待付/关闭订单</div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card shadow="hover" class="stat-card">
-          <div class="stat-title">历史已支付订单金额</div>
+          <div class="stat-title">近90天已支付订单金额</div>
           <div class="stat-num">￥{{ stats.paidTurnover }}</div>
           <div class="stat-desc">含退款状态金额，非退款净额</div>
         </el-card>

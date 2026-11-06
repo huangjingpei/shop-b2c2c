@@ -339,18 +339,39 @@ public class OrderController {
         return R.ok(map);
     }
 
-    public R<com.shop.b2b2c.common.OrderStatistics> merchantStatistics() {
-        return merchantStatistics(null);
-    }
-
-    @Operation(summary = "【商家】本店订单状态统计（非资金账本，R24: 轻量列投影聚合）")
+    @Operation(summary = "【商家】本店订单状态统计（T25: 默认近90天，库内 GROUP BY，非资金账本）")
     @GetMapping("/api/v1/merchant/orders/statistics")
-    public R<com.shop.b2b2c.common.OrderStatistics> merchantStatistics(jakarta.servlet.http.HttpServletResponse response) {
+    public R<com.shop.b2b2c.common.OrderStatistics> merchantStatistics(
+            @RequestParam(value = "from", required = false)
+            @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME)
+            java.time.LocalDateTime from,
+            @RequestParam(value = "to", required = false)
+            @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME)
+            java.time.LocalDateTime to,
+            jakarta.servlet.http.HttpServletResponse response) {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
         }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
-        return R.ok(com.shop.b2b2c.common.OrderStatistics.from(orderMapper.findStatisticsProjectionByMerchantId(merchantId)));
+        java.time.LocalDateTime[] range = statisticsRange(from, to);
+        return R.ok(com.shop.b2b2c.common.OrderStatistics.fromAggregates(
+                orderMapper.aggregateOrderStatistics(merchantId, range[0], range[1])));
+    }
+
+    /**
+     * T25：统计默认只扫近 90 天，避免全表加载；显式范围必须合法且不超过 366 天。
+     * 返回 [from, to)，to 不含。
+     */
+    private static java.time.LocalDateTime[] statisticsRange(java.time.LocalDateTime from, java.time.LocalDateTime to) {
+        java.time.LocalDateTime end = to != null ? to : java.time.LocalDateTime.now();
+        java.time.LocalDateTime start = from != null ? from : end.minusDays(90);
+        if (start.isAfter(end)) {
+            throw new BusinessException(400, "统计时间范围不正确");
+        }
+        if (java.time.Duration.between(start, end).toDays() > 366) {
+            throw new BusinessException(400, "统计时间范围不得超过 366 天");
+        }
+        return new java.time.LocalDateTime[]{start, end};
     }
 
     @Data
@@ -433,6 +454,12 @@ public class OrderController {
             @RequestParam(value = "cursor", required = false) String cursor,
             @RequestParam(value = "pageSize", required = false) Integer pageSize,
             @RequestParam(value = "status", required = false) String status,
+            @RequestParam(value = "from", required = false)
+            @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME)
+            java.time.LocalDateTime from,
+            @RequestParam(value = "to", required = false)
+            @org.springframework.format.annotation.DateTimeFormat(iso = org.springframework.format.annotation.DateTimeFormat.ISO.DATE_TIME)
+            java.time.LocalDateTime to,
             jakarta.servlet.http.HttpServletResponse response) {
         if (response != null) {
             response.setHeader("Cache-Control", "no-store");
@@ -461,8 +488,10 @@ public class OrderController {
             }
         }
 
-        // R24: 轻量列投影聚合统计（T25 将改为库内 GROUP BY）
-        var statistics = com.shop.b2b2c.common.OrderStatistics.from(orderMapper.findStatisticsProjectionAll());
+        // T25: 默认近 90 天，只做库内 GROUP BY 聚合
+        java.time.LocalDateTime[] range = statisticsRange(from, to);
+        var statistics = com.shop.b2b2c.common.OrderStatistics.fromAggregates(
+                orderMapper.aggregateOrderStatistics(null, range[0], range[1]));
 
         Map<String, Object> res = new LinkedHashMap<>();
         res.put("statistics", statistics);

@@ -23,7 +23,7 @@
       </el-col>
       <el-col :span="6">
         <el-card shadow="never" class="stat-card">
-          <div class="stat-label">历史已支付订单金额（含退款状态）</div>
+          <div class="stat-label">近90天已支付订单金额（含退款状态）</div>
           <div class="stat-val text-rose">￥{{ stats.paidTurnover }}</div>
         </el-card>
       </el-col>

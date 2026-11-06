@@ -5,6 +5,7 @@
  */
 package com.shop.b2b2c;
 import com.shop.b2b2c.common.OrderStatistics;
+import com.shop.b2b2c.dto.OrderStatisticsAggregate;
 import com.shop.b2b2c.entity.TradeOrder;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -64,6 +65,38 @@ class OrderStatisticsTest {
         var summary = OrderStatistics.from(Arrays.asList(null, order(null, "100", "3"), order("REFUNDING", "100", "3")));
         assertEquals(3, summary.unknownOrders()); assertEquals(0, summary.paidOrders());
         assertThrows(NullPointerException.class, () -> OrderStatistics.from(null));
+    }
+    OrderStatisticsAggregate aggregate(String state, String peer, long count, String paySum, String commissionSum, long anomalies) {
+        var row = new OrderStatisticsAggregate();
+        row.setOrderStatus(state); row.setPeerStatus(peer); row.setOrderCount(count);
+        row.setPayAmountSum(paySum == null ? null : new BigDecimal(paySum));
+        row.setCommissionAmountSum(commissionSum == null ? null : new BigDecimal(commissionSum));
+        row.setAmountAnomalyCount(anomalies);
+        return row;
+    }
+    @Test void databaseAggregatesProduceSameClassificationAndMoneyAsRowLevel() {
+        var expired = order("UNPAID", "500", "15"); expired.setPeerStatus("EXPIRED");
+        var rowSummary = OrderStatistics.from(List.of(order("UNPAID", "1000", "30"), order("PAID", "10", "0.30"),
+                order("SHIPPED", "20", "0.60"), order("COMPLETED", "30", "0.90"), order("REFUNDED", "5", "0.15"),
+                order("CLOSED", "100", "3"), expired, order("UNKNOWN", "900", "27")));
+        var aggregateRows = List.of(
+                aggregate("UNPAID", "INIT", 1, "1000.00", "0.00", 0),
+                aggregate("PAID", "INIT", 1, "10.00", "0.30", 0),
+                aggregate("SHIPPED", "INIT", 1, "20.00", "0.60", 0),
+                aggregate("COMPLETED", "INIT", 1, "30.00", "0.90", 0),
+                aggregate("REFUNDED", "INIT", 1, "5.00", "0.00", 0),
+                aggregate("CLOSED", "INIT", 1, "0.00", "0.00", 0),
+                aggregate("UNPAID", "EXPIRED", 1, "500.00", "0.00", 0),
+                aggregate("UNKNOWN", "INIT", 1, "900.00", "0.00", 0));
+        assertEquals(rowSummary, OrderStatistics.fromAggregates(aggregateRows));
+    }
+    @Test void aggregateAnomalyCountIsAdditiveNotAveraged() {
+        var summary = OrderStatistics.fromAggregates(List.of(
+                aggregate("PAID", "INIT", 2, "10.00", "0.30", 1),
+                aggregate("COMPLETED", "INIT", 3, "0.00", "0.00", 3),
+                aggregate(null, null, 1, "0.00", "0.00", 0)));
+        assertEquals(6, summary.totalOrders()); assertEquals(5, summary.paidOrders()); assertEquals(1, summary.unknownOrders());
+        assertEquals(4, summary.amountAnomalyOrders()); assertEquals("10.00", summary.paidTurnover()); assertEquals("0.30", summary.estimatedCommission());
     }
     @Test void zeroValuesAreValidAndFinishedUnpaidIsNotIncome() {
         var free = order("PAID", "0.00", "0"); var intent = order("UNPAID", "100", "3"); intent.setSharingStatus("FINISHED");
