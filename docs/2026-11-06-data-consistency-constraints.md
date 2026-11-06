@@ -17,7 +17,7 @@
 
 | 表 | 现状 | 问题 | 建议 |
 | --- | --- | --- | --- |
-| `trade_order` | `uk_order_sn`、`uk_peer_pay_token`；`query_token` 只有普通索引 `idx_query_token` | `query_token` 是买家免密查单凭证，`PaymentGatewayService` 同时接受 `peerPayToken` 或 `queryToken`；普通索引不阻止两条订单写入同一 token，碰撞会让持 token 者查到/操作他人订单 | **改**：`idx_query_token` 改为 `UNIQUE KEY uk_query_token (query_token)`；合法建单在幂等重试内重新生成订单号与 token，碰撞时插入失败而不是静默串单 |
+| `trade_order` | `uk_order_sn`、`uk_peer_pay_token`；`query_token` 只有普通索引 `idx_query_token` | `query_token` 是买家免密查单凭证，`PaymentGatewayService` 同时接受 `peerPayToken` 或 `queryToken`；普通索引不阻止两条订单写入同一 token，碰撞会让持 token 者查到/操作他人订单 | **改**：`idx_query_token` 改为 `UNIQUE KEY uk_query_token (query_token)`；合法建单在幂等重试内重新生成订单号与 token（`OrderController.checkout` 第 125–126 行每次生成 UUID；`OrderIdempotencyService.execute` 第 69–106 行捕获 `DuplicateKeyException` 后整体重跑 supplier），碰撞时插入失败而不是静默串单。本轮复核见 3.1.3 |
 | `trade_refund` | `uk_refund_no(refund_no)`、`uk_refund_order_key(order_id, idempotency_key)`、`uk_refund_source_event(source_event_id)` | 无 | **不改**。`refund_no` 是平台全局退款单号，也是渠道退款幂等参照，按 `(order_id, refund_no)` 会弱化唯一性；同一订单重复退款由 `(order_id, idempotency_key)` 挡住；重复付款补偿由 `source_event_id` 挡住 |
 | `payment_event` | `uk_channel_trade_no(channel, pay_trade_no)` | 无 | **不改**。可挡住同一渠道流水重复回调；同订单二次付款不阻断，而是记 `DUPLICATE_PAYMENT` 走补偿，符合 T33 口径 |
 | `merchant_account_ledger` | `uk_ledger_idempotency(idempotency_key)` | 无 | **不改**。同一订单/退款/充值只入账一次；账本另有 append-only 触发器 |
@@ -52,7 +52,7 @@
 | `complaint` | `refund_amount DECIMAL(10,2) NOT NULL DEFAULT 0` | 判定金额与订单退款未建关联，属业务缺口 | **不改**本卡，登记 |
 | `payment_event` | `pay_amount DECIMAL(10,2) NOT NULL` | 无 | **不改** |
 | `merchant_account` | `DECIMAL(12,2) NOT NULL` | 无 | **不改** |
-| `merchant_account_ledger` | `amount/balance_after/arrears_after DECIMAL(12,2) NOT NULL` | 无 NULL；但无“余额不得为负”约束 | **改**：补 `chk_ledger_balance_nonnegative`（见第 3 节） |
+| `merchant_account_ledger` | `amount/balance_after/arrears_after DECIMAL(12,2) NOT NULL` | 无 NULL；但无“余额不得为负”约束 | **改**：补 `chk_ledger_balance_nonnegative`（见第 3 节；本轮复核保留，见 3.1.1） |
 | `merchant_recharge_order` | `amount NOT NULL`；`confirmed_amount` 可空 | `confirmed_amount` 在确认前必须为空，语义正确 | **不改** |
 | `merchant_settlement_batch` | 全部 `DECIMAL(12,2) NOT NULL` | `adjustment_amount` 可为负（红字），不能一律 `>=0` | **不改** |
 | `merchant_settlement_item` | 全部 `DECIMAL(12,2) NOT NULL` | `fee_amount` 退款明细可为负 | **不改** |
@@ -109,9 +109,83 @@ MySQL 8.0.16 起才真正强制 `CHECK`；8.0.16 之前只解析不执行。部�
 | `chk_platform_settlement_amounts` | `platform_collection_settlement` | 金额为负、实收不守恒 | 台账服务校验 | 保留并扩展：累计退分不得超过商家应结净额 |
 | `chk_split_amounts` | `split_detail` | 分账不守恒、退分超过分账 | 分账服务校验 | 保留 |
 | `chk_split_reverse_amount` | `split_reverse` | 零/负退分 | 退分服务校验 | 保留 |
-| **新增** `chk_order_refund_within_paid` | `trade_order` | 绕过 `reserveRefund` 的条件更新，或未来新增退款入口，把累计退款写到超过实付/服务费快照 | `TradeRefundMapper.reserveRefund` 条件更新 + 并发用例 | **新增** |
-| **新增** `chk_ledger_balance_nonnegative` | `merchant_account_ledger` | 新入账路径未先判断余额，账本记录出现负余额/负欠费，账实不符 | 账户服务按余额/欠费分支记账 | **新增** |
-| **新增** `chk_fee_policy_rate` | `merchant_fee_policy` | 手工 SQL 或新入口写入 50%/负数等非法费率，导致整店按错误费率计费 | `MerchantFeePolicyService.validateRate` | **新增** |
+| **新增** `chk_order_refund_within_paid` | `trade_order` | 绕过 `reserveRefund` 的条件更新，或未来新增退款入口，把累计退款写到超过实付/服务费快照 | `TradeRefundMapper.reserveRefund` 条件更新 + 并发用例 | **新增；本轮复核保留**（表达式是总量上限，见 3.1.2 / 3.2） |
+| **新增** `chk_ledger_balance_nonnegative` | `merchant_account_ledger` | 新入账路径未先判断余额，账本记录出现负余额/负欠费，账实不符 | 账户服务按余额/欠费分支记账 | **新增；本轮复核保留**（欠费记 `arrears` 正字段，不写负余额，见 3.1.1） |
+| **新增** `chk_fee_policy_rate` | `merchant_fee_policy` | 手工 SQL 或新入口写入 50%/负数等非法费率，导致整店按错误费率计费 | `MerchantFeePolicyService.validateRate` 对三条插入路径均强制；DDL 只表达 0↔PROMOTION | **新增；本轮复核保留**（见 3.1.4） |
+
+### 3.1 本轮复核结论（保留 / 修改 / 撤销）
+
+复核方法：只读 `schema.sql` 与对应服务/Mapper 代码，不运行构建、不连库。结论按“保留 / 修改 / 撤销”三选一，并写明原判断是否成立。
+
+| # | 约束 | 结论 | 原判断是否成立 | 一句话理由 |
+| --- | --- | --- | --- | --- |
+| 1 | `chk_ledger_balance_nonnegative` | **保留** | 不成立（把“欠费”误读成“负余额”） | 欠费记在 `merchant_account.arrears` 这个独立正数字段，账本 `balance_after` 始终非负 |
+| 2 | `chk_order_refund_within_paid` | **保留** | 不成立（把总量上限误读成逐次比例上限） | 表达式只限制 `fee_refunded_amount <= commission_amount`，尾差在最后一次被吸收后累计仍不超快照 |
+| 3 | `uk_query_token` | **保留** | 部分成立（NOT NULL 不等于禁止空串） | 列为 `NOT NULL`，三条建单路径均写 32 位 UUID，且幂等重试会重跑 supplier 重新生成 token |
+| 4 | `chk_fee_policy_rate` | **保留** | 不成立（应用层确有拦截） | DDL 管 0↔PROMOTION，`validateRate` 对 0 费率强制 PROMOTION 且原因非空 |
+
+#### 3.1.1 `chk_ledger_balance_nonnegative`：负余额不是欠费表达
+
+结论：**保留，不改 DDL**。理由：
+
+- `merchant_account` 把余额和欠费分成两个非负字段：`balance_available`（可用余额）、`arrears`（欠费累计），并由既有 `chk_account_amounts` 同时要求 `balance_available >= 0`、`arrears >= 0`（`schema.sql` 第 506–523 行）。
+- `MerchantAccountService.chargeOrderFee` 第 63–104 行：余额 ≥ 服务费时 `balance_available -= fee`；余额不足时 **余额不变**，只做 `arrears = arrears + fee`，订单 `fee_status='ARREARS'`。欠费不是把余额写成负数。
+- 账本快照同样不写负数：`insertLedger` 第 459–469 行（`setBalanceAfter`/`setArrearsAfter` 在第 467–468 行）取 `account.getBalanceAvailable()` 与 `account.getArrears()` 写入 `balance_after` / `arrears_after`。
+- 其余写入路径也都保持非负：退款冲正 `reverseOrderFee` 第 111–147 行用 `offset = min(arrears, amount)` 先冲欠费、剩余才回补余额；充值确认 `confirmRecharge` 第 185–231 行同样先 `min(arrears, amount)` 抵扣欠费。
+- 欠费额度确实可配置：`configurePolicy` 第 281–303 行允许 `credit_limit` 在 0~100000 元之间逐店设置，`grace_days` 只允许 7/21/30。但本 CHECK **没有写死任何固定下限**，只要求 `>= 0`，因此“不同商户不同额度”不会让这条 CHECK 失效；真正需要负余额模型时，先冲突的是既有 `chk_account_amounts`，而不是本条。
+- 场景：某店余额 0、欠费额度 500，支付成功产生服务费 3.00 → `arrears` 从 0 变 3.00，账本写 `balance_after=0.00`、`arrears_after=3.00`，CHECK 通过；后续退款冲正 1.00 → `arrears_after=2.00`，仍通过。
+
+防住的错误操作：新入账路径不先判断余额/欠费，直接把 `balance_after` 或 `arrears_after` 写成负数，导致账本快照与账户表不一致。
+
+#### 3.1.2 `chk_order_refund_within_paid`：CHECK 是总量上限，不是逐次比例上限
+
+结论：**保留，不改 DDL**。理由：
+
+- 表达式（`schema.sql` 第 232–234 行）是：`refunded_amount >= 0 AND refunded_amount <= pay_amount AND fee_refunded_amount >= 0 AND fee_refunded_amount <= commission_amount`。它没有 `fee_refunded_amount <= 按比例应冲正额` 这一项。
+- `RefundTransactionService.allocateFeeRefund` 第 229–249 行：非最后一次按 `commission_amount × refundAmount ÷ payAmount`、HALF_UP 两位计算；**最后一次**（`refundAmount + alreadyRefunded >= payAmount`）直接取 `commission_amount - alreadyFee`，并在超过 `feeRemaining` 时 clamp、低于 0 时归零。因此累计 `fee_refunded_amount` 恒 ≤ `commission_amount`。
+- `TradeRefundMapper.reserveRefund` 第 58–65 行在应用层又加了一道总量条件：`refunded_amount + amount <= pay_amount AND fee_refunded_amount + feeAmount <= commission_amount`。`prepareOrderRefund` 还先校验 `amount <= pay_amount - alreadyRefunded`。
+- 场景：尾差为正的那一次，`fee_refund_amount` 会大于该次的 HALF_UP 比例值，但累计仍等于 `commission_amount`，不会突破 CHECK；具体算例见 3.2。尾差本身记录在 `trade_refund.fee_rounding_adjustment`（DECIMAL(10,2)，允许正负），不参与 `trade_order` 的 CHECK。
+
+防住的错误操作：绕过 `reserveRefund` 的退款入口，或未来新增入口，把 `refunded_amount` 累计写到超过 `pay_amount`、把 `fee_refunded_amount` 累计写到超过 `commission_amount`。
+
+#### 3.1.3 `uk_query_token`：NOT NULL + UUID 生成 + 幂等重试重生成
+
+结论：**保留，不改 DDL**。逐条回答两个细节：
+
+- 是否允许 NULL：不允许。`query_token VARCHAR(64) NOT NULL`（`schema.sql` 第 212 行）。因此不存在“多行 NULL 在唯一键下互不冲突”的漏洞，也不存在“建单写 NULL”的路径。
+- 是否可能写空串 `''`：当前没有。全仓 `setQueryToken` 只有三处，均为 `UUID.randomUUID().toString().replace("-", "")`（32 位十六进制）：
+  - `OrderController.checkout` 第 125–126 行生成、第 153 行写入；
+  - `PeerPayServiceImpl.createBuyerPeerPay` 第 92–93 行生成、第 118 行写入；
+  - `PeerPayServiceImpl.createPushPayOrder` 第 201–202 行生成、第 223 行写入。
+  其余 `orderMapper.save` 都是对已存在订单的更新（发货、预占、取消、到期关闭、支付履约、服务完成），不会覆盖 `query_token`。
+- 幂等重试重新生成 token 的代码位置：`OrderIdempotencyService.execute` 第 69–106 行的 `for` 循环把整段 `transaction.execute` 包在 `try/catch (DuplicateKeyException)` 里；每次重试都会重新执行 `action.get()`（第 77 行），而 supplier 分别是 `OrderController` 第 84 行、`PeerPayController` 第 51 行、`OrderController` 第 437 行，最终都进入上面的建单方法重新生成 `orderSn` 与 `queryToken`。事务已回滚，`order_idempotency` 占位也一并回滚，因此重试可再次 `claim`。
+- 合法场景：两个不同订单各拿一个 UUID，唯一键不冲突；若随机碰撞导致插入抛 `DuplicateKeyException`，整个幂等事务回滚并重跑 supplier，最多 3 次，合法建单不会被这条唯一键永久挡住。
+
+残留风险：`NOT NULL` 允许空串，直接 SQL 或未来新增的非应用写入如果写 `''`，第二张空 token 订单会被唯一键拒绝。当前三条建单路径不写空串；本卡不额外加 `CHECK (query_token <> '')`，登记在 7.8。
+
+#### 3.1.4 `chk_fee_policy_rate`：0 费率与原因都有约束
+
+结论：**保留，不改 DDL**。理由：
+
+- DDL（`schema.sql` 第 816–817 行）：`(rate_type='NORMAL' AND rate_bps BETWEEN 100 AND 1000) OR (rate_type='PROMOTION' AND rate_bps=0)`。0 基点只允许 `PROMOTION`，`NORMAL` 不允许 0。
+- 应用层 `MerchantFeePolicyService.validateRate` 第 233–252 行：`PROMOTION` 必须 `rateBps == 0` 且 `promotionReason` 非空，否则 400；`NORMAL` 必须 100–1000。
+- 所有写入 `merchant_fee_policy` 的路径都先过这个方法：`createInitialPolicy`（第 100 行）、`adjust`（第 138 行）、`bootstrapFromLegacyRate`（第 219 行）。`adjust` 还额外要求 `form.reason` 非空（第 139–141 行）。`MerchantOnboardingService` 开店调用 `createInitialPolicy` 时也把 `promotionReason` 原样传入。
+- 场景：管理员提交 `rate_type='NORMAL', rate_bps=0` → 应用层 400，即使绕过应用，DDL 也拒绝；提交 `rate_type='PROMOTION', rate_bps=0, promotion_reason=null` → 应用层 400。不存在“DDL 放行但应用层没拦”的应用写入路径。
+- 残留：DDL 无法表达“推广原因必须非空”，直接 SQL 仍可写 `PROMOTION + NULL` 原因；这是应用层职责，登记在 7.9。
+
+### 3.2 服务费冲正尾差算例（证明 CHECK 不会误伤合法全额退款）
+
+订单：`pay_amount = 33.33`，费率 300 基点（3%），`commission_amount = 33.33 × 300 ÷ 10000 = 0.9999`，按 `ServiceFeeSnapshotService` 的 HALF_UP 两位取 `1.00`。分 3 次退款，每次 11.11：
+
+| 次序 | 本次退款 | 累计退款（含本次） | 比例应冲正（HALF_UP 2 位） | 实际 `fee_refund_amount` | `fee_rounding_adjustment` | 累计 `fee_refunded_amount` |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | 11.11 | 11.11 | 1.00 × 11.11 ÷ 33.33 = 0.3333 → 0.33 | 0.33 | 0.00 | 0.33 |
+| 2 | 11.11 | 22.22 | 0.33 | 0.33 | 0.00 | 0.66 |
+| 3（最后一次） | 11.11 | 33.33 | 0.33 | 1.00 − 0.66 = **0.34** | **+0.01** | **1.00** |
+
+第 3 次的 `fee_refund_amount(0.34)` 大于当次比例值 `0.33`，尾差 `+0.01`；但累计 `fee_refunded_amount = 1.00 = commission_amount`，累计 `refunded_amount = 33.33 = pay_amount`，两条上限都恰好取等，CHECK 通过。
+
+反证：若 CHECK 写成 `fee_refunded_amount <= 按比例应冲正额`，第 3 次 `0.34 > 0.33` 会被误杀——当前表达式没有这一项，所以不会发生。
 
 判断后不新增的约束：
 
@@ -156,9 +230,9 @@ MySQL 8.0.16 起才真正强制 `CHECK`；8.0.16 之前只解析不执行。部�
 | 3 | `merchant_payment_account.apply_status` 默认改 `AUDITING` | 漏写状态把未审核进件记为“已开通” | 演示种子显式写值；生产无默认插入路径 |
 | 4 | `fee_policy_id`/`biz_id`/`payment_event_id`/`ledger_entry_id` 统一 UNSIGNED | 业务主键写成负数或与父键签名不一致，后续无法加外键 | 现有写入均为正主键，读取仍为 `Long` |
 | 5 | 新增 `fk_settlement_item_event`、`fk_recharge_ledger_entry` | 结算明细/充值确认指向不存在的支付事件/账本分录，对账断链 | 两列均可空；写入顺序为父行先落库（已核对充值确认流程），不会阻断合法事务 |
-| 6 | 新增 `chk_order_refund_within_paid` | 累计退款超过实付或服务费冲正超过快照 | 条件更新本来已拦截；`= pay_amount`/`= commission_amount` 允许，不误伤全额退款 |
-| 7 | 新增 `chk_ledger_balance_nonnegative` | 入账后余额/欠费为负 | 账户服务按余额与欠费分支，不会写负数 |
-| 8 | 新增 `chk_fee_policy_rate` | 写入 50%/负数等非法费率 | 服务层只允许 0 或 100–1000；历史初始化也走同一校验 |
+| 6 | 新增 `chk_order_refund_within_paid` | 累计退款超过实付或服务费冲正超过快照 | 条件更新本来已拦截；CHECK 是**总量上限**（`refunded_amount <= pay_amount`、`fee_refunded_amount <= commission_amount`），不是逐次比例上限；尾差算例见 3.2，正尾差不会误伤 |
+| 7 | 新增 `chk_ledger_balance_nonnegative` | 入账后余额/欠费为负 | 账户服务按余额与欠费分支，不会写负数；欠费记 `arrears` 正字段，不写负余额，见 3.1.1 |
+| 8 | 新增 `chk_fee_policy_rate` | 写入 50%/负数等非法费率 | 服务层 `validateRate` 对三条插入路径均强制 0→PROMOTION 且原因非空；DDL 只表达 0↔PROMOTION，见 3.1.4 |
 | 9 | 扩展 `chk_platform_settlement_amounts` | 退分累计超过商家应结净额 | 应用层已有 `refunded_amount + amount <= merchant_payable_amount` 条件更新 |
 | 10 | `merchant_fee_policy` 新增 `updated_at` | 费率生效区间被事后改动且无可观测时间 | 纯新增列 |
 
@@ -170,6 +244,8 @@ MySQL 8.0.16 起才真正强制 `CHECK`；8.0.16 之前只解析不执行。部�
 - 资金列必须 `DECIMAL`、标度为 2（税率比例 `fee_tax_rate` 除外），全库无浮点类型。
 - 状态列与 `is_*` 开关列必须 `NOT NULL`。
 - 关键资金幂等唯一键的名称与列顺序必须与基线一致（含新增 `uk_query_token`），且不存在重复的普通 `idx_query_token`。
+- `trade_order.query_token` 必须是 `VARCHAR(64) NOT NULL` 且由 `uk_query_token` 覆盖（对应 3.1.3 的结论）。
+- 列解析已修正为匹配整行：原正则只截到类型前缀，`NOT NULL` 判定恒为 false，会让 `statusColumnsAreNotNull` 与新增的 `queryTokenIsNotNullAndUnique` 失真。
 - 新增/扩展的 CHECK 表达式必须存在。
 - 财务表审计时间戳：`trade_order.updated_at`、`merchant_fee_policy.updated_at` 及关键财务表 `created_at`。
 - `apply_status` 默认值不得为 `PASSED`。
@@ -183,6 +259,8 @@ MySQL 8.0.16 起才真正强制 `CHECK`；8.0.16 之前只解析不执行。部�
 5. 阶段二 `platform_collection_settlement` / `split_detail` 无操作人列，联调前补充。
 6. `merchant_payment_account` 阶段二绑定状态变更无独立审计表。
 7. `complaint.refund_amount` 与 `trade_refund` 无引用关系，仲裁退款金额可能只停留在工单。
+8. `trade_order.query_token` 仅 `NOT NULL`，未禁止空串；当前三条建单路径均生成 32 位 UUID（见 3.1.3），但直接 SQL 或未来新增的非应用写入若写 `''`，第二张空 token 订单会被唯一键拒绝。若出现该类写入，再补 `CHECK (query_token <> '')`。
+9. `merchant_fee_policy.promotion_reason` 的“推广必须填原因”只在应用层 `validateRate` 强制；DDL 只能表达 0↔PROMOTION，直接 SQL 仍可写 `PROMOTION + NULL` 原因（见 3.1.4）。
 
 ## 8. 未验证项
 
@@ -191,3 +269,6 @@ MySQL 8.0.16 起才真正强制 `CHECK`；8.0.16 之前只解析不执行。部�
 - 未连接真实 MySQL：`CREATE TABLE` 顺序、外键创建、CHECK 强制、唯一索引在空库上的实际行为均待用户演练。
 - `CHECK` 强制依赖 MySQL 8.0.16+；低于该版本的实例会静默忽略，部署文档已要求 8.0.x，仍需以实际实例版本复核。
 - 新增唯一键/外键对写入吞吐与索引体积的影响未评估。
+- 本轮复核（3.1/3.2）只读代码与 `schema.sql`，未执行任何 SQL：欠费入账、尾差冲正、幂等重试均为静态推演，真实 MySQL 上 `CHECK` 的强制行为、`uk_query_token` 的碰撞重试次数仍待用户在手工验证时确认。
+- 未验证 MySQL 在 `INSERT` 时对 `chk_order_refund_within_paid` 的取等边界（`= pay_amount`、`= commission_amount`）是否全部放行；按 MySQL 8.0 `CHECK` 语义应放行，但需实测。
+- 未验证 `NOT NULL` + 空串 `''` 的直写行为；本卡按“应用层不写空串”保留，残留风险登记在 7.8。

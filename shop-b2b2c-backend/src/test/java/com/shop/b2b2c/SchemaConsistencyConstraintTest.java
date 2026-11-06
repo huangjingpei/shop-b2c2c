@@ -38,8 +38,11 @@ class SchemaConsistencyConstraintTest {
             "CREATE\\s+TABLE\\s+IF\\s+NOT\\s+EXISTS\\s+`?([A-Za-z0-9_]+)`?(.*?)\\n\\)\\s*ENGINE",
             Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
 
+    /**
+     * 列定义解析到行尾：NOT NULL 位于类型之后，若只匹配类型前缀会漏判，导致“状态列必须非空”失真。
+     */
     private static final Pattern COLUMN = Pattern.compile(
-            "^\\s*`?([A-Za-z0-9_]+)`?\\s+([A-Za-z]+(?:\\([^)]*\\))?)(\\s+UNSIGNED)?",
+            "^\\s*`?([A-Za-z0-9_]+)`?\\s+([A-Za-z]+(?:\\([^)]*\\))?)(\\s+UNSIGNED)?(.*)$",
             Pattern.CASE_INSENSITIVE | Pattern.MULTILINE);
 
     private static final Pattern FOREIGN_KEY = Pattern.compile(
@@ -219,6 +222,18 @@ class SchemaConsistencyConstraintTest {
         // query_token 已是唯一键，不允许再保留重复的普通索引。
         assertFalse(normalized(sql).contains("KEY `idx_query_token`"),
                 "query_token 已由 uk_query_token 覆盖，不应保留普通索引 idx_query_token");
+    }
+
+    @Test
+    void queryTokenIsNotNullAndUnique() throws IOException {
+        Map<String, Map<String, ColumnDef>> columns = tableColumns(tableBlocks(schemaText()));
+        ColumnDef token = columns.get("trade_order") == null ? null : columns.get("trade_order").get("query_token");
+        assertNotNull(token, "trade_order.query_token 必须存在");
+        assertEquals("VARCHAR(64)", token.type(), "query_token 类型基线已变化");
+        assertTrue(token.notNull(), "query_token 必须 NOT NULL；若改为可空，唯一键会放过空值，"
+                + "与“买家免密查单凭证必须存在”的语义不符");
+        assertTrue(normalized(schemaText()).contains("UNIQUE KEY `uk_query_token` (`query_token`)"),
+                "query_token 必须由唯一键覆盖");
     }
 
     @Test
