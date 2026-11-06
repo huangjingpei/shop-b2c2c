@@ -233,6 +233,7 @@ CREATE TABLE IF NOT EXISTS `trade_refund` (
   `idempotency_key` VARCHAR(64) NOT NULL,
   `refund_amount` DECIMAL(10,2) NOT NULL,
   `fee_refund_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  `fee_rounding_adjustment` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   `status` VARCHAR(24) NOT NULL DEFAULT 'PROCESSING',
   `channel_trade_no` VARCHAR(128) DEFAULT NULL,
   `channel_refund_no` VARCHAR(128) DEFAULT NULL,

@@ -33,6 +33,8 @@ public class TradeRefund {
     private String idempotencyKey;
     private BigDecimal refundAmount;
     private BigDecimal feeRefundAmount;
+    /** 尾差归属：本次退款吸收的服务费舍入差；正数=多冲正，负数=少冲正。 */
+    private BigDecimal feeRoundingAdjustment;
     private String status;          // PROCESSING / SUCCESS / FAILED
     private String channelTradeNo;
     private String channelRefundNo;

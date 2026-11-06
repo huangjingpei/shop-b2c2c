@@ -98,6 +98,27 @@ class RefundServiceTest {
                 .prepareOrderRefund(MERCHANT_ID, "SN-R1", new BigDecimal("25.00"), "部分退", KEY, 5L);
 
         assertEquals(new BigDecimal("0.75"), refund.getFeeRefundAmount());
+        assertEquals(new BigDecimal("0.00"), refund.getFeeRoundingAdjustment());
+    }
+
+    @Test
+    void finalPartialRefundAbsorbsRoundingRemainderAndRecordsOwner() {
+        TradeOrder order = paidOrder();
+        order.setPayAmount(new BigDecimal("3.00"));
+        order.setCommissionAmount(new BigDecimal("0.10"));
+        order.setRefundedAmount(new BigDecimal("2.00"));
+        order.setFeeRefundedAmount(new BigDecimal("0.06"));
+        when(orderMapper.findByOrderSn("SN-R1")).thenReturn(Optional.of(order));
+        when(orderMapper.lockById(11L)).thenReturn(order);
+        when(refundMapper.findByOrderIdAndKey(11L, KEY)).thenReturn(Optional.empty());
+        when(refundMapper.reserveRefund(eq(11L), eq(new BigDecimal("1.00")), eq(new BigDecimal("0.04"))))
+                .thenReturn(1);
+
+        TradeRefund refund = transactionService()
+                .prepareOrderRefund(MERCHANT_ID, "SN-R1", new BigDecimal("1.00"), "最后一次部分退", KEY, 5L);
+
+        assertEquals(new BigDecimal("0.04"), refund.getFeeRefundAmount());
+        assertEquals(new BigDecimal("0.01"), refund.getFeeRoundingAdjustment());
     }
 
     @Test

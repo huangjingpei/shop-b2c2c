@@ -97,7 +97,8 @@ public class RefundTransactionService {
                 return existing;
             }
             // 失败记录复用：先重新预占额度，再把记录重置为 PROCESSING；并发重试只允许一个生效。
-            BigDecimal retryFee = calculateFeeRefund(order, normalizedAmount);
+            FeeRefundAllocation retryAllocation = allocateFeeRefund(order, normalizedAmount);
+            BigDecimal retryFee = retryAllocation.fee;
             if (tradeRefundMapper.reserveRefund(order.getId(), normalizedAmount, retryFee) != 1) {
                 throw new BusinessException(409, "订单退款额度或服务费已变化，请刷新后重试");
             }
@@ -107,17 +108,19 @@ public class RefundTransactionService {
             }
             existing.setRefundAmount(normalizedAmount);
             existing.setFeeRefundAmount(retryFee);
+            existing.setFeeRoundingAdjustment(retryAllocation.adjustment);
             existing.setStatus(STATUS_PROCESSING);
             existing.setFailureReason(null);
             return existing;
         }
 
-        BigDecimal feeRefund = calculateFeeRefund(order, normalizedAmount);
+        FeeRefundAllocation allocation = allocateFeeRefund(order, normalizedAmount);
+        BigDecimal feeRefund = allocation.fee;
         if (tradeRefundMapper.reserveRefund(order.getId(), normalizedAmount, feeRefund) != 1) {
             throw new BusinessException(409, "订单退款额度或服务费已变化，请刷新后重试");
         }
 
-        TradeRefund refund = buildRefund(order, normalizedAmount, feeRefund, reason,
+        TradeRefund refund = buildRefund(order, normalizedAmount, feeRefund, allocation.adjustment, reason,
                 idempotencyKey, operatorId, SOURCE_ORDER, null);
         try {
             tradeRefundMapper.insert(refund);
@@ -154,7 +157,7 @@ public class RefundTransactionService {
         }
         BigDecimal amount = requirePositiveAmount(event.getPayAmount());
         String channel = PayChannel.normalize(event.getChannel());
-        TradeRefund refund = buildRefund(order, amount, ZERO, "重复付款原路退回", idempotencyKey,
+        TradeRefund refund = buildRefund(order, amount, ZERO, ZERO, "重复付款原路退回", idempotencyKey,
                 operatorId, SOURCE_DUPLICATE_PAYMENT, eventId);
         refund.setChannel(channel);
         refund.setChannelTradeNo(event.getPayTradeNo());
@@ -218,32 +221,35 @@ public class RefundTransactionService {
     }
 
     /**
-     * 按订单快照比例冲正服务费：feeRefund = commissionAmount * refundAmount / payAmount。
-     * 本次退款使累计退款达到实付时取剩余全部服务费，避免逐次四舍五入留下无法冲正的分差。
+     * 按订单快照比例冲正服务费，并显式记录尾差归属。
+     * 规则：fee = commission * refundAmount / payAmount（HALF_UP）；若本次使累计退款达到实付，
+     * 则 fee 取剩余全部服务费，feeRoundingAdjustment = fee - 比例值，正数表示本次退款多冲正、
+     * 负数表示少冲正。非最后一次退款不吸收尾差，adjustment 为 0。
      */
-    private BigDecimal calculateFeeRefund(TradeOrder order, BigDecimal refundAmount) {
+    private FeeRefundAllocation allocateFeeRefund(TradeOrder order, BigDecimal refundAmount) {
         BigDecimal payAmount = order.getPayAmount() == null ? ZERO : order.getPayAmount();
         BigDecimal commission = order.getCommissionAmount() == null ? ZERO : order.getCommissionAmount();
         BigDecimal alreadyFee = order.getFeeRefundedAmount() == null ? ZERO : order.getFeeRefundedAmount();
         BigDecimal alreadyRefunded = order.getRefundedAmount() == null ? ZERO : order.getRefundedAmount();
         if (payAmount.signum() <= 0 || commission.signum() <= 0) {
-            return ZERO;
+            return new FeeRefundAllocation(ZERO, ZERO);
         }
-        BigDecimal feeRefund;
-        if (refundAmount.add(alreadyRefunded).compareTo(payAmount) >= 0) {
-            feeRefund = commission.subtract(alreadyFee);
-        } else {
-            feeRefund = commission.multiply(refundAmount)
-                    .divide(payAmount, 2, RoundingMode.HALF_UP);
-        }
+        BigDecimal proportional = commission.multiply(refundAmount)
+                .divide(payAmount, 2, RoundingMode.HALF_UP);
+        BigDecimal feeRefund = refundAmount.add(alreadyRefunded).compareTo(payAmount) >= 0
+                ? commission.subtract(alreadyFee)
+                : proportional;
         BigDecimal feeRemaining = commission.subtract(alreadyFee);
         if (feeRefund.compareTo(feeRemaining) > 0) {
             feeRefund = feeRemaining;
         }
-        return feeRefund.max(ZERO);
+        feeRefund = feeRefund.max(ZERO);
+        BigDecimal adjustment = feeRefund.subtract(proportional);
+        return new FeeRefundAllocation(feeRefund, adjustment);
     }
 
-    private TradeRefund buildRefund(TradeOrder order, BigDecimal amount, BigDecimal feeRefund, String reason,
+    private TradeRefund buildRefund(TradeOrder order, BigDecimal amount, BigDecimal feeRefund,
+                                    BigDecimal feeRoundingAdjustment, String reason,
                                     String idempotencyKey, Long operatorId, String source, Long sourceEventId) {
         TradeRefund refund = new TradeRefund();
         refund.setRefundNo("RF" + REFUND_NO_TIME.format(LocalDateTime.now())
@@ -258,6 +264,7 @@ public class RefundTransactionService {
         refund.setIdempotencyKey(idempotencyKey);
         refund.setRefundAmount(amount);
         refund.setFeeRefundAmount(feeRefund);
+        refund.setFeeRoundingAdjustment(feeRoundingAdjustment == null ? ZERO : feeRoundingAdjustment);
         refund.setStatus(STATUS_PROCESSING);
         refund.setChannelTradeNo(order.getPayTradeNo());
         refund.setReason(truncate(reason));
@@ -286,5 +293,16 @@ public class RefundTransactionService {
     private String truncate(String value) {
         if (value == null) return null;
         return value.length() <= 256 ? value : value.substring(0, 256);
+    }
+
+    /** 服务费冲正分摊结果：fee 为本次冲正额，adjustment 为本次吸收的尾差。 */
+    private static final class FeeRefundAllocation {
+        private final BigDecimal fee;
+        private final BigDecimal adjustment;
+
+        private FeeRefundAllocation(BigDecimal fee, BigDecimal adjustment) {
+            this.fee = fee;
+            this.adjustment = adjustment;
+        }
     }
 }

@@ -269,6 +269,7 @@ CREATE TABLE IF NOT EXISTS `trade_refund` (
   `idempotency_key` VARCHAR(64) NOT NULL COMMENT '同一订单内的退款幂等键',
   `refund_amount` DECIMAL(10,2) NOT NULL COMMENT '本次退款金额',
   `fee_refund_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '本次按订单快照比例冲正的服务费',
+  `fee_rounding_adjustment` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '尾差归属：本次退款吸收的服务费舍入差，正数表示比比例值多冲正、负数表示少冲正',
   `status` VARCHAR(24) NOT NULL DEFAULT 'PROCESSING' COMMENT 'PROCESSING/SUCCESS/FAILED',
   `channel_trade_no` VARCHAR(128) DEFAULT NULL COMMENT '被退款的渠道原流水号',
   `channel_refund_no` VARCHAR(128) DEFAULT NULL COMMENT '渠道退款流水号',
