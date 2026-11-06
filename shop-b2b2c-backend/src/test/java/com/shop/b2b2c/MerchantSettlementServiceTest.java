@@ -223,7 +223,7 @@ class MerchantSettlementServiceTest {
         when(rechargeMapper.findByVoucherNo("V-001")).thenReturn(Optional.of(new MerchantRechargeOrder()));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> accountService().createRecharge(1L, new BigDecimal("100.00"), "V-001", "张三", null));
+                () -> accountService().createRecharge(1L, new BigDecimal("100.00"), "V-001", "张三", null, 5L));
         assertTrue(ex.getMessage().contains("已存在"));
         verify(rechargeMapper, never()).insert(any(MerchantRechargeOrder.class));
     }
@@ -234,6 +234,7 @@ class MerchantSettlementServiceTest {
         recharge.setId(7L);
         recharge.setRechargeNo("RCH-7");
         recharge.setMerchantId(1L);
+        recharge.setRequestedBy(5L);
         recharge.setAmount(new BigDecimal("100.00"));
         recharge.setVoucherNo("V-002");
         recharge.setStatus("PENDING");
@@ -268,7 +269,7 @@ class MerchantSettlementServiceTest {
         when(ledgerMapper.sumChargedByPeriod(eq(1L), any(), any())).thenReturn(new BigDecimal("2.00"));
         when(ledgerMapper.sumArrearsByPeriod(eq(1L), any(), any())).thenReturn(new BigDecimal("1.00"));
 
-        MerchantSettlementBatch result = settlementService().generateMonthly(1L, YearMonth.of(2026, 10));
+        MerchantSettlementBatch result = settlementService().generateMonthly(1L, YearMonth.of(2026, 10), 3L);
 
         assertEquals(new BigDecimal("100.00"), result.getGrossAmount());
         assertEquals(new BigDecimal("3.00"), result.getFeeAmount());
@@ -287,7 +288,7 @@ class MerchantSettlementServiceTest {
         when(batchMapper.findByPeriod(eq(1L), any(), any())).thenReturn(Optional.of(batch));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> settlementService().generateMonthly(1L, YearMonth.of(2026, 10)));
+                () -> settlementService().generateMonthly(1L, YearMonth.of(2026, 10), 3L));
         assertTrue(ex.getMessage().contains("已确认"));
         verify(itemMapper, never()).deleteByBatchId(anyLong());
     }
@@ -303,6 +304,39 @@ class MerchantSettlementServiceTest {
         assertEquals(3L, result.getConfirmedBy());
         assertNotNull(result.getConfirmedAt());
         verify(batchMapper).updateById(batch);
+    }
+
+    @Test
+    void settlementPreparerCannotConfirmOwnBatch() {
+        MerchantSettlementBatch batch = draftBatch(10L);
+        batch.setPreparedBy(3L);
+        when(batchMapper.lockById(10L)).thenReturn(batch);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> settlementService().confirm(10L, 3L));
+
+        assertEquals(403, ex.getCode());
+        assertEquals("DRAFT", batch.getStatus());
+        verify(batchMapper, never()).updateById(any());
+    }
+
+    @Test
+    void rechargeRequesterCannotConfirmOwnRecharge() {
+        MerchantRechargeOrder recharge = new MerchantRechargeOrder();
+        recharge.setId(8L);
+        recharge.setRechargeNo("RCH-8");
+        recharge.setMerchantId(1L);
+        recharge.setRequestedBy(3L);
+        recharge.setAmount(new BigDecimal("100.00"));
+        recharge.setStatus("PENDING");
+        when(rechargeMapper.findByRechargeNo("RCH-8")).thenReturn(Optional.of(recharge));
+        when(rechargeMapper.lockById(8L)).thenReturn(recharge);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> accountService().confirmRecharge("RCH-8", new BigDecimal("100.00"), 3L));
+
+        assertEquals(403, ex.getCode());
+        verify(ledgerMapper, never()).insert(any(MerchantAccountLedger.class));
     }
 
     @Test
@@ -476,6 +510,7 @@ class MerchantSettlementServiceTest {
         batch.setPeriodEnd(YearMonth.of(2026, 11).atDay(1));
         batch.setSettlementType("SERVICE_FEE");
         batch.setStatus("DRAFT");
+        batch.setPreparedBy(5L);
         batch.setVersion(0);
         return batch;
     }

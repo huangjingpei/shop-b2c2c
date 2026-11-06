@@ -35,6 +35,8 @@ public class MerchantSettlementBatch {
     private BigDecimal paidAmount = BigDecimal.ZERO;
     private BigDecimal arrearsAmount = BigDecimal.ZERO;
     private String status = "DRAFT"; // DRAFT/CONFIRMED
+    /** 制单人/最近一次重算人；确认人必须与其不同，满足职责分离。 */
+    private Long preparedBy;
     private Long confirmedBy;
     private LocalDateTime confirmedAt;
     private Integer version = 0;

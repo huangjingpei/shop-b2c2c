@@ -5,6 +5,7 @@
  *  1. voucherNo 全表唯一，作为线下转账的幂等凭证；同一凭证不得重复入账。
  *  2. 只有 PENDING 可被确认或驳回；确认与账本入账必须同一事务。
  *  3. confirmedAmount 是人工核对后的实际到账金额，可与申请金额不同，入账以确认金额为准。
+ *  4. requestedBy 记录申请人；确认人必须与其不同，满足职责分离与双人留痕。
  */
 package com.shop.b2b2c.entity;
 
@@ -24,6 +25,7 @@ public class MerchantRechargeOrder {
 
     private String rechargeNo;
     private Long merchantId;
+    private Long requestedBy;
     private BigDecimal amount;
     private BigDecimal confirmedAmount;
     private String voucherNo;

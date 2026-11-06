@@ -74,7 +74,8 @@ public class MerchantSettlementController {
     public R<MerchantRechargeOrder> createRecharge(@RequestBody SettlementDTOs.RechargeRequest request) {
         requireFinanceRole();
         return R.ok("充值申请已提交", accountService.createRecharge(requireMerchantId(), request.getAmount(),
-                request.getVoucherNo(), request.getPayerName(), request.getVoucherProofUrl()));
+                request.getVoucherNo(), request.getPayerName(), request.getVoucherProofUrl(),
+                StpUtil.getLoginIdAsLong()));
     }
 
     @Operation(summary = "查询充值单")

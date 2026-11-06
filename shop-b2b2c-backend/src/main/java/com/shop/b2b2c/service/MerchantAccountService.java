@@ -148,7 +148,7 @@ public class MerchantAccountService {
      */
     @Transactional
     public MerchantRechargeOrder createRecharge(Long merchantId, BigDecimal amount, String voucherNo,
-                                                String payerName, String proofUrl) {
+                                                String payerName, String proofUrl, Long operatorId) {
         BigDecimal value = normalizeAmount(amount, "充值金额");
         String voucher = voucherNo == null ? "" : voucherNo.trim();
         if (voucher.isEmpty()) {
@@ -160,6 +160,7 @@ public class MerchantAccountService {
         MerchantRechargeOrder recharge = new MerchantRechargeOrder();
         recharge.setRechargeNo("RCH" + UUID.randomUUID().toString().replace("-", ""));
         recharge.setMerchantId(merchantId);
+        recharge.setRequestedBy(operatorId);
         recharge.setAmount(value);
         recharge.setVoucherNo(voucher);
         recharge.setPayerName(payerName == null ? null : payerName.trim());
@@ -186,6 +187,13 @@ public class MerchantAccountService {
         }
         if ("REJECTED".equals(recharge.getStatus())) {
             throw new BusinessException(409, "充值单已驳回");
+        }
+        // 财务基线 18：申请人不能自审自批；申请人或确认人缺失时拒绝。
+        if (recharge.getRequestedBy() == null || operatorId == null) {
+            throw new BusinessException(400, "充值单缺少申请人或确认人");
+        }
+        if (recharge.getRequestedBy().equals(operatorId)) {
+            throw new BusinessException(403, "充值申请人不能与确认人相同");
         }
         BigDecimal amount = confirmedAmount == null ? recharge.getAmount() : normalizeAmount(confirmedAmount, "确认金额");
         String key = "RECHARGE:" + recharge.getRechargeNo();

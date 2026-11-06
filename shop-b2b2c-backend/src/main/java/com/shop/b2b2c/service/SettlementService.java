@@ -49,7 +49,7 @@ public class SettlementService {
      * 生成或重算某店某月结算草稿。已确认批次直接拒绝，避免改写历史账单。
      */
     @Transactional
-    public MerchantSettlementBatch generateMonthly(Long merchantId, YearMonth period) {
+    public MerchantSettlementBatch generateMonthly(Long merchantId, YearMonth period, Long operatorId) {
         LocalDate periodStart = period.atDay(1);
         LocalDate periodEnd = period.plusMonths(1).atDay(1);
         MerchantSettlementBatch batch = batchMapper.findByPeriod(merchantId, periodStart, periodEnd).orElse(null);
@@ -64,6 +64,7 @@ public class SettlementService {
             batch.setPeriodEnd(periodEnd);
             batch.setSettlementType("SERVICE_FEE");
             batch.setStatus("DRAFT");
+            batch.setPreparedBy(operatorId);
             batchMapper.insert(batch);
         } else {
             itemMapper.deleteByBatchId(batch.getId());
@@ -144,6 +145,7 @@ public class SettlementService {
         batch.setPaidAmount(scale(paid));
         batch.setArrearsAmount(scale(arrears));
         batch.setStatus("DRAFT");
+        batch.setPreparedBy(operatorId);
         batch.setVersion((batch.getVersion() == null ? 0 : batch.getVersion()) + 1);
         batchMapper.updateById(batch);
         return batch;
@@ -157,6 +159,13 @@ public class SettlementService {
         }
         if (!"DRAFT".equals(batch.getStatus())) {
             throw new BusinessException(409, "结算批次已确认");
+        }
+        // 财务基线 18：制单人与确认人必须不同，禁止同一人生成并确认结算。
+        if (batch.getPreparedBy() == null || operatorId == null) {
+            throw new BusinessException(400, "结算批次缺少制单人或确认人");
+        }
+        if (batch.getPreparedBy().equals(operatorId)) {
+            throw new BusinessException(403, "制单人与确认人不能为同一人");
         }
         batch.setStatus("CONFIRMED");
         batch.setConfirmedBy(operatorId);

@@ -169,6 +169,23 @@ class MerchantFeePolicyServiceTest {
     }
 
     @Test
+    void adjustmentRequiresDistinctOperatorAndReviewer() {
+        MerchantFeePolicy current = currentPolicy(1L, 300, "NORMAL");
+        when(policyMapper.findEffective(eq(1L), any())).thenReturn(current);
+
+        MerchantFeePolicyService.AdjustForm samePerson = adjustForm("NORMAL", 500, null, "上调费率");
+        samePerson.setConfirmedBy(7L);
+        assertEquals(403, assertThrows(BusinessException.class,
+                () -> service.adjust(1L, samePerson, 7L)).getCode());
+
+        MerchantFeePolicyService.AdjustForm missingReviewer = adjustForm("NORMAL", 500, null, "上调费率");
+        missingReviewer.setConfirmedBy(null);
+        assertEquals(400, assertThrows(BusinessException.class,
+                () -> service.adjust(1L, missingReviewer, 7L)).getCode());
+        verify(policyMapper, never()).insert(any());
+    }
+
+    @Test
     void missingPolicyBootstrapsFromLegacyCommissionRate() {
         MerchantStore store = new MerchantStore();
         store.setCommissionRate(new BigDecimal("3.00"));
@@ -218,6 +235,7 @@ class MerchantFeePolicyServiceTest {
         form.setRateBps(rateBps);
         form.setPromotionReason(promotionReason);
         form.setReason(reason);
+        form.setConfirmedBy(8L);
         return form;
     }
 }

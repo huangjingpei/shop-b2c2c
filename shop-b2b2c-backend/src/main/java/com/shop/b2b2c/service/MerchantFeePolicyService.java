@@ -6,6 +6,7 @@
  * 2. 生效规则：降费/平迁即时生效；调高排到次日 00:00，按自然日切分。调价会关闭当前政策与未生效的未来政策，避免同日两套费率。
  * 3. 订单快照只允许读取本服务返回的政策；merchant_store.commission_rate 仅作展示镜像由本服务同步，禁止再作为计费来源。
  * 4. 每次调价写 merchant_fee_audit（前后类型/基点、原因、操作人、确认人、生效时间），不回溯已生成订单快照。
+ *    调价人与复核人必须不同且都不能为空（财务基线 18）。
  * 5. 无政策时按存量 merchant_store.commission_rate 初始化一条 MIGRATION 政策，保证既有开发库可下单；
  *    生产应以入驻政策或后台配置为准，MIGRATION 只作开发期过渡，具体生产策略待用户确认。
  * 6. 默认费率 3.00%（300 基点）沿用既有默认值，具体默认数值仍待用户确认，不得表述为最终业务值。
@@ -122,6 +123,14 @@ public class MerchantFeePolicyService {
         if (form.getReason() == null || form.getReason().isBlank()) {
             throw new BusinessException(400, "费率调整必须填写原因");
         }
+        // 财务基线 18：调价人与复核人必须不同，且两字段都不能缺省。
+        Long confirmedBy = form.getConfirmedBy();
+        if (operatorId == null || confirmedBy == null) {
+            throw new BusinessException(400, "费率调整必须记录操作人与复核人");
+        }
+        if (operatorId.equals(confirmedBy)) {
+            throw new BusinessException(403, "调价人与复核人不能为同一人");
+        }
 
         LocalDateTime now = LocalDateTime.now();
         MerchantFeePolicy current = getEffectivePolicy(merchantId);
@@ -154,11 +163,11 @@ public class MerchantFeePolicyService {
         policy.setSource(RATE_PROMOTION.equals(rateType) ? SOURCE_PROMOTION : SOURCE_ADMIN_ADJUST);
         policy.setReason(form.getReason().trim());
         policy.setOperatorId(operatorId);
-        policy.setConfirmedBy(form.getConfirmedBy());
+        policy.setConfirmedBy(confirmedBy);
         policyMapper.insert(policy);
 
         writeAudit(merchantId, policy.getId(), current.getRateType(), current.getRateBps(),
-                rateType, newBps, policy.getReason(), operatorId, form.getConfirmedBy(), effectiveFrom);
+                rateType, newBps, policy.getReason(), operatorId, confirmedBy, effectiveFrom);
 
         // 仅在即时生效时同步展示镜像；次日生效的调高由次日首单/查询触发，展示仍显示当前旧费率。
         if (!increase) {

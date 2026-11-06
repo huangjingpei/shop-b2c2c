@@ -84,7 +84,8 @@ public class AdminSettlementController {
     public R<MerchantSettlementBatch> generate(@PathVariable Long merchantId,
                                                @RequestParam int year, @RequestParam int month) {
         StpUtil.checkRole("SUPERADMIN");
-        return R.ok("结算草稿已生成", settlementService.generateMonthly(merchantId, YearMonth.of(year, month)));
+        return R.ok("结算草稿已生成", settlementService.generateMonthly(merchantId, YearMonth.of(year, month),
+                StpUtil.getLoginIdAsLong()));
     }
 
     @Operation(summary = "确认结算批次")
