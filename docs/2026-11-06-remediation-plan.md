@@ -571,12 +571,12 @@
 | 优先级 | **P0（能力前置）**（无实名/账户/费率政策，后续计费与结算没有合法来源） |
 | 阶段 | S5 |
 | D/F/R | F02、F13、F14、R02；关联 N5 |
-| 涉及文件 | **计划新增** `merchant_onboarding_application/audit`、`merchant_settlement_account`、`merchant_fee_policy/audit`（现有代码中均不存在）；[MerchantController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantController.java#L68-L133)、[MerchantStore.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/entity/MerchantStore.java#L28-L38)、[ManagementGuards.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/common/ManagementGuards.java#L20) |
+| 涉及文件 | **已新增** `merchant_onboarding_application/audit`、`merchant_settlement_account/audit`、`merchant_fee_policy/audit`，并扩展 `merchant_payment_account` 阶段二预留列；[MerchantController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantController.java)、[MerchantOnboardingController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantOnboardingController.java)、[MerchantSettlementAccountController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantSettlementAccountController.java)、[MerchantFeePolicyService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantFeePolicyService.java)、[ManagementGuards.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/common/ManagementGuards.java#L20) |
 | 问题本质 | 超管直接建店即营业；无申请/实名/审核/驳回；费率 0–100 无政策与审计；收款账户是 `SUB+时间戳`、默认 `PASSED` 的模拟值。 |
 | 修复要点 | 申请单与审核状态机（个人身份证/企业执照两条路径）；通过后才建店；账户登记+人工审核+脱敏；费率政策正常 `rate_bps 100–1000`（1%–10%），推广 `rate_type=PROMOTION + rate_bps=0` 为独立状态；调价原因/操作人/前后值/确认人/生效时间（**已确认 S07-B**：默认次日 00:00、按自然日一天一套；降费可即时、调高必须次日）；0 费率仍生成计费记录并区分应收/免收；停写假进件值。**实名与账户审核按已确认（用户 2026-11-06）的口径实现**：Q11 分阶段（阶段一人工审核；`verification_method/verification_source` 字段预留第三方；不得把人工审核标成第三方实名）；Q12 账户登记+人工核对户名与账号，**“户名必须等于实名主体”为硬校验**，不接第三方账户验证。详见设计 §3–§5、§8.2。 |
 | 依赖/冲突 | 与 T13（PII/权限）同批；依赖 T12 迁移机制、T03 演示种子清理；与 T15 的 PII/密钥模式复用；**T32/M2 不得先于本项上线真实计费**；Q11/Q12 已确认，可进入实现；第三方实名与账户验证作为后续增强，不在阶段一范围。 |
 | 回归要点 | 合法：个人/企业申请→人工审核通过→建店/店长；管理员调价 1%–10% 留痕；推广 0 费率生成应收/免收记录；户名等于实名主体时账户审核通过。非法：超范围费率、把 0 混入正常区间、重复主体、员工读完整 PII 均拒绝；**户名与实名主体不一致必须拒绝/补件，不允许人工放行**；未审核账户不得展示“已开通”；无第三方核验结果不得标注“第三方认证”。失败后数据不变：审核失败不改店铺状态；调价失败不产生新政策。 |
-| 状态 | 待修复（设计已出；Q01–Q21 与 S01–S12 已确认/撤回，代码待实现） |
+| 状态 | 已实现·待人工验证（分三段提交：`1eccfe8` 入驻申请/实名审核状态机、`4426ae0` 收款账户登记与人工核验、`81840c3` 费率政策与订单快照统一。证件与账号只存密文+指纹、接口与店铺主表只出脱敏值；审核通过才建店/建店长，驳回/补件/撤回无建店副作用；费率唯一来源为 `merchant_fee_policy`，降费即时、调高次日 00:00，0% 仅 PROMOTION 且必须填原因，调价写审计，订单快照不回溯；`merchant_store.commission_rate` 降为展示镜像。**三项业务值仍待用户确认**：审核角色、默认费率具体数值、价税分离税率，详见缺口 G16–G18。未运行 mvn/编译/测试/构建，未连接数据库） |
 
 #### T32 阶段一真实支付渠道接入（商家直收，M2）
 
@@ -618,7 +618,7 @@
 | 修复要点 | 订单级费用快照（费率/基数/金额/政策版本/状态，**Q01-A 已确认**）；计费基数按商品成交额，剔除运费/平台优惠与补贴/税费，必须新增字段，不用实付额过渡（**Q04-B 已确认**）；余额充足时支付成功即扣，不足转欠费并按 7/21/30 天账期宽限（**Q02-A + 补充规则已确认**）；推广 0 费率仍生成应收/免收记录；含税扣款、内部价税分离记账（**Q05-D 已确认**）；按周期生成服务费结算批次与明细（**Q06-C 月结已确认**）；**后台必须同时提供逐笔明细查询，结算单是汇总、明细是证据，明细可追到 `payment_event_id/refund_id` 与订单快照费率**；充值按 **Q08-A 线下转账 + 人工确认**，充值单带唯一凭证号并幂等入账（详见设计 §8.4）；所有余额变更走账本+幂等键；阶段一结算单是服务费账单，不是货款应付。设计 §5、§6、§7、§8、§9。 |
 | 依赖/冲突 | 依赖 T39 费率政策、T32 支付事件、T33 退款冲正；**T34 不得在 T05–T07 未修时扣费**；与 T35 对账同批；Q06/Q07/Q08 已确认，周期按自然月、信用额度初始 500 元可配、充值走线下+人工确认，不再以“未确认”为由只做空结构。 |
 | 回归要点 | 合法：支付成功即扣、余额足够时账本与余额一致；推广 0 费率生成应收/免收记录；含税金额与净收入/税额可分；月结账单与逐笔明细合计一致且明细可追溯到事件与退款。非法：余额不足未转欠费、0 费率漏记、重复结算/重复回调重复扣费、同一凭证号重复入账。并发交错：退款与扣费同时发生，冲正不重复、不出现负费用。失败后数据不变：扣费失败不改订单费用状态、不重复生成明细。 |
-| 状态 | 已实现·待人工验证（实现提交 57da1e8；订单级快照/账户/账本/余额扣费/整笔转欠费/0费率免收/退款账本冲正/线下充值人工确认/月结草稿与逐笔明细已落地。T39 费率政策尚未实现，费率来源暂为 `merchant_store.commission_rate` 并在订单固化；旧空壳 `billing_statement` 不作为第二套结算权威，新批次/明细为准。未运行 mvn/编译/测试/构建，未连接数据库） |
+| 状态 | 已实现·待人工验证（实现提交 57da1e8；订单级快照/账户/账本/余额扣费/整笔转欠费/0费率免收/退款账本冲正/线下充值人工确认/月结草稿与逐笔明细已落地。T39 费率政策已于 `81840c3` 落地，快照来源已切至 `merchant_fee_policy`，`merchant_store.commission_rate` 仅作展示镜像；旧空壳 `billing_statement` 不作为第二套结算权威，新批次/明细为准。未运行 mvn/编译/测试/构建，未连接数据库） |
 
 #### T35 欠费、对账与差异处理（M4）
 

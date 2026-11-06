@@ -142,13 +142,12 @@
 - H2 集成测试通过不代表 MySQL 迁移语法通过；迁移报告须注明使用的数据库版本与执行次数。
 
 
-## G14 T34 费率来源暂用 merchant_store.commission_rate，T39 费率政策未落地
+## G14 T34/T39 费率来源切换（已随 T39 落地）
 
 - 发现位置：shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ServiceFeeSnapshotService.java。
-- 现象：T34 已实现订单级费率快照、1%~10%/0% 校验与订单固化，但费率政策版本、降费即时/调高次日 00:00/自然日切分仍属 T39；本轮费率直接读取 merchant_store.commission_rate，ee_policy_id 留空。
-- 不属本卡范围的原因：用户本轮明确只做 T34/T35，不铺开 T39/T40；提前实现政策表会与 T39 的版本化规则冲突。
-- 建议归属：T39；接入时必须把快照来源切到政策版本，并保留已下单订单的 ee_rate_bps/fee_base_amount 不回溯。
-- 影响面：当前可正确按单店当前费率计费并固化；政策生效时间切分与版本审计尚不可用。
+- 现象：T34 曾直接读取 `merchant_store.commission_rate` 并在订单固化费率，`fee_policy_id` 留空；费率政策版本、降费即时/调高次日 00:00/自然日切分未落地。
+- 处理结果：已随 T39 第三段（`81840c3`）落地。快照唯一来源改为 `MerchantFeePolicyService.getEffectivePolicy`，订单写 `fee_policy_id/fee_rate_bps/fee_rate_type`；`merchant_store.commission_rate` 降为展示镜像，仅由政策服务同步；已生成订单的快照字段不回溯。
+- 残留：存量店铺无政策时按旧佣金费率懒初始化一条 `MIGRATION` 政策（开发期过渡），生产迁移策略仍待用户确认；真实 MySQL 生效区间唯一性与并发创建仍须人工验证。
 
 ## G15 T33 全额退款后已交付虚拟卡密未作废（待用户确认，未实现）
 
@@ -157,3 +156,27 @@
 - 不属本卡范围的原因：作废/换发涉及已交付资产的业务规则（是否允许、是否可追回、是否影响买家权益），用户答复未到。
 - 建议归属：T33 后续补卡或新增候选；实现前必须先确认业务口径。
 - 影响面：当前不得把“退款后卡密仍可用”写成既定规则；文档与代码均保持该缺口开放。
+
+## G16 T39 入驻/账户审核角色未确认（待用户确认）
+
+- 发现位置：[MerchantOnboardingController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantOnboardingController.java)、[MerchantSettlementAccountController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantSettlementAccountController.java)、[MerchantController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantController.java)。
+- 现象：入驻审核、收款账户核验目前只沿用既有 `/api/v1/admin/**` 超管鉴权，未新增独立“审核员”角色码，也未实现多级复核。
+- 未确认原因：用户尚未答复谁可审核（仅超管 / 独立审核员 / 多级复核），本轮不凭空定义角色。
+- 建议归属：T13 权限矩阵或 T39 后续增强；确认后补角色码、接口鉴权与越权/合法两条用例。
+- 影响面：当前任一超管均可审核；文档与代码不得表述为“审核角色已分离”或“已实现多级复核”。
+
+## G17 T39 默认费率具体数值未确认（待用户确认）
+
+- 发现位置：[MerchantOnboardingService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantOnboardingService.java) 的 `DEFAULT_COMMISSION_RATE`、[MerchantFeePolicyService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantFeePolicyService.java) 的 `DEFAULT_RATE_BPS`。
+- 现象：新店初始费率沿用既有默认 3.00%（300 基点），用户尚未答复该数值是否为最终业务值。
+- 未确认原因：默认费率属业务定价，不得由开发臆定；本轮只复用现有默认值并集中到政策服务。
+- 建议归属：T39 后续；确认后只改常量与迁移默认值并补用例，已生成订单快照不回溯。
+- 影响面：文档不得把 3% 写成“已确定默认费率”。另：开店初始费率是否允许 0% 推广尚未答复，当前按 1%~10% 拒绝，0% 只能在开店后通过后台调价设置。
+
+## G18 T39 价税分离税率未确认（待用户确认）
+
+- 发现位置：`shop.settlement.fee-tax-rate`（默认 `0.06`）与 [ServiceFeeSnapshotService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ServiceFeeSnapshotService.java)。
+- 现象：服务费含税金额按 6% 税率做内部价税分离并写入订单快照，用户尚未答复技术服务费适用税率与含税口径。
+- 未确认原因：税率涉及财税口径与开票，不得由开发默认成业务结论；本轮沿用既有配置值。
+- 建议归属：T39 后续或财税专项；确认后调整配置默认值与快照用例，历史订单税额不重算。
+- 影响面：当前税额仅作内部记账与对账数据，不代表已开票或税务合规；不得把 6% 表述为最终税率。
