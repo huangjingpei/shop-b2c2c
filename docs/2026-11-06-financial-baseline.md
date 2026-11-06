@@ -78,7 +78,7 @@
 | 15 二清红线 | 合规设计：阶段一商家直收，平台不代收 | 合规设计 | 合规设计 | 合规设计 | 合规设计：收款账户为商家自有 | 部分：已写否决线并默认关闭；资质前不得开启 |
 | 16 发票域 | 缺失（待建域，登记不实现） | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
 | 17 数据留存/最小必要 | 部分：事件原始报文 | 部分：退款证据保留 | 部分：账本保留 | 部分：差异保留 | 合规：证件/账号密文+指纹、脱敏、访问审计 | 部分：账本保留，无留存策略 |
-| 18 职责分离/双人 | 部分：回调自动，无人工审批 | 部分：requestedBy 有，无复核人 | 合规：充值申请/确认双人且必须不同（c0de750） | 部分：停收恢复仅 operatorId | 合规：调价操作人/复核人必须不同（c0de750） | 部分：无人工资金操作 |
+| 18 职责分离/双人 | 部分：回调自动，无人工审批 | 部分：requestedBy 有，无复核人 | 合规（开关）：申请/确认默认不同人，开发单管理员落 SAME_OPERATOR | 部分：停收恢复仅 operatorId | 合规（开关）：调价操作人/复核人默认不同，初始费率同口径 | 部分：无人工资金操作 |
 | 19 敏感操作留痕 | 合规：支付事件审计 | 部分：退款无审批留痕 | 部分：充值无申请/复核双字段 | 部分：差异无前后值 | 合规：费率审计有前后值 | 部分：退分有来源，无状态审计 |
 | 20 异常告警 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
 | 21 备份恢复演练 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 | 缺失 |
@@ -93,9 +93,9 @@
 | F01 | 7 append-only | `merchant_account_ledger` 可被 `BaseMapper` 更新/删除；仅靠服务约定 | 已整改 | 批次 A（3c19a1d）：库级触发器 + schema 静态用例；状态已实现·待人工验证 |
 | F02 | 7 红冲 | `reverseOrderFee` 已写反向 CREDIT，原始 DEBIT 不覆盖 | 合规 | 保留并补用例说明 |
 | F03 | 9 尾差 | `RefundTransactionService.calculateFeeRefund` 最后一次退款吸收尾差，但不落字段 | 已整改 | 批次 B（00b6998）：`trade_refund.fee_rounding_adjustment` + 用例；状态已实现·待人工验证 |
-| F04 | 18 职责分离 | `MerchantFeePolicyService.adjust` 的 `confirmedBy` 未校验与 `operatorId` 不同 | 已整改 | 批次 C（c0de750） |
-| F05 | 18 职责分离 | `SettlementService.confirm` 仅 `confirmedBy`，无制单人/复核人分离 | 已整改 | 批次 C（c0de750）：批次增加 `preparedBy`，确认人必须不同 |
-| F06 | 18 职责分离 | `MerchantAccountService.confirmRecharge` 仅 `confirmedBy`，无申请人/复核人分离 | 已整改 | 批次 C（c0de750）：充值单增加 `requestedBy`，确认人必须不同 |
+| F04 | 18 职责分离 | `MerchantFeePolicyService.adjust` 的 `confirmedBy` 未校验与 `operatorId` 不同 | 已整改 | 批次 C（c0de750）+ 双人复核开关：生产强制不同，开发同人落 SAME_OPERATOR |
+| F05 | 18 职责分离 | `SettlementService.confirm` 仅 `confirmedBy`，无制单人/复核人分离 | 已整改 | 批次 C：批次增加 `preparedBy`；开关关闭时同人落 SAME_OPERATOR |
+| F06 | 18 职责分离 | `MerchantAccountService.confirmRecharge` 仅 `confirmedBy`，无申请人/复核人分离 | 已整改 | 批次 C：充值单增加 `requestedBy`；开关关闭时同人落 SAME_OPERATOR |
 | F07 | 3/5 状态审计 | `MerchantCollectionStatusAudit` 仅 operatorId，无复核人；自动停收无人工复核 | 部分 | 后续批次（需确认停收恢复是否强制双人） |
 | F08 | 1/13 重试上限 | `ReconciliationService.retry` 与退款查单无上限、无转人工阈值 | 已整改（对账）/部分（退款） | 批次 D（651c15b）：对账差异 3 次转 MANUAL；退款查单仍待后续批次 |
 | F09 | 6/14 对账闭环 | 无 T+1 定时对账、无长短款分类、无处理时限 | 部分 | 后续批次（仅登记，不进本轮） |
@@ -120,9 +120,10 @@
 - **批次 B：尾差显式分配（00b6998）**
   - 改前：全额退款时最后一次退款吸收尾差，但无字段记录归属。
   - 改后：`trade_refund.fee_rounding_adjustment` 记录本次退款吸收的尾差，正数表示比比例值多冲正、负数表示少冲正；非最后一次为 0；多次部分退款累计冲正等于原服务费。
-- **批次 C：职责分离与双人留痕（c0de750）**
+- **批次 C：职责分离与双人留痕（c0de750，开关与 approvalMode 随本轮交付补齐）**
   - 改前：调价、结算确认、充值确认均允许同一人操作且无复核人强校验。
-  - 改后：调价 `confirmedBy` 必须与 `operatorId` 不同（缺失 400、相同 403）；结算批次新增 `prepared_by`，制单/重算落库、确认人必须不同，定时任务以系统标识 0 制单；充值单新增 `requested_by`，确认人必须不同。
+  - 改后：统一由 `FinanceApprovalGuard` 判定。`shop.finance.dual-approval-required=true` 时调价/结算/充值/开店初始费率的操作人与复核人必须不同，相同 403；`false`（开发/试点默认）时允许同人，但必须落 `approvalMode=SAME_OPERATOR` 并写 WARN，不同人落 `DUAL_APPROVAL`。结算批次以 `prepared_by`、充值单以 `requested_by` 作为申请人，缺失仍 400；调价与开店初始费率未传复核人时按操作人处理（与单据制单人缺省口径一致），严格模式下即视为同人并 403，开发模式落 `SAME_OPERATOR`，因此后台佣金弹窗只传费率在单管理员环境仍可用。结算批次新增 `prepared_by`，充值单新增 `requested_by`，开店初始费率新增可选 `rateConfirmedBy` 并走同一入口。
+  - 生产约束：部署脚本 `.env` 固定 `FINANCE_DUAL_APPROVAL_REQUIRED=true`；单管理员模式仅限开发/试点。
 - **批次 D：对账差异重试上限（651c15b）**
   - 改前：差异可无限重试，状态长期停留 RETRY，无法区分积压与需人工。
   - 改后：`MAX_RETRY_COUNT=3`；第 3 次仍不一致置 `MANUAL` 并写明已转人工；MANUAL 后重试返回 409，只能人工 resolve/ignore。

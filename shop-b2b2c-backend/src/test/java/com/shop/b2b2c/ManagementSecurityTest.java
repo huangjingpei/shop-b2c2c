@@ -32,7 +32,8 @@ class ManagementSecurityTest {
         var feePolicy = mock(MerchantFeePolicyService.class);
         var controller = new MerchantController(store, account, user,
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy);
-        assertThrows(BusinessException.class, () -> controller.updateCommission(1L, value == null ? null : new BigDecimal(value)));
+        assertThrows(BusinessException.class, () -> controller.updateCommission(1L,
+                value == null ? null : new BigDecimal(value), "测试费率调整", 3L));
         verifyNoInteractions(store, account, user, feePolicy);
     }
 
@@ -45,7 +46,7 @@ class ManagementSecurityTest {
         when(store.findById(1L)).thenReturn(java.util.Optional.of(entity));
         new MerchantController(store, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy)
-                .updateCommission(1L, new BigDecimal(value));
+                .updateCommission(1L, new BigDecimal(value), "测试费率调整", 3L);
         verify(feePolicy).adjust(eq(1L), argThat(form -> form.getRateBps() != null
                 && new BigDecimal(form.getRateBps()).compareTo(new BigDecimal(value).multiply(new BigDecimal("100"))) == 0),
                 any());

@@ -247,8 +247,17 @@
 - 现象：超窗回调已拒绝并写 WARN 结构化审计日志，但未持久化到审计表，无法在后台检索。
 - 建议归属：审计专项；补表前不得把日志留存表述为完整审计。
 
-## G30 开发环境单管理员与职责分离的冲突（需业务确认）
+## G30 开发环境单管理员与职责分离的冲突（已整改·待人工验证）
 
-- 现象：财务基线 C 要求调价人/复核人、结算制单人/确认人、充值申请人/确认人必须不同；当前开发环境若只有一个超管账号，确认类操作会被 403 拒绝。
-- 建议归属：业务/环境确认；生产至少配置两个具备财务权限的账号，或明确单人环境的例外审批口径。不得为了跑通而放宽分离校验。
-- 补充：`MerchantFeePolicyService.createInitialPolicy` 仍将 `operatorId` 同时写入 `confirmedBy`（开店初始费率，非人工调价路径）；是否需要独立复核待业务确认，本轮未改。
+- 现象：财务基线 C 要求调价人/复核人、结算制单人/确认人、充值申请人/确认人必须不同；单超管环境下确认类操作会被 403 拒绝。
+- 整改：新增 `shop.finance.dual-approval-required`（环境变量 `FINANCE_DUAL_APPROVAL_REQUIRED`）。开发/试点默认 false，允许同人操作但必须落 `approvalMode=SAME_OPERATOR` 并写 WARN；生产部署脚本生成 `.env` 时固定 true，同人一律 403。开店初始费率走同一开关与同一复核入口 `rateConfirmedBy`。
+- 约束：**单管理员模式仅在开发/试点可用，生产禁止**；生产必须至少配置两个具备财务权限的后台账号，否则确认类操作无法完成。
+- 验证：代理未运行编译/测试，状态为已实现·待人工验证。
+
+## G31 生产双人复核的后台操作入口缺少复核人选择（待产品确认）
+
+- 发现位置：`shop-admin-vue/src/views/admin/Merchants.vue` 佣金弹窗、[MerchantController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantController.java) 的 `updateCommission`、[MerchantOnboardingController.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantOnboardingController.java) 的 `rateConfirmedBy`。
+- 现象：后台佣金弹窗只传 `rate` 与内联默认原因，不带复核人；生产开关打开时服务端按“未传复核人=操作人”判定为同人并 403。入驻审核的 `rateConfirmedBy` 也没有前端入口。
+- 现状与影响：开发/试点关闭开关时同人复核落 `SAME_OPERATOR`，调价可用；生产需由具备财务权限的第二个账号通过 API 显式传 `confirmedBy`/`rateConfirmedBy` 才能完成。不改变金额、账本与审计语义，只影响生产后台操作便利性。
+- 暂不自行实现的原因：复核人如何选择（用户下拉、上级指派、双人时间窗）属产品与权限设计，任务卡未定义，前端改动会扩大本轮范围。
+- 建议归属：财务双人复核的后续前端任务；上线前必须补齐或由运维明确生产调价/入驻的 API 操作流程。

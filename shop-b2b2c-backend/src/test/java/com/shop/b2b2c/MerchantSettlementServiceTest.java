@@ -27,6 +27,7 @@ import com.shop.b2b2c.mapper.MerchantSettlementItemMapper;
 import com.shop.b2b2c.mapper.PaymentEventMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
 import com.shop.b2b2c.mapper.TradeRefundMapper;
+import com.shop.b2b2c.service.FinanceApprovalGuard;
 import com.shop.b2b2c.service.MerchantAccountService;
 import com.shop.b2b2c.service.ServiceFeeSnapshotService;
 import com.shop.b2b2c.service.SettlementService;
@@ -67,13 +68,21 @@ class MerchantSettlementServiceTest {
     private final ServiceFeeSnapshotService snapshotService = new ServiceFeeSnapshotService();
 
     private MerchantAccountService accountService() {
+        return accountService(false);
+    }
+
+    private MerchantAccountService accountService(boolean dualApprovalRequired) {
         return new MerchantAccountService(accountMapper, ledgerMapper, rechargeMapper, orderMapper, auditMapper,
-                snapshotService);
+                snapshotService, new FinanceApprovalGuard(dualApprovalRequired));
     }
 
     private SettlementService settlementService() {
+        return settlementService(false);
+    }
+
+    private SettlementService settlementService(boolean dualApprovalRequired) {
         return new SettlementService(batchMapper, itemMapper, ledgerMapper, orderMapper, refundMapper,
-                eventMapper, snapshotService);
+                eventMapper, snapshotService, new FinanceApprovalGuard(dualApprovalRequired));
     }
 
     @Test
@@ -302,18 +311,19 @@ class MerchantSettlementServiceTest {
 
         assertEquals("CONFIRMED", result.getStatus());
         assertEquals(3L, result.getConfirmedBy());
+        assertEquals(FinanceApprovalGuard.MODE_DUAL_APPROVAL, result.getApprovalMode());
         assertNotNull(result.getConfirmedAt());
         verify(batchMapper).updateById(batch);
     }
 
     @Test
-    void settlementPreparerCannotConfirmOwnBatch() {
+    void settlementPreparerCannotConfirmOwnBatchUnderStrictMode() {
         MerchantSettlementBatch batch = draftBatch(10L);
         batch.setPreparedBy(3L);
         when(batchMapper.lockById(10L)).thenReturn(batch);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> settlementService().confirm(10L, 3L));
+                () -> settlementService(true).confirm(10L, 3L));
 
         assertEquals(403, ex.getCode());
         assertEquals("DRAFT", batch.getStatus());
@@ -321,7 +331,20 @@ class MerchantSettlementServiceTest {
     }
 
     @Test
-    void rechargeRequesterCannotConfirmOwnRecharge() {
+    void sameOperatorSettlementConfirmAllowedWhenDualApprovalDisabled() {
+        MerchantSettlementBatch batch = draftBatch(10L);
+        batch.setPreparedBy(3L);
+        when(batchMapper.lockById(10L)).thenReturn(batch);
+
+        MerchantSettlementBatch result = settlementService(false).confirm(10L, 3L);
+
+        assertEquals("CONFIRMED", result.getStatus());
+        assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, result.getApprovalMode());
+        verify(batchMapper).updateById(batch);
+    }
+
+    @Test
+    void rechargeRequesterCannotConfirmOwnRechargeUnderStrictMode() {
         MerchantRechargeOrder recharge = new MerchantRechargeOrder();
         recharge.setId(8L);
         recharge.setRechargeNo("RCH-8");
@@ -333,10 +356,31 @@ class MerchantSettlementServiceTest {
         when(rechargeMapper.lockById(8L)).thenReturn(recharge);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> accountService().confirmRecharge("RCH-8", new BigDecimal("100.00"), 3L));
+                () -> accountService(true).confirmRecharge("RCH-8", new BigDecimal("100.00"), 3L));
 
         assertEquals(403, ex.getCode());
         verify(ledgerMapper, never()).insert(any(MerchantAccountLedger.class));
+    }
+
+    @Test
+    void sameOperatorRechargeConfirmAllowedWhenDualApprovalDisabled() {
+        MerchantRechargeOrder recharge = new MerchantRechargeOrder();
+        recharge.setId(8L);
+        recharge.setRechargeNo("RCH-8");
+        recharge.setMerchantId(1L);
+        recharge.setRequestedBy(3L);
+        recharge.setAmount(new BigDecimal("100.00"));
+        recharge.setStatus("PENDING");
+        when(rechargeMapper.findByRechargeNo("RCH-8")).thenReturn(Optional.of(recharge));
+        when(rechargeMapper.lockById(8L)).thenReturn(recharge);
+        when(accountMapper.lockByMerchantId(1L)).thenReturn(account("0.00", "0.00"));
+
+        MerchantRechargeOrder result = accountService(false)
+                .confirmRecharge("RCH-8", new BigDecimal("100.00"), 3L);
+
+        assertEquals("CONFIRMED", result.getStatus());
+        assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, result.getApprovalMode());
+        verify(ledgerMapper).insert(any(MerchantAccountLedger.class));
     }
 
     @Test

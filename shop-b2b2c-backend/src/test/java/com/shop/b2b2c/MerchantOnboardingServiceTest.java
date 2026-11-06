@@ -128,7 +128,7 @@ class MerchantOnboardingServiceTest {
         assertEquals("MANUAL_REVIEW", application.getVerificationSource());
         verify(storeMapper).save(any(MerchantStore.class));
         verify(userMapper).save(any(SysUser.class));
-        verify(feePolicyService).createInitialPolicy(eq(99L), eq(300), any(), any(), eq(7L));
+        verify(feePolicyService).createInitialPolicy(eq(99L), eq(300), any(), any(), eq(7L), eq(7L));
         verify(applicationMapper).updateById(application);
     }
 
@@ -207,7 +207,7 @@ class MerchantOnboardingServiceTest {
         service.approve(6L, provisioning, "推广期免佣", 7L);
 
         assertEquals(MerchantOnboardingService.STATUS_APPROVED, application.getStatus());
-        verify(feePolicyService).createInitialPolicy(eq(100L), eq(0), eq("新店首年推广"), any(), eq(7L));
+        verify(feePolicyService).createInitialPolicy(eq(100L), eq(0), eq("新店首年推广"), any(), eq(7L), eq(7L));
     }
 
     private MerchantOnboardingService.ApplicationForm individualForm() {

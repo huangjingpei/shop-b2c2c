@@ -461,6 +461,7 @@ CREATE TABLE IF NOT EXISTS merchant_recharge_order (
   ledger_entry_id BIGINT NULL,
   confirmed_by BIGINT NULL,
   confirmed_at DATETIME NULL,
+  approval_mode VARCHAR(24) NULL,
   reject_reason VARCHAR(255) NULL,
   version INT NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -488,6 +489,7 @@ CREATE TABLE IF NOT EXISTS merchant_settlement_batch (
   prepared_by BIGINT NULL,
   confirmed_by BIGINT NULL,
   confirmed_at DATETIME NULL,
+  approval_mode VARCHAR(24) NULL,
   version INT NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -658,6 +660,7 @@ CREATE TABLE IF NOT EXISTS merchant_fee_policy (
   reason VARCHAR(512) NULL,
   confirmed_by BIGINT NULL,
   operator_id BIGINT NULL,
+  approval_mode VARCHAR(24) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -673,6 +676,7 @@ CREATE TABLE IF NOT EXISTS merchant_fee_audit (
   reason VARCHAR(512) NULL,
   operator_id BIGINT NULL,
   confirmed_by BIGINT NULL,
+  approval_mode VARCHAR(24) NULL,
   effective_from TIMESTAMP NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

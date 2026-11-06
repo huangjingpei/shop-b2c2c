@@ -5,8 +5,9 @@
  * 1. 费率区间：NORMAL 100–1000 基点（1%–10%）；PROMOTION 固定 0 基点且必须记录推广原因，0% 不并入正常区间。
  * 2. 生效规则：降费/平迁即时生效；调高排到次日 00:00，按自然日切分。调价会关闭当前政策与未生效的未来政策，避免同日两套费率。
  * 3. 订单快照只允许读取本服务返回的政策；merchant_store.commission_rate 仅作展示镜像由本服务同步，禁止再作为计费来源。
- * 4. 每次调价写 merchant_fee_audit（前后类型/基点、原因、操作人、确认人、生效时间），不回溯已生成订单快照。
- *    调价人与复核人必须不同且都不能为空（财务基线 18）。
+ * 4. 每次调价写 merchant_fee_audit（前后类型/基点、原因、操作人、确认人、复核模式、生效时间），不回溯已生成订单快照。
+ *    调价人与复核人是否必须不同由 FinanceApprovalGuard 统一判定：双人复核开关打开时必须不同；
+ *    开发/试点关闭时允许同人，但必须落 SAME_OPERATOR 并打 WARN 日志。
  * 5. 无政策时按存量 merchant_store.commission_rate 初始化一条 MIGRATION 政策，保证既有开发库可下单；
  *    生产应以入驻政策或后台配置为准，MIGRATION 只作开发期过渡，具体生产策略待用户确认。
  * 6. 默认费率 3.00%（300 基点）沿用既有默认值，具体默认数值仍待用户确认，不得表述为最终业务值。
@@ -51,6 +52,7 @@ public class MerchantFeePolicyService {
     private final MerchantFeePolicyMapper policyMapper;
     private final MerchantFeeAuditMapper auditMapper;
     private final MerchantStoreMapper storeMapper;
+    private final FinanceApprovalGuard approvalGuard;
 
     @Data
     public static class AdjustForm {
@@ -76,10 +78,21 @@ public class MerchantFeePolicyService {
 
     /**
      * 开店审核通过时创建初始政策；0 费率必须携带推广原因。
+     * 未单独指定复核人时沿用操作人，交由 FinanceApprovalGuard 按开关判定是否允许同人复核。
      */
     @Transactional(rollbackFor = Exception.class)
     public MerchantFeePolicy createInitialPolicy(Long merchantId, Integer rateBps, String promotionReason,
                                                  String reason, Long operatorId) {
+        return createInitialPolicy(merchantId, rateBps, promotionReason, reason, operatorId, operatorId);
+    }
+
+    /**
+     * 开店初始费率的双人复核入口：生产开启双人复核时应传入与操作人不同的复核人。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public MerchantFeePolicy createInitialPolicy(Long merchantId, Integer rateBps, String promotionReason,
+                                                 String reason, Long operatorId, Long confirmedBy) {
+        String approvalMode = approvalGuard.verify("开店初始费率", operatorId, confirmedBy);
         int bps = rateBps == null ? DEFAULT_RATE_BPS : rateBps;
         String rateType = bps == 0 ? RATE_PROMOTION : RATE_NORMAL;
         validateRate(rateType, bps, promotionReason);
@@ -93,11 +106,12 @@ public class MerchantFeePolicyService {
         policy.setSource(rateType.equals(RATE_PROMOTION) ? SOURCE_PROMOTION : SOURCE_ONBOARDING);
         policy.setReason(reason == null ? "开店初始费率" : reason.trim());
         policy.setOperatorId(operatorId);
-        policy.setConfirmedBy(operatorId);
+        policy.setConfirmedBy(confirmedBy);
+        policy.setApprovalMode(approvalMode);
         policyMapper.insert(policy);
 
         writeAudit(policy.getMerchantId(), policy.getId(), null, null, rateType, bps,
-                policy.getReason(), operatorId, policy.getConfirmedBy(), policy.getEffectiveFrom());
+                policy.getReason(), operatorId, confirmedBy, approvalMode, policy.getEffectiveFrom());
         syncStoreRate(merchantId, bps);
         return policy;
     }
@@ -123,14 +137,10 @@ public class MerchantFeePolicyService {
         if (form.getReason() == null || form.getReason().isBlank()) {
             throw new BusinessException(400, "费率调整必须填写原因");
         }
-        // 财务基线 18：调价人与复核人必须不同，且两字段都不能缺省。
-        Long confirmedBy = form.getConfirmedBy();
-        if (operatorId == null || confirmedBy == null) {
-            throw new BusinessException(400, "费率调整必须记录操作人与复核人");
-        }
-        if (operatorId.equals(confirmedBy)) {
-            throw new BusinessException(403, "调价人与复核人不能为同一人");
-        }
+        // 财务基线 18：双人复核开关打开时必须不同；开发/试点关闭时允许同人并落 SAME_OPERATOR。
+        // 未单独指定复核人时沿用操作人（与开店初始费率口径一致）：开关关闭视为同人复核，开关打开则 403。
+        Long confirmedBy = form.getConfirmedBy() == null ? operatorId : form.getConfirmedBy();
+        String approvalMode = approvalGuard.verify("调价", operatorId, confirmedBy);
 
         LocalDateTime now = LocalDateTime.now();
         MerchantFeePolicy current = getEffectivePolicy(merchantId);
@@ -164,10 +174,11 @@ public class MerchantFeePolicyService {
         policy.setReason(form.getReason().trim());
         policy.setOperatorId(operatorId);
         policy.setConfirmedBy(confirmedBy);
+        policy.setApprovalMode(approvalMode);
         policyMapper.insert(policy);
 
         writeAudit(merchantId, policy.getId(), current.getRateType(), current.getRateBps(),
-                rateType, newBps, policy.getReason(), operatorId, confirmedBy, effectiveFrom);
+                rateType, newBps, policy.getReason(), operatorId, confirmedBy, approvalMode, effectiveFrom);
 
         // 仅在即时生效时同步展示镜像；次日生效的调高由次日首单/查询触发，展示仍显示当前旧费率。
         if (!increase) {
@@ -245,7 +256,7 @@ public class MerchantFeePolicyService {
 
     private void writeAudit(Long merchantId, Long policyId, String fromType, Integer fromBps,
                             String toType, Integer toBps, String reason, Long operatorId, Long confirmedBy,
-                            LocalDateTime effectiveFrom) {
+                            String approvalMode, LocalDateTime effectiveFrom) {
         MerchantFeeAudit audit = new MerchantFeeAudit();
         audit.setMerchantId(merchantId);
         audit.setPolicyId(policyId);
@@ -256,6 +267,7 @@ public class MerchantFeePolicyService {
         audit.setReason(reason);
         audit.setOperatorId(operatorId);
         audit.setConfirmedBy(confirmedBy);
+        audit.setApprovalMode(approvalMode);
         audit.setEffectiveFrom(effectiveFrom);
         auditMapper.insert(audit);
     }

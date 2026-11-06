@@ -92,7 +92,7 @@ class ReservationExpiryJobTest {
     @Test
     @DisplayName("R12: 超时未支付订单定时扫描并触发关闭 (无预占意向单与自购单)")
     void unpaidOrdersExpireAndCloseCleanly() {
-        when(orders.findExpiredUnpaidOrderIds(any(), any(), eq(0L), eq(100)))
+        when(orders.findExpiredUnpaidOrderIds(any(), any(), eq(100)))
                 .thenReturn(List.of(201L, 202L));
 
         int processed = job.expireUnpaidOrders();
@@ -117,7 +117,7 @@ class ReservationExpiryJobTest {
     @Test
     @DisplayName("R12: 超时未支付订单扫描中个别单据异常不影响同批后续单据关闭")
     void poisonUnpaidOrderDoesNotBlockSubsequentOrders() {
-        when(orders.findExpiredUnpaidOrderIds(any(), any(), eq(0L), eq(100)))
+        when(orders.findExpiredUnpaidOrderIds(any(), any(), eq(100)))
                 .thenReturn(List.of(301L, 302L));
         doThrow(new IllegalStateException("行锁超时")).when(service).expireReservation(301L);
 

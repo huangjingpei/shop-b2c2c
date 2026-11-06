@@ -82,6 +82,10 @@ CERTBOT_EMAIL=${CERTBOT_EMAIL}
 ADMIN_PORTAL_PATH=${ADMIN_PORTAL_PATH_VALUE}
 APP_FRONTEND_STOREFRONT_URL=https://${SHOP_SERVER_NAME}/m/
 
+# ---- 财务双人复核（生产必须开启；需至少两个具备财务权限的后台账号）----
+# 关闭时仅允许开发/试点单管理员模式，同人复核会落 SAME_OPERATOR 并打 WARN，禁止用于生产。
+FINANCE_DUAL_APPROVAL_REQUIRED=true
+
 # ---- JVM ----
 JAVA_OPTS="-Xms256m -Xmx${JAVA_XMX:-512m} -XX:MaxMetaspaceSize=256m -XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=${SHOP_ROOT}/logs -Dfile.encoding=UTF-8 -Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8"
 EOF

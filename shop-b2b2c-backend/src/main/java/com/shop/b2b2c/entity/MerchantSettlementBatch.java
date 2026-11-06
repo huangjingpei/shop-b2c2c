@@ -39,6 +39,8 @@ public class MerchantSettlementBatch {
     private Long preparedBy;
     private Long confirmedBy;
     private LocalDateTime confirmedAt;
+    /** 复核模式：SAME_OPERATOR（开关关闭的单管理员）/DUAL_APPROVAL；由 FinanceApprovalGuard 写入。 */
+    private String approvalMode;
     private Integer version = 0;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

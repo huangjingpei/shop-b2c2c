@@ -37,6 +37,9 @@ public class MerchantFeeAudit {
 
     private Long confirmedBy;
 
+    /** 复核模式：SAME_OPERATOR=单管理员开关关闭下同人复核，DUAL_APPROVAL=双人复核；与政策记录一致。 */
+    private String approvalMode;
+
     private LocalDateTime effectiveFrom;
 
     private LocalDateTime createdAt;

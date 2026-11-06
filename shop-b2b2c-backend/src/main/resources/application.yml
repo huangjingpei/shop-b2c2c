@@ -137,6 +137,10 @@ shop:
     arrears-cron: ${SETTLEMENT_ARREARS_CRON:0 5 3 * * ?}
     # T40 阶段二平台代收/分账总开关：默认关闭；取得支付分账资质并完成通道联调后才可开启
     platform-collect-enabled: ${PLATFORM_COLLECT_ENABLED:false}
+  finance:
+    # 财务双人复核：开发/试点默认关闭（允许单管理员同人操作并落 SAME_OPERATOR 标记）；
+    # 生产 .env 必须设为 true，且至少配置两个财务账号，否则确认类操作会被 403 拒绝
+    dual-approval-required: ${FINANCE_DUAL_APPROVAL_REQUIRED:false}
 
 # R27/T27：幂等轻量映射保留 30 天（Q18-B），清理受最大轮次与时间预算约束
 idempotency:

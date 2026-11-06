@@ -41,6 +41,9 @@ public class MerchantFeePolicy {
 
     private Long confirmedBy;
 
+    /** 复核模式：SAME_OPERATOR=单管理员开关关闭下同人复核，DUAL_APPROVAL=双人复核；由 FinanceApprovalGuard 写入。 */
+    private String approvalMode;
+
     private Long operatorId;
 
     private LocalDateTime createdAt;

@@ -44,6 +44,7 @@ public class SettlementService {
     private final TradeRefundMapper refundMapper;
     private final PaymentEventMapper paymentEventMapper;
     private final ServiceFeeSnapshotService snapshotService;
+    private final FinanceApprovalGuard approvalGuard;
 
     /**
      * 生成或重算某店某月结算草稿。已确认批次直接拒绝，避免改写历史账单。
@@ -160,15 +161,11 @@ public class SettlementService {
         if (!"DRAFT".equals(batch.getStatus())) {
             throw new BusinessException(409, "结算批次已确认");
         }
-        // 财务基线 18：制单人与确认人必须不同，禁止同一人生成并确认结算。
-        if (batch.getPreparedBy() == null || operatorId == null) {
-            throw new BusinessException(400, "结算批次缺少制单人或确认人");
-        }
-        if (batch.getPreparedBy().equals(operatorId)) {
-            throw new BusinessException(403, "制单人与确认人不能为同一人");
-        }
+        // 财务基线 18：双人复核开关打开时制单人/确认人必须不同；开发/试点关闭时允许同人并落 SAME_OPERATOR。
+        String approvalMode = approvalGuard.verify("结算确认", batch.getPreparedBy(), operatorId);
         batch.setStatus("CONFIRMED");
         batch.setConfirmedBy(operatorId);
+        batch.setApprovalMode(approvalMode);
         batch.setConfirmedAt(LocalDateTime.now());
         batch.setVersion((batch.getVersion() == null ? 0 : batch.getVersion()) + 1);
         batchMapper.updateById(batch);

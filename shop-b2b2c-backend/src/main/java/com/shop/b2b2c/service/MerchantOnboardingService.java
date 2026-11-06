@@ -91,6 +91,8 @@ public class MerchantOnboardingService {
         private String adminPassword;
         private Integer rateBps;
         private String promotionReason;
+        /** 开店初始费率的复核人；生产双人复核开启时必须与审核操作人不同，未传则默认审核人。 */
+        private Long rateConfirmedBy;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -193,8 +195,10 @@ public class MerchantOnboardingService {
         userMapper.save(user);
 
         // T39：开店即建立初始费率政策，作为后续订单快照的唯一费率来源；merchant_store.commission_rate 仅同步展示镜像。
+        // 财务基线 18：初始费率复核人走与调价相同的开关；未显式传入时默认审核人，开关打开会被拒绝。
         feePolicyService.createInitialPolicy(store.getId(), provisioning.getRateBps(),
-                provisioning.getPromotionReason(), "入驻审核通过初始费率", reviewerId);
+                provisioning.getPromotionReason(), "入驻审核通过初始费率", reviewerId,
+                provisioning.getRateConfirmedBy() == null ? reviewerId : provisioning.getRateConfirmedBy());
 
         String fromStatus = application.getStatus();
         application.setMerchantId(store.getId());

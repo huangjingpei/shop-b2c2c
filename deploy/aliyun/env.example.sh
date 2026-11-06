@@ -35,5 +35,9 @@ REDIS_PORT="6379"
 REDIS_PASS=""
 REDIS_DB="1"
 
+# 财务双人复核：生产必须 true，并至少配置两个具备财务权限的后台账号；
+# 开发/试点可设 false，此时同人复核落 SAME_OPERATOR 标记并打 WARN，禁止用于生产。
+FINANCE_DUAL_APPROVAL_REQUIRED="true"
+
 JAVA_XMX="300m"
 SKIP_PREPARE="yes"

@@ -34,7 +34,7 @@ class MerchantStoreUpdateTest {
         try (var security = mockStatic(SecurityUtils.class); var roles = mockStatic(StpUtil.class)) {
             security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(99L);
             for (Runnable operation : List.<Runnable>of(() -> c.updateStatus(99L, 3),
-                    () -> c.updateCommission(99L, BigDecimal.ZERO),
+                    () -> c.updateCommission(99L, BigDecimal.ZERO, "测试费率调整", 2L),
                     () -> c.updateServiceFee(99L, new MerchantController.ServiceFeeConfigDTO()),
                     () -> c.updatePaymentChannel(99L, new MerchantController.PaymentChannelConfigDTO()),
                     () -> c.updateMerchantProfile(new MerchantStore()))) {
@@ -49,7 +49,7 @@ class MerchantStoreUpdateTest {
         var stores = mock(MerchantStoreMapper.class); var c = controller(stores);
         for (Long id : new Long[] {null, 0L, -1L}) {
             assertEquals(400, assertThrows(BusinessException.class, () -> c.updateStatus(id, 3)).getCode());
-            assertEquals(400, assertThrows(BusinessException.class, () -> c.updateCommission(id, BigDecimal.ZERO)).getCode());
+            assertEquals(400, assertThrows(BusinessException.class, () -> c.updateCommission(id, BigDecimal.ZERO, "测试费率调整", 2L)).getCode());
         }
         assertEquals(400, assertThrows(BusinessException.class, () -> c.updateMerchantProfile(null)).getCode());
         assertEquals(400, assertThrows(BusinessException.class, () -> c.updatePaymentChannel(1L, null)).getCode());
@@ -81,16 +81,21 @@ class MerchantStoreUpdateTest {
 
     @Test
     void zeroAffectedRowsForSameValuesAreAllowedWithoutStaleEntitySave() {
-        var stores = mock(MerchantStoreMapper.class); var c = controller(stores);
+        var stores = mock(MerchantStoreMapper.class);
+        var feePolicy = mock(MerchantFeePolicyService.class);
         when(stores.findById(1L)).thenReturn(Optional.of(new MerchantStore()));
+        var c = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy);
         assertEquals(200, c.updateStatus(1L, 1).getCode());
-        assertEquals(200, c.updateCommission(1L, new BigDecimal("3.00")).getCode());
+        assertEquals(200, c.updateCommission(1L, new BigDecimal("3.00"), "测试费率调整", 2L).getCode());
         var channel = new MerchantController.PaymentChannelConfigDTO(); channel.setPaymentChannelType("C");
         channel.setCustomPayQrcode("");
         assertEquals(200, c.updatePaymentChannel(1L, channel).getCode());
         verify(stores).updateStatusOnly(1L, 1);
-        verify(stores).updateCommissionOnly(1L, new BigDecimal("3.00"));
         verify(stores).updatePaymentChannelOnly(1L, "C", "");
+        // T39：费率调整统一走政策服务，控制器不得再用旧实体回写整行或直接改展示镜像。
+        verify(feePolicy).adjust(eq(1L), any(MerchantFeePolicyService.AdjustForm.class), any());
+        verify(stores, never()).updateCommissionOnly(any(), any());
         verify(stores, never()).save(any());
     }
     @Test

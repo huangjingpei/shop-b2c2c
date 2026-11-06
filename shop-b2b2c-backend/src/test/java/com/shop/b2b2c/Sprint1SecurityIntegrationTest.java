@@ -104,7 +104,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("payment_event", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("payment_event", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -124,16 +124,16 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
-    void staleStoreReadsCannotOverwriteOtherOperationsAcrossAllFivePaths() throws Exception {
+    void staleStoreReadsCannotOverwriteOtherOperationsAcrossAllStorePaths() throws Exception {
         var fee = new com.shop.b2b2c.controller.MerchantController.ServiceFeeConfigDTO();
         fee.setMonthlyFee(new java.math.BigDecimal("29.00"));
         var channel = new com.shop.b2b2c.controller.MerchantController.PaymentChannelConfigDTO();
         channel.setPaymentChannelType("B");
         var onlyStatus = new com.shop.b2b2c.controller.MerchantController.ServiceFeeConfigDTO();
         onlyStatus.setFeeStatus("TRIAL");
+        // T39：佣金已迁移到独立费率政策表，不再用旧实体回写 merchant_store；本用例只覆盖仍写店铺列的四条路径。
         List<Runnable> stale = List.of(
                 () -> merchantController.updateStatus(1L, 3),
-                () -> merchantController.updateCommission(1L, new java.math.BigDecimal("9.00")),
                 () -> merchantController.updateServiceFee(1L, fee),
                 () -> merchantController.updatePaymentChannel(1L, channel),
                 () -> {
@@ -146,7 +146,6 @@ class Sprint1SecurityIntegrationTest {
                 },
                 () -> merchantController.updateServiceFee(1L, fee));
         List<Runnable> committed = List.of(
-                () -> merchantController.updateCommission(1L, new java.math.BigDecimal("9.00")),
                 () -> merchantController.updateStatus(1L, 3),
                 () -> merchantController.updatePaymentChannel(1L, channel),
                 () -> merchantController.updateServiceFee(1L, fee),
@@ -156,15 +155,16 @@ class Sprint1SecurityIntegrationTest {
             jdbc.update("UPDATE merchant_store SET status=1,commission_rate=3,monthly_fee=0,fee_status='NORMAL',payment_channel_type='C',notice=NULL WHERE id=1");
             interleaveStoreWrites(stale.get(i), committed.get(i));
             var result = stores.findById(1L).orElseThrow();
-            if (i < 2) {
+            if (i == 0) {
                 assertEquals(3, result.getStatus());
-                assertEquals(0, new java.math.BigDecimal("9.00").compareTo(result.getCommissionRate()));
-            } else if (i == 4) {
+                // 佣金展示镜像独立于其它配置更新，不能被状态写入带回旧值。
+                assertEquals(0, new java.math.BigDecimal("3.00").compareTo(result.getCommissionRate()));
+            } else if (i == 3) {
                 assertEquals(3, result.getStatus()); assertEquals("new notice", result.getNotice());
                 assertNull(stores.findById(2L).orElseThrow().getNotice());
             } else {
                 assertEquals(0, new java.math.BigDecimal("29.00").compareTo(result.getMonthlyFee()));
-                if (i == 5) assertEquals("TRIAL", result.getFeeStatus());
+                if (i == 4) assertEquals("TRIAL", result.getFeeStatus());
                 else assertEquals("B", result.getPaymentChannelType());
             }
         }
@@ -1564,7 +1564,7 @@ class Sprint1SecurityIntegrationTest {
         // 1. 初始化：店铺1为正常营业 (1)，平台抽成为 3.00%
         jdbc.update("UPDATE merchant_store SET status=1, commission_rate=3.00, notice='old notice' WHERE id=1");
 
-        // 2. 超管将店铺封禁 (status=3) 并调整费率为 5.00%
+        // 2. 超管将店铺封禁 (status=3) 并调高费率至 5.00%（调高次日生效，展示镜像今日仍为 3.00%）
         authUser("SUPERADMIN", null);
         String adminToken = loginToken();
         mvc.perform(put("/api/v1/admin/merchants/1/status?status=3")
@@ -1587,12 +1587,16 @@ class Sprint1SecurityIntegrationTest {
                         .content("{\"notice\":\"new notice\",\"contactPhone\":\"13900001111\"}"))
                 .andExpect(status().isOk());
 
-        // 4. 验证：公告与电话被成功更新，但超管设置的封禁状态 (3) 和平台费率 (5.00%) 绝未被冲刷回滚！
+        // 4. 验证：公告与电话被成功更新，但超管设置的封禁状态 (3) 和待生效费率政策 (500bps) 绝未被冲刷回滚！
         var store = stores.findById(1L).orElseThrow();
         assertEquals("new notice", store.getNotice());
         assertEquals("13900001111", store.getContactPhone());
         assertEquals(3, store.getStatus(), "R09: 商家资料更新绝不能覆盖超管设置的封禁状态");
-        assertEquals(new java.math.BigDecimal("5.00"), store.getCommissionRate(), "R09: 商家资料更新绝不能覆盖超管设置的平台抽成比例");
+        assertEquals(500, jdbc.queryForObject("SELECT rate_bps FROM merchant_fee_policy WHERE merchant_id=1 "
+                + "ORDER BY effective_from DESC, id DESC LIMIT 1", Integer.class).intValue(),
+                "R09: 商家资料更新绝不能覆盖超管设置的平台抽成政策");
+        assertEquals(new java.math.BigDecimal("3.00"), store.getCommissionRate(),
+                "R09: 调高次日生效，展示镜像不应提前变更");
     }
 
     @Test
@@ -1986,7 +1990,7 @@ class Sprint1SecurityIntegrationTest {
             security.when(SecurityUtils::getCurrentMerchantId).thenReturn(null);
             assertThrows(BusinessException.class, () -> products.listCards(null));
             assertThrows(BusinessException.class, products::listMerchantProducts);
-            assertThrows(BusinessException.class, orderController::listMerchantOrders);
+            assertThrows(BusinessException.class, () -> orderController.listMerchantOrders(null, null, null, null));
             assertThrows(BusinessException.class, () -> products.createProduct(new ProductController.CreateProductDTO()));
         }
     }
@@ -3418,9 +3422,9 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.page.total").value(3))
                 .andExpect(jsonPath("$.data.page.hasMore").value(false))
                 .andReturn().getResponse().getContentAsString();
-        assertNotEquals(
-                com.jayway.jsonpath.JsonPath.read(firstPage, "$.data.orders[0].order.id"),
-                com.jayway.jsonpath.JsonPath.read(secondPage, "$.data.orders[0].order.id"));
+        Object firstOrderId = com.jayway.jsonpath.JsonPath.read(firstPage, "$.data.orders[0].order.id");
+        Object secondOrderId = com.jayway.jsonpath.JsonPath.read(secondPage, "$.data.orders[0].order.id");
+        assertNotEquals(firstOrderId, secondOrderId);
 
         // 状态筛选与非法参数：非法 pageSize/cursor/status 一律 400
         mvc.perform(get("/api/v1/merchant/orders").header("Authorization", "Bearer " + tokenM1)

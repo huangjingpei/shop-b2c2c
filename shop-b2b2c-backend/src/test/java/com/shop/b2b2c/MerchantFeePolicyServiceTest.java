@@ -16,6 +16,7 @@ import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.mapper.MerchantFeeAuditMapper;
 import com.shop.b2b2c.mapper.MerchantFeePolicyMapper;
 import com.shop.b2b2c.mapper.MerchantStoreMapper;
+import com.shop.b2b2c.service.FinanceApprovalGuard;
 import com.shop.b2b2c.service.MerchantFeePolicyService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -43,7 +44,12 @@ class MerchantFeePolicyServiceTest {
     private final MerchantFeeAuditMapper auditMapper = mock(MerchantFeeAuditMapper.class);
     private final MerchantStoreMapper storeMapper = mock(MerchantStoreMapper.class);
     private final MerchantFeePolicyService service = new MerchantFeePolicyService(
-            policyMapper, auditMapper, storeMapper);
+            policyMapper, auditMapper, storeMapper, new FinanceApprovalGuard(false));
+
+    private MerchantFeePolicyService strictService() {
+        return new MerchantFeePolicyService(policyMapper, auditMapper, storeMapper,
+                new FinanceApprovalGuard(true));
+    }
 
     @Test
     void initialNormalPolicyIsCreatedAndMirrorsStoreRate() {
@@ -58,6 +64,8 @@ class MerchantFeePolicyServiceTest {
         assertEquals("NORMAL", policy.getRateType());
         assertEquals(300, policy.getRateBps());
         assertEquals("ONBOARDING", policy.getSource());
+        // 开关关闭时允许单管理员同人复核，但必须落 SAME_OPERATOR 标记。
+        assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, policy.getApprovalMode());
         verify(auditMapper).insert(any(MerchantFeeAudit.class));
         verify(storeMapper).updateCommissionOnly(1L, new BigDecimal("3.00"));
     }
@@ -169,20 +177,78 @@ class MerchantFeePolicyServiceTest {
     }
 
     @Test
-    void adjustmentRequiresDistinctOperatorAndReviewer() {
+    void adjustmentRequiresDistinctOperatorAndReviewerUnderStrictMode() {
         MerchantFeePolicy current = currentPolicy(1L, 300, "NORMAL");
         when(policyMapper.findEffective(eq(1L), any())).thenReturn(current);
+        MerchantFeePolicyService strict = strictService();
 
         MerchantFeePolicyService.AdjustForm samePerson = adjustForm("NORMAL", 500, null, "上调费率");
         samePerson.setConfirmedBy(7L);
         assertEquals(403, assertThrows(BusinessException.class,
-                () -> service.adjust(1L, samePerson, 7L)).getCode());
+                () -> strict.adjust(1L, samePerson, 7L)).getCode());
 
+        // 未传复核人按操作人处理：严格模式同样视为同人复核，必须 403 而不是放行。
         MerchantFeePolicyService.AdjustForm missingReviewer = adjustForm("NORMAL", 500, null, "上调费率");
         missingReviewer.setConfirmedBy(null);
-        assertEquals(400, assertThrows(BusinessException.class,
-                () -> service.adjust(1L, missingReviewer, 7L)).getCode());
+        assertEquals(403, assertThrows(BusinessException.class,
+                () -> strict.adjust(1L, missingReviewer, 7L)).getCode());
         verify(policyMapper, never()).insert(any());
+    }
+
+    @Test
+    void sameOperatorAdjustmentAllowedWhenDualApprovalDisabled() {
+        MerchantFeePolicy current = currentPolicy(1L, 500, "NORMAL");
+        when(policyMapper.findEffective(eq(1L), any())).thenReturn(current);
+        when(policyMapper.findScheduledAfter(eq(1L), any())).thenReturn(List.of());
+        when(policyMapper.insert(any())).thenAnswer(invocation -> {
+            MerchantFeePolicy policy = invocation.getArgument(0);
+            policy.setId(48L);
+            return 1;
+        });
+
+        MerchantFeePolicyService.AdjustForm form = adjustForm("NORMAL", 300, null, "下调费率");
+        form.setConfirmedBy(7L);
+        MerchantFeePolicy policy = service.adjust(1L, form, 7L);
+
+        assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, policy.getApprovalMode());
+        ArgumentCaptor<MerchantFeeAudit> audit = ArgumentCaptor.forClass(MerchantFeeAudit.class);
+        verify(auditMapper).insert(audit.capture());
+        assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, audit.getValue().getApprovalMode());
+    }
+
+    @Test
+    void omittedReviewerFollowsOperatorWhenDualApprovalDisabled() {
+        // 后台佣金弹窗只传费率时未带复核人；开关关闭必须按同人复核放行并落标记，而不是 400。
+        MerchantFeePolicy current = currentPolicy(1L, 500, "NORMAL");
+        when(policyMapper.findEffective(eq(1L), any())).thenReturn(current);
+        when(policyMapper.findScheduledAfter(eq(1L), any())).thenReturn(List.of());
+        when(policyMapper.insert(any())).thenAnswer(invocation -> {
+            MerchantFeePolicy policy = invocation.getArgument(0);
+            policy.setId(50L);
+            return 1;
+        });
+
+        MerchantFeePolicyService.AdjustForm form = adjustForm("NORMAL", 300, null, "下调费率");
+        form.setConfirmedBy(null);
+        MerchantFeePolicy policy = service.adjust(1L, form, 7L);
+
+        assertEquals(7L, policy.getConfirmedBy(), "复核人缺省时应按操作人记录");
+        assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, policy.getApprovalMode());
+    }
+
+    @Test
+    void strictModeInitialPolicyRequiresDistinctReviewer() {
+        when(policyMapper.insert(any())).thenAnswer(invocation -> {
+            MerchantFeePolicy policy = invocation.getArgument(0);
+            policy.setId(49L);
+            return 1;
+        });
+
+        assertEquals(403, assertThrows(BusinessException.class,
+                () -> strictService().createInitialPolicy(1L, 300, null, "开店初始费率", 7L)).getCode());
+
+        MerchantFeePolicy policy = strictService().createInitialPolicy(1L, 300, null, "开店初始费率", 7L, 8L);
+        assertEquals(FinanceApprovalGuard.MODE_DUAL_APPROVAL, policy.getApprovalMode());
     }
 
     @Test

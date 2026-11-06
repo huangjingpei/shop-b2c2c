@@ -43,6 +43,8 @@ public class MerchantOnboardingController {
         private String adminPassword;
         private Integer rateBps;
         private String promotionReason;
+        /** 初始费率复核人；生产双人复核开启时必须与当前审核人不同。 */
+        private Long rateConfirmedBy;
     }
 
     @Operation(summary = "【超管】入驻申请列表（证件脱敏）")
@@ -133,6 +135,7 @@ public class MerchantOnboardingController {
         provisioning.setAdminPassword(dto.getAdminPassword());
         provisioning.setRateBps(dto.getRateBps());
         provisioning.setPromotionReason(dto.getPromotionReason());
+        provisioning.setRateConfirmedBy(dto.getRateConfirmedBy());
         return provisioning;
     }
 }
