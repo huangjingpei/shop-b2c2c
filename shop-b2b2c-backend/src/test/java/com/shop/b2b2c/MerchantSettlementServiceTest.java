@@ -6,6 +6,7 @@
  *  2. 金额口径与状态迁移是账本核心，修改快照公式、幂等键、欠费/停收规则时必须同步更新本用例。
  *  3. T35 停收只影响新单收款；恢复必须由欠费清零触发，且每次状态变化写审计。
  *  4. 真实 MySQL 并发行锁、月度任务与人工核对仍由用户手动验证。
+ *  5. G31 起确认接口显式选择复核人；严格模式缺复核人 428、同人 403，宽松模式未传按操作人处理并落 SAME_OPERATOR。
  */
 package com.shop.b2b2c;
 
@@ -254,10 +255,11 @@ class MerchantSettlementServiceTest {
         when(accountMapper.lockByMerchantId(1L)).thenReturn(account);
 
         MerchantRechargeOrder result = accountService()
-                .confirmRecharge("RCH-7", new BigDecimal("99.50"), 3L);
+                .confirmRecharge("RCH-7", new BigDecimal("99.50"), 3L, null);
 
         assertEquals("CONFIRMED", result.getStatus());
         assertEquals(new BigDecimal("99.50"), result.getConfirmedAmount());
+        assertEquals(3L, result.getConfirmedBy(), "宽松模式未传复核人时按操作人落库");
         assertEquals(0, new BigDecimal("99.50").compareTo(account.getBalanceAvailable()));
     }
 
@@ -307,23 +309,36 @@ class MerchantSettlementServiceTest {
         MerchantSettlementBatch batch = draftBatch(10L);
         when(batchMapper.lockById(10L)).thenReturn(batch);
 
-        MerchantSettlementBatch result = settlementService().confirm(10L, 3L);
+        MerchantSettlementBatch result = settlementService().confirm(10L, 3L, 8L);
 
         assertEquals("CONFIRMED", result.getStatus());
-        assertEquals(3L, result.getConfirmedBy());
+        assertEquals(8L, result.getConfirmedBy(), "应记录显式选择的复核人");
         assertEquals(FinanceApprovalGuard.MODE_DUAL_APPROVAL, result.getApprovalMode());
         assertNotNull(result.getConfirmedAt());
         verify(batchMapper).updateById(batch);
     }
 
     @Test
-    void settlementPreparerCannotConfirmOwnBatchUnderStrictMode() {
+    void settlementMissingReviewerUnderStrictModeReturnsExplicitCode() {
         MerchantSettlementBatch batch = draftBatch(10L);
-        batch.setPreparedBy(3L);
         when(batchMapper.lockById(10L)).thenReturn(batch);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> settlementService(true).confirm(10L, 3L));
+                () -> settlementService(true).confirm(10L, 3L, null));
+
+        assertEquals(FinanceApprovalGuard.CODE_MISSING_REVIEWER, ex.getCode());
+        assertTrue(ex.getMessage().contains("必须选择复核人"));
+        assertEquals("DRAFT", batch.getStatus());
+        verify(batchMapper, never()).updateById(any());
+    }
+
+    @Test
+    void settlementSameOperatorIsRejectedUnderStrictMode() {
+        MerchantSettlementBatch batch = draftBatch(10L);
+        when(batchMapper.lockById(10L)).thenReturn(batch);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> settlementService(true).confirm(10L, 3L, 3L));
 
         assertEquals(403, ex.getCode());
         assertEquals("DRAFT", batch.getStatus());
@@ -336,9 +351,10 @@ class MerchantSettlementServiceTest {
         batch.setPreparedBy(3L);
         when(batchMapper.lockById(10L)).thenReturn(batch);
 
-        MerchantSettlementBatch result = settlementService(false).confirm(10L, 3L);
+        MerchantSettlementBatch result = settlementService(false).confirm(10L, 3L, null);
 
         assertEquals("CONFIRMED", result.getStatus());
+        assertEquals(3L, result.getConfirmedBy(), "未传复核人时按操作人落库");
         assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, result.getApprovalMode());
         verify(batchMapper).updateById(batch);
     }
@@ -356,9 +372,28 @@ class MerchantSettlementServiceTest {
         when(rechargeMapper.lockById(8L)).thenReturn(recharge);
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> accountService(true).confirmRecharge("RCH-8", new BigDecimal("100.00"), 3L));
+                () -> accountService(true).confirmRecharge("RCH-8", new BigDecimal("100.00"), 3L, 3L));
 
         assertEquals(403, ex.getCode());
+        verify(ledgerMapper, never()).insert(any(MerchantAccountLedger.class));
+    }
+
+    @Test
+    void rechargeMissingReviewerUnderStrictModeReturnsExplicitCode() {
+        MerchantRechargeOrder recharge = new MerchantRechargeOrder();
+        recharge.setId(8L);
+        recharge.setRechargeNo("RCH-8");
+        recharge.setMerchantId(1L);
+        recharge.setAmount(new BigDecimal("100.00"));
+        recharge.setStatus("PENDING");
+        when(rechargeMapper.findByRechargeNo("RCH-8")).thenReturn(Optional.of(recharge));
+        when(rechargeMapper.lockById(8L)).thenReturn(recharge);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> accountService(true).confirmRecharge("RCH-8", new BigDecimal("100.00"), 3L, null));
+
+        assertEquals(FinanceApprovalGuard.CODE_MISSING_REVIEWER, ex.getCode());
+        assertTrue(ex.getMessage().contains("必须选择复核人"));
         verify(ledgerMapper, never()).insert(any(MerchantAccountLedger.class));
     }
 
@@ -376,7 +411,7 @@ class MerchantSettlementServiceTest {
         when(accountMapper.lockByMerchantId(1L)).thenReturn(account("0.00", "0.00"));
 
         MerchantRechargeOrder result = accountService(false)
-                .confirmRecharge("RCH-8", new BigDecimal("100.00"), 3L);
+                .confirmRecharge("RCH-8", new BigDecimal("100.00"), 3L, null);
 
         assertEquals("CONFIRMED", result.getStatus());
         assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, result.getApprovalMode());
@@ -440,7 +475,7 @@ class MerchantSettlementServiceTest {
         when(rechargeMapper.lockById(30L)).thenReturn(recharge);
         when(ledgerMapper.findByIdempotencyKey("RECHARGE:RCH-30")).thenReturn(Optional.empty());
 
-        accountService().confirmRecharge("RCH-30", null, 3L);
+        accountService().confirmRecharge("RCH-30", null, 3L, null);
 
         assertEquals(0, BigDecimal.ZERO.compareTo(account.getArrears()));
         assertNull(account.getArrearsDueAt());

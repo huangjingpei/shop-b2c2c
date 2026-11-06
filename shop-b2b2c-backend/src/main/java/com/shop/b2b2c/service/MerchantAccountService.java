@@ -9,6 +9,8 @@
  *  5. T35：欠费达到信用额度或账期到期即停新单收款；补齐欠费（含退款冲减/充值抵扣）后自动恢复并写审计。
  *     停收只影响新单，不影响已支付订单履约与退款。
  *  6. 账期只允许 7/21/30，且必须管理员显式确认；系统建议值不得自动写入。
+ *  7. 财务基线 18：充值确认的复核人由 FinanceApprovalGuard 判定，严格缺复核人 428、同人 403；
+ *     宽松模式未传按操作人处理并落 SAME_OPERATOR，requested_by 仍独立记录申请人。
  */
 package com.shop.b2b2c.service;
 
@@ -177,9 +179,11 @@ public class MerchantAccountService {
 
     /**
      * 管理员人工确认到账：以确认金额入账，凭证号唯一保证不可重复。
+     * reviewerId 为本次复核人；严格模式必须显式选择且不能是操作人，宽松模式未传时按操作人处理。
      */
     @Transactional
-    public MerchantRechargeOrder confirmRecharge(String rechargeNo, BigDecimal confirmedAmount, Long operatorId) {
+    public MerchantRechargeOrder confirmRecharge(String rechargeNo, BigDecimal confirmedAmount,
+                                                 Long operatorId, Long reviewerId) {
         MerchantRechargeOrder recharge = rechargeMapper.findByRechargeNo(rechargeNo)
                 .orElseThrow(() -> new BusinessException(404, "充值单不存在"));
         recharge = rechargeMapper.lockById(recharge.getId());
@@ -189,8 +193,10 @@ public class MerchantAccountService {
         if ("REJECTED".equals(recharge.getStatus())) {
             throw new BusinessException(409, "充值单已驳回");
         }
-        // 财务基线 18：双人复核开关打开时申请人/确认人必须不同；开发/试点关闭时允许同人并落 SAME_OPERATOR。
-        String approvalMode = approvalGuard.verify("充值确认", recharge.getRequestedBy(), operatorId);
+        // 财务基线 18：双人复核开关打开时必须显式选择不同复核人；缺复核人 428，同人 403；宽松模式同人落 SAME_OPERATOR。
+        // requested_by 仍独立记录充值申请人，不因复核人选择而改写。
+        String approvalMode = approvalGuard.verify("充值确认", operatorId, reviewerId);
+        Long confirmedBy = approvalGuard.resolveReviewer(operatorId, reviewerId);
         BigDecimal amount = confirmedAmount == null ? recharge.getAmount() : normalizeAmount(confirmedAmount, "确认金额");
         String key = "RECHARGE:" + recharge.getRechargeNo();
         if (ledgerMapper.findByIdempotencyKey(key).isPresent()) {
@@ -216,7 +222,7 @@ public class MerchantAccountService {
         recharge.setStatus("CONFIRMED");
         recharge.setConfirmedAmount(amount);
         recharge.setLedgerEntryId(entry.getId());
-        recharge.setConfirmedBy(operatorId);
+        recharge.setConfirmedBy(confirmedBy);
         recharge.setApprovalMode(approvalMode);
         recharge.setConfirmedAt(LocalDateTime.now());
         recharge.setVersion((recharge.getVersion() == null ? 0 : recharge.getVersion()) + 1);

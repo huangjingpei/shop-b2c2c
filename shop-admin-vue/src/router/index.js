@@ -52,6 +52,13 @@ const routes = [
         component: () => import('../views/admin/Orders.vue'),
         meta: { title: '全平台交易监察', role: 'SUPERADMIN' }
       },
+      {
+        path: '/admin/finance',
+        name: 'AdminFinance',
+        component: () => import('../views/admin/Finance.vue'),
+        // G31：财务复核人入口仅超管可见；页面内的复核人选择不改变后端角色校验。
+        meta: { title: '财务复核与结算', role: 'SUPERADMIN' }
+      },
 
       // 商家工作台视角
       {

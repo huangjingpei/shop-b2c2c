@@ -6,6 +6,7 @@
  *  2. 0% 必须走 PROMOTION 独立类型并携带推广原因，不得并入 1%~10% 正常区间。
  *  3. 调高必须排到次日 00:00，降费即时；若实现改回即时调高，本用例必须失败。
  *  4. 真实 MySQL 生效区间唯一性与并发行锁仍由用户手动验证。
+ *  5. G31 起严格模式缺复核人返回 428（缺参），同人返回 403；宽松模式未传按操作人处理并落 SAME_OPERATOR。
  */
 package com.shop.b2b2c;
 
@@ -187,12 +188,26 @@ class MerchantFeePolicyServiceTest {
         assertEquals(403, assertThrows(BusinessException.class,
                 () -> strict.adjust(1L, samePerson, 7L)).getCode());
 
-        // 未传复核人按操作人处理：严格模式同样视为同人复核，必须 403 而不是放行。
+        // 未传复核人属于缺参：严格模式必须返回明确业务码 428，而不是泛化 403。
         MerchantFeePolicyService.AdjustForm missingReviewer = adjustForm("NORMAL", 500, null, "上调费率");
         missingReviewer.setConfirmedBy(null);
-        assertEquals(403, assertThrows(BusinessException.class,
-                () -> strict.adjust(1L, missingReviewer, 7L)).getCode());
-        verify(policyMapper, never()).insert(any());
+        BusinessException missing = assertThrows(BusinessException.class,
+                () -> strict.adjust(1L, missingReviewer, 7L));
+        assertEquals(FinanceApprovalGuard.CODE_MISSING_REVIEWER, missing.getCode());
+        assertTrue(missing.getMessage().contains("必须选择复核人"));
+
+        // 显式选择其他管理员必须放行并标记 DUAL_APPROVAL。
+        when(policyMapper.findScheduledAfter(eq(1L), any())).thenReturn(List.of());
+        when(policyMapper.insert(any())).thenAnswer(invocation -> {
+            MerchantFeePolicy policy = invocation.getArgument(0);
+            policy.setId(47L);
+            return 1;
+        });
+        MerchantFeePolicyService.AdjustForm otherReviewer = adjustForm("NORMAL", 500, null, "上调费率");
+        otherReviewer.setConfirmedBy(8L);
+        MerchantFeePolicy approved = strict.adjust(1L, otherReviewer, 7L);
+        assertEquals(FinanceApprovalGuard.MODE_DUAL_APPROVAL, approved.getApprovalMode());
+        assertEquals(8L, approved.getConfirmedBy());
     }
 
     @Test
@@ -244,11 +259,18 @@ class MerchantFeePolicyServiceTest {
             return 1;
         });
 
+        // 5 参入口未显式传复核人：严格模式按缺参返回 428。
+        BusinessException missing = assertThrows(BusinessException.class,
+                () -> strictService().createInitialPolicy(1L, 300, null, "开店初始费率", 7L));
+        assertEquals(FinanceApprovalGuard.CODE_MISSING_REVIEWER, missing.getCode());
+
+        // 显式传同一操作人：属于同人复核，仍返回 403。
         assertEquals(403, assertThrows(BusinessException.class,
-                () -> strictService().createInitialPolicy(1L, 300, null, "开店初始费率", 7L)).getCode());
+                () -> strictService().createInitialPolicy(1L, 300, null, "开店初始费率", 7L, 7L)).getCode());
 
         MerchantFeePolicy policy = strictService().createInitialPolicy(1L, 300, null, "开店初始费率", 7L, 8L);
         assertEquals(FinanceApprovalGuard.MODE_DUAL_APPROVAL, policy.getApprovalMode());
+        assertEquals(8L, policy.getConfirmedBy());
     }
 
     @Test

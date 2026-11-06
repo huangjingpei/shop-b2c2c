@@ -7,6 +7,7 @@
  *  3. 审核通过才建店/建账号；驳回、补件、撤回不得产生店铺或账号副作用。
  *  4. 0% 费率只允许 PROMOTION 且必须带推广原因；放宽该条件时本用例必须失败。
  *  5. 并发行锁、真实 MySQL 唯一性与三方实名核验仍由用户手动验证。
+ *  6. G31 起审核未显式选复核人时原样传 null，由 FinanceApprovalGuard 区分严格模式 428 与宽松模式同人标记。
  */
 package com.shop.b2b2c;
 
@@ -34,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -128,7 +130,7 @@ class MerchantOnboardingServiceTest {
         assertEquals("MANUAL_REVIEW", application.getVerificationSource());
         verify(storeMapper).save(any(MerchantStore.class));
         verify(userMapper).save(any(SysUser.class));
-        verify(feePolicyService).createInitialPolicy(eq(99L), eq(300), any(), any(), eq(7L), eq(7L));
+        verify(feePolicyService).createInitialPolicy(eq(99L), eq(300), any(), any(), eq(7L), isNull());
         verify(applicationMapper).updateById(application);
     }
 
@@ -207,7 +209,7 @@ class MerchantOnboardingServiceTest {
         service.approve(6L, provisioning, "推广期免佣", 7L);
 
         assertEquals(MerchantOnboardingService.STATUS_APPROVED, application.getStatus());
-        verify(feePolicyService).createInitialPolicy(eq(100L), eq(0), eq("新店首年推广"), any(), eq(7L), eq(7L));
+        verify(feePolicyService).createInitialPolicy(eq(100L), eq(0), eq("新店首年推广"), any(), eq(7L), isNull());
     }
 
     private MerchantOnboardingService.ApplicationForm individualForm() {

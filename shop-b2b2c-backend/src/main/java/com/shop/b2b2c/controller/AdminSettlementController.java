@@ -5,10 +5,12 @@
  *  1. 路径位于 /api/v1/admin/**，由 SaTokenConfigure 统一要求 SUPERADMIN，控制器内仍显式校验一次。
  *  2. 充值确认以人工核对后的金额入账；确认接口幂等由充值单号+账本幂等键保证。
  *  3. 批次生成只生成/重算 DRAFT，确认后不可再改；跨店查询必须显式传 merchantId。
+ *  4. 复核人候选只返回启用中的其他 SUPERADMIN，不返回密码；是否允许同人由 FinanceApprovalGuard 判定。
  */
 package com.shop.b2b2c.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.dto.SettlementDTOs;
 import com.shop.b2b2c.entity.MerchantAccount;
@@ -18,6 +20,9 @@ import com.shop.b2b2c.entity.MerchantSettlementBatch;
 import com.shop.b2b2c.entity.MerchantSettlementItem;
 import com.shop.b2b2c.entity.PaymentChannelStatement;
 import com.shop.b2b2c.entity.ReconciliationDifference;
+import com.shop.b2b2c.entity.SysUser;
+import com.shop.b2b2c.mapper.SysUserMapper;
+import com.shop.b2b2c.service.FinanceApprovalGuard;
 import com.shop.b2b2c.service.MerchantAccountService;
 import com.shop.b2b2c.service.ReconciliationService;
 import com.shop.b2b2c.service.SettlementService;
@@ -53,6 +58,33 @@ public class AdminSettlementController {
     private final MerchantAccountService accountService;
     private final SettlementService settlementService;
     private final ReconciliationService reconciliationService;
+    private final SysUserMapper userMapper;
+    private final FinanceApprovalGuard approvalGuard;
+
+    @Operation(summary = "查询可选的财务复核人（排除当前操作人）")
+    @GetMapping("/reviewers")
+    public R<Map<String, Object>> reviewers() {
+        StpUtil.checkRole("SUPERADMIN");
+        Long currentUserId = StpUtil.getLoginIdAsLong();
+        List<SysUser> users = userMapper.selectList(new LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getRoleCode, "SUPERADMIN")
+                .eq(SysUser::getIsActive, true)
+                .ne(SysUser::getId, currentUserId)
+                .orderByAsc(SysUser::getId));
+        List<Map<String, Object>> reviewers = new ArrayList<>();
+        for (SysUser user : users) {
+            // 只暴露复核选择所需字段，禁止返回密码散列或店铺绑定信息。
+            Map<String, Object> item = new java.util.LinkedHashMap<>();
+            item.put("id", user.getId());
+            item.put("username", user.getUsername());
+            item.put("realName", user.getRealName());
+            reviewers.add(item);
+        }
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("dualApprovalRequired", approvalGuard.isDualApprovalRequired());
+        result.put("reviewers", reviewers);
+        return R.ok(result);
+    }
 
     @Operation(summary = "查询待确认充值单")
     @GetMapping("/recharges/pending")
@@ -67,7 +99,8 @@ public class AdminSettlementController {
                                                     @RequestBody(required = false) SettlementDTOs.ConfirmRequest request) {
         StpUtil.checkRole("SUPERADMIN");
         return R.ok("充值已确认", accountService.confirmRecharge(rechargeNo,
-                request == null ? null : request.getConfirmedAmount(), StpUtil.getLoginIdAsLong()));
+                request == null ? null : request.getConfirmedAmount(), StpUtil.getLoginIdAsLong(),
+                request == null ? null : request.getConfirmedBy()));
     }
 
     @Operation(summary = "驳回充值单")
@@ -90,9 +123,12 @@ public class AdminSettlementController {
 
     @Operation(summary = "确认结算批次")
     @PostMapping("/batches/{batchId}/confirm")
-    public R<MerchantSettlementBatch> confirmBatch(@PathVariable Long batchId) {
+    public R<MerchantSettlementBatch> confirmBatch(
+            @PathVariable Long batchId,
+            @RequestBody(required = false) SettlementDTOs.BatchConfirmRequest request) {
         StpUtil.checkRole("SUPERADMIN");
-        return R.ok("结算批次已确认", settlementService.confirm(batchId, StpUtil.getLoginIdAsLong()));
+        return R.ok("结算批次已确认", settlementService.confirm(batchId, StpUtil.getLoginIdAsLong(),
+                request == null ? null : request.getConfirmedBy()));
     }
 
     @Operation(summary = "查询店铺结算批次")

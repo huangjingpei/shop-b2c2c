@@ -6,6 +6,8 @@
  *  2. 订单明细按订单创建时间归属账期；退款冲正按退款成功时间归属账期，形成独立红字行。
  *  3. DRAFT 批次可重算覆盖，CONFIRMED 后禁止重算；批次合计必须由明细行汇总，不得手工写入。
  *  4. 明细金额来自订单级快照；旧订单无快照时以 commission_amount 兜底，并在文档标注为历史订单口径。
+ *  5. 财务基线 18：确认接口的复核人由 FinanceApprovalGuard 判定，严格缺复核人 428、同人 403；
+ *     宽松模式未传按操作人处理并落 SAME_OPERATOR；prepared_by 仍独立记录制单人。
  */
 package com.shop.b2b2c.service;
 
@@ -153,7 +155,7 @@ public class SettlementService {
     }
 
     @Transactional
-    public MerchantSettlementBatch confirm(Long batchId, Long operatorId) {
+    public MerchantSettlementBatch confirm(Long batchId, Long operatorId, Long reviewerId) {
         MerchantSettlementBatch batch = batchMapper.lockById(batchId);
         if (batch == null) {
             throw new BusinessException(404, "结算批次不存在");
@@ -161,10 +163,12 @@ public class SettlementService {
         if (!"DRAFT".equals(batch.getStatus())) {
             throw new BusinessException(409, "结算批次已确认");
         }
-        // 财务基线 18：双人复核开关打开时制单人/确认人必须不同；开发/试点关闭时允许同人并落 SAME_OPERATOR。
-        String approvalMode = approvalGuard.verify("结算确认", batch.getPreparedBy(), operatorId);
+        // 财务基线 18：双人复核开关打开时必须由操作人显式选择不同复核人；缺复核人返回 428，同人 403。
+        // 开发/试点关闭时允许同人并落 SAME_OPERATOR；prepared_by 仍独立记录制单人。
+        String approvalMode = approvalGuard.verify("结算确认", operatorId, reviewerId);
+        Long confirmedBy = approvalGuard.resolveReviewer(operatorId, reviewerId);
         batch.setStatus("CONFIRMED");
-        batch.setConfirmedBy(operatorId);
+        batch.setConfirmedBy(confirmedBy);
         batch.setApprovalMode(approvalMode);
         batch.setConfirmedAt(LocalDateTime.now());
         batch.setVersion((batch.getVersion() == null ? 0 : batch.getVersion()) + 1);

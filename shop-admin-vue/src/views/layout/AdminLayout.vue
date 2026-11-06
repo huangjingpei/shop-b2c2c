@@ -78,6 +78,10 @@
               <el-icon><Tickets /></el-icon>
               <span>全平台订单与分账监察</span>
             </el-menu-item>
+            <el-menu-item index="/admin/finance">
+              <el-icon><Wallet /></el-icon>
+              <span>财务复核与结算</span>
+            </el-menu-item>
           </template>
 
           <!-- 商家工作台菜单 -->

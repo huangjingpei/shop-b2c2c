@@ -76,6 +76,8 @@ public class MerchantController {
         private String bankAccountName;
         private String bankAccountNumber;
         private String bankName;
+        /** 初始费率复核人；生产双人复核开启时必须为除当前超管外的启用管理员。 */
+        private Long rateConfirmedBy;
     }
 
     @Operation(summary = "【超管】应急开通商户（仍走入驻申请与审核留痕）")
@@ -137,6 +139,7 @@ public class MerchantController {
         provisioning.setRateBps(dto.getCommissionRate() == null ? 300
                 : dto.getCommissionRate().multiply(new BigDecimal("100")).intValue());
         provisioning.setPromotionReason(dto.getPromotionReason());
+        provisioning.setRateConfirmedBy(dto.getRateConfirmedBy());
         onboardingService.approve(application.getId(), provisioning, "超管应急开通，保留完整审核留痕", operatorId);
 
         MerchantStore store = storeMapper.findById(application.getMerchantId())

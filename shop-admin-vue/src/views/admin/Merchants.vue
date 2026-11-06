@@ -1,7 +1,7 @@
 <!--
 文件：Merchants.vue
 用途：平台商户资料、佣金、服务费、营业状态和收款模式配置页面。
-维护注意：进件仍有模拟数据，不能把成功提示当真实渠道开通；后台校验为权威；服务费五种编码分别展示，未知值须明确选择，配置不代表扣费或停服；日期按LocalDate提交。
+维护注意：进件仍有模拟数据，不能把成功提示当真实渠道开通；后台校验为权威；服务费五种编码分别展示，未知值须明确选择，配置不代表扣费或停服；日期按LocalDate提交。G31：调价与开店初始费率必须提供复核人入口，候选排除当前账号；无第二账号时明确提示“需至少分配两个财务账号”，前端不绕过后端双人复核。
 -->
 <template>
   <div class="merchants-page">
@@ -141,10 +141,21 @@
         <el-form-item label="技术抽成比例(%)">
           <el-input-number v-model="form.commissionRate" :precision="2" :step="0.5" :min="0" :max="100" />
         </el-form-item>
+        <el-form-item label="初始费率复核人" :required="reviewerPolicy.dualApprovalRequired">
+          <el-select v-model="form.rateConfirmedBy" clearable style="width: 100%"
+            :placeholder="reviewerPlaceholder">
+            <el-option v-for="item in reviewerPolicy.candidates" :key="item.id"
+              :label="reviewerLabel(item)" :value="item.id" />
+          </el-select>
+          <div class="review-hint">复核人候选已排除当前登录账号；开关打开时必填。</div>
+        </el-form-item>
+        <el-alert v-if="reviewerPolicy.notice" :title="reviewerPolicy.notice" type="warning"
+          :closable="false" show-icon class="review-alert" />
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitLoading" @click="handleCreate">确认开通并进件</el-button>
+        <el-button type="primary" :loading="submitLoading" :disabled="reviewerPolicy.blocked"
+          @click="handleCreate">确认开通并进件</el-button>
       </template>
     </el-dialog>
 
@@ -201,23 +212,92 @@
       </template>
     </el-dialog>
 
+    <!-- 4. G31 费率调整弹窗（费率 + 原因 + 复核人） -->
+    <el-dialog v-model="commissionDialogVisible" title="调整技术服务费率" width="480px">
+      <el-form label-width="110px">
+        <el-form-item label="新费率(%)">
+          <el-input-number v-model="commissionForm.rate" :precision="2" :step="0.5" :min="0" :max="10" />
+          <div class="review-hint">0% 视为推广费率；调高次日 00:00 生效，降费即时生效。</div>
+        </el-form-item>
+        <el-form-item label="调整原因">
+          <el-input v-model="commissionForm.reason" maxlength="100"
+            placeholder="可不填，后端按接口默认原因记录" />
+        </el-form-item>
+        <el-form-item label="复核人" :required="reviewerPolicy.dualApprovalRequired">
+          <el-select v-model="commissionForm.confirmedBy" clearable style="width: 100%"
+            :placeholder="reviewerPlaceholder">
+            <el-option v-for="item in reviewerPolicy.candidates" :key="item.id"
+              :label="reviewerLabel(item)" :value="item.id" />
+          </el-select>
+          <div class="review-hint">复核人仅作参数传递，是否允许同人由后端双人复核开关判定。</div>
+        </el-form-item>
+        <el-alert v-if="reviewerPolicy.notice" :title="reviewerPolicy.notice" type="warning"
+          :closable="false" show-icon class="review-alert" />
+      </el-form>
+      <template #footer>
+        <el-button @click="commissionDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="commissionSaving" :disabled="reviewerPolicy.blocked"
+          @click="submitCommission">保存费率</el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { computed, onMounted, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 import { FEE_STATUS_OPTIONS, feeStatusView, serviceFeeForm, serviceFeePayload } from '../../utils/serviceFee.mjs'
 import { storeDisplay } from '../../utils/orderStatistics.mjs'
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 import { generateTemporaryPassword, isStrongPassword } from '../../utils/adminAccount.mjs'
+import { reviewerState, validateReviewer } from '../../utils/financeReview.mjs'
 
 const createSubmission = createIdempotentSubmission()
 const loading = ref(false)
 const submitLoading = ref(false)
 const merchants = ref([])
 const dialogVisible = ref(false)
+
+// G31：复核人候选由后端按 SUPERADMIN + 启用 + 排除当前账号返回，页面不做角色猜测。
+const currentUserId = localStorage.getItem('userId') || ''
+const reviewers = ref([])
+const dualApprovalRequired = ref(false)
+const reviewerPolicy = computed(() => reviewerState({
+  dualApprovalRequired: dualApprovalRequired.value,
+  reviewers: reviewers.value,
+  currentUserId
+}))
+const reviewerPlaceholder = computed(() => reviewerPolicy.value.dualApprovalRequired
+  ? '必须选择复核人'
+  : '可留空，按当前操作人记录同人复核')
+const reviewerLabel = item => `${item.realName || item.username || '管理员'}（${item.username}）`
+
+const loadReviewers = async () => {
+  try {
+    const res = await request.get('/admin/settlement/reviewers', { skipErrorToast: true })
+    dualApprovalRequired.value = Boolean(res.data?.dualApprovalRequired)
+    reviewers.value = Array.isArray(res.data?.reviewers) ? res.data.reviewers : []
+  } catch (error) {
+    reviewers.value = []
+    ElMessage.warning(error.response?.data?.message || '复核人候选加载失败，请刷新后重试')
+  }
+}
+
+const guardReviewer = reviewerId => {
+  const result = validateReviewer({
+    dualApprovalRequired: dualApprovalRequired.value,
+    reviewers: reviewers.value,
+    currentUserId,
+    reviewerId
+  })
+  if (!result.ok) {
+    ElMessage.warning(result.message)
+    return null
+  }
+  return result
+}
 
 const form = ref({
   storeCode: '',
@@ -230,7 +310,8 @@ const form = ref({
   bankName: '',
   adminUsername: '',
   adminPassword: '',
-  commissionRate: 3.00
+  commissionRate: 3.00,
+  rateConfirmedBy: ''
 })
 
 const storeStatusTagType = status => {
@@ -256,7 +337,8 @@ const resetCreateForm = () => {
     bankName: '',
     adminUsername: '',
     adminPassword: '',
-    commissionRate: 3.00
+    commissionRate: 3.00,
+    rateConfirmedBy: ''
   }
   refreshPassword()
 }
@@ -277,6 +359,16 @@ const channelSaving = ref(false)
 const channelForm = ref({
   paymentChannelType: 'C',
   customPayQrcode: ''
+})
+
+// G31 费率调整（费率 + 原因 + 复核人）
+const commissionDialogVisible = ref(false)
+const commissionSaving = ref(false)
+const commissionForm = ref({
+  storeId: null,
+  rate: 3,
+  reason: '',
+  confirmedBy: ''
 })
 
 const loadMerchants = async () => {
@@ -308,8 +400,13 @@ const handleCreate = async () => {
     ElMessage.warning('初始密码至少 8 位且包含字母与数字，请重新生成强口令')
     return
   }
+  const selection = guardReviewer(form.value.rateConfirmedBy)
+  if (!selection) return
+  const payload = { ...form.value }
+  if (selection.confirmedBy === null) delete payload.rateConfirmedBy
+  else payload.rateConfirmedBy = selection.confirmedBy
   submitLoading.value = true
-  const prepared = createSubmission.prepare(form.value)
+  const prepared = createSubmission.prepare(payload)
   try {
     await request.post('/admin/merchants', prepared.body, { headers: prepared.headers })
     createSubmission.complete()
@@ -335,19 +432,35 @@ const toggleStatus = async (row) => {
 }
 
 const editCommission = (row) => {
-  ElMessageBox.prompt('请输入新的抽佣比例(百分比，如 3.5 代表 3.5%)', '调整技术服务费提成', {
-    inputValue: row.commissionRate,
-    inputPattern: /^\d+(\.\d{1,2})?$/,
-    inputErrorMessage: '请输入有效的数字'
-  }).then(async ({ value }) => {
-    try {
-      await request.put(`/admin/merchants/${row.id}/commission?rate=${value}`)
-      ElMessage.success('费率调整成功')
-      loadMerchants()
-    } catch (error) {
-      ElMessage.error(error.response?.data?.message || '费率调整失败')
-    }
-  }).catch(() => {})
+  commissionForm.value = {
+    storeId: row.id,
+    rate: Number(row.commissionRate ?? 3),
+    reason: '',
+    confirmedBy: ''
+  }
+  commissionDialogVisible.value = true
+}
+
+const submitCommission = async () => {
+  if (commissionSaving.value) return
+  const selection = guardReviewer(commissionForm.value.confirmedBy)
+  if (!selection) return
+  const params = { rate: commissionForm.value.rate }
+  if (commissionForm.value.reason && commissionForm.value.reason.trim()) {
+    params.reason = commissionForm.value.reason.trim()
+  }
+  if (selection.confirmedBy !== null) params.confirmedBy = selection.confirmedBy
+  commissionSaving.value = true
+  try {
+    await request.put(`/admin/merchants/${commissionForm.value.storeId}/commission`, null, { params })
+    ElMessage.success('费率调整成功')
+    commissionDialogVisible.value = false
+    loadMerchants()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '费率调整失败')
+  } finally {
+    commissionSaving.value = false
+  }
 }
 
 // 打开服务费弹窗
@@ -397,6 +510,7 @@ const handleSaveChannel = async () => {
 
 onMounted(() => {
   loadMerchants()
+  loadReviewers()
 })
 </script>
 
@@ -422,5 +536,16 @@ onMounted(() => {
 
 .table-card {
   border-radius: 8px;
+}
+
+.review-hint {
+  width: 100%;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+.review-alert {
+  margin: 4px 0 8px;
 }
 </style>

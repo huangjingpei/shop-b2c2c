@@ -95,6 +95,7 @@ public class GlobalExceptionHandler {
             case 403 -> HttpStatus.FORBIDDEN;
             case 404 -> HttpStatus.NOT_FOUND;
             case 409 -> HttpStatus.CONFLICT;
+            case 428 -> HttpStatus.PRECONDITION_REQUIRED;
             case 429 -> HttpStatus.TOO_MANY_REQUESTS;
             case 503 -> HttpStatus.SERVICE_UNAVAILABLE;
             default -> code >= 500 ? HttpStatus.INTERNAL_SERVER_ERROR : HttpStatus.BAD_REQUEST;
