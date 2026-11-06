@@ -130,6 +130,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
 import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery, cardListQuery, cardExportPayload } from '../../utils/cardAssets.mjs'
 import { merchantProductRows } from '../../utils/merchantProducts.mjs'
+import { sessionBucket, sessionGet } from '../../utils/authSession.mjs'
 
 const loading = ref(false)
 const submitLoading = ref(false)
@@ -139,7 +140,8 @@ const cardSku = ref(''), onlyAvailable = ref(false), cardNext = ref(null)
 let appliedCardSku = undefined
 const revealLoading = ref(null), exportSku = ref(''), exportLoading = ref(false)
 const importProducts = ref([]), importSkus = ref([]), skuLoading = ref(false), voidLoading = ref(null)
-const currentRole = localStorage.getItem('roleCode') || ''
+// 会话隔离：读实际 token 所在桶（商家页缺商家桶时回落超管桶，保住超管代管店铺的展示语义）。
+const currentRole = sessionGet(localStorage, 'roleCode', sessionBucket(localStorage, 'MERCHANT')) || ''
 const canReveal = currentRole === 'MERCHANT_ADMIN' || currentRole === 'SUPERADMIN'
 const canExport = canReveal
 const pendingVoidReasons = new Map()

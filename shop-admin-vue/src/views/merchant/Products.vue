@@ -167,8 +167,11 @@ import { editorForm, updatePayload, statusAction, productStatusLabel, productCre
 import { inventoryPayload, canAdjustInventory } from '../../utils/inventoryAdjustment.mjs'
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 import { merchantProductRows } from '../../utils/merchantProducts.mjs'
+import { sessionBucket, sessionGet } from '../../utils/authSession.mjs'
 
-const isManager = ref(localStorage.getItem('roleCode') === 'MERCHANT_ADMIN' || localStorage.getItem('roleCode') === 'SUPERADMIN')
+// 会话隔离：读实际 token 所在桶（商家页缺商家桶时回落超管桶）。
+const sessionRole = sessionGet(localStorage, 'roleCode', sessionBucket(localStorage, 'MERCHANT'))
+const isManager = ref(sessionRole === 'MERCHANT_ADMIN' || sessionRole === 'SUPERADMIN')
 const loading = ref(false)
 const submitLoading = ref(false)
 const dialogVisible = ref(false)
@@ -176,7 +179,7 @@ const products = ref([])
 const categories = ref([])
 const editVisible = ref(false), editorLoading = ref(false), editSaving = ref(false), statusLoading = ref(null)
 const editForm = ref(null), editingId = ref(null), editingType = ref(null)
-const currentRole = localStorage.getItem('roleCode') || ''
+const currentRole = sessionRole || ''
 const stockVisible = ref(false), stockSaving = ref(false), stockLoading = ref(false), stockNext = ref(null)
 const stockSkuCode = ref(''), stockRecords = ref([]), stockForm = ref({})
 const stockSubmission = createIdempotentSubmission()

@@ -142,8 +142,10 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 import { reviewerState, validateReviewer } from '../../utils/financeReview.mjs'
+import { sessionGet } from '../../utils/authSession.mjs'
 
-const currentUserId = localStorage.getItem('userId') || ''
+// 会话隔离：超管页读超管桶（admin: 前缀键）。
+const currentUserId = sessionGet(localStorage, 'userId', 'ADMIN') || ''
 const loading = ref(false)
 const batchLoading = ref(false)
 const submitting = ref(false)

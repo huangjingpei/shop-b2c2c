@@ -407,6 +407,7 @@ import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 import { canPreviewPoster, createStoredPosterPreview } from '../../utils/storedPoster.mjs'
+import { sessionBucket, sessionGet } from '../../utils/authSession.mjs'
 import { ORDER_STATUS_OPTIONS, buildOrderQuery, mergeOrderPage, isInvalidOrderCursorError } from '../../utils/orderList.mjs'
 
 const loading = ref(false)
@@ -425,7 +426,9 @@ const currentOrder = ref(null)
 const posterView = reactive({ visible: false, loading: false, url: '', error: '' })
 const posterPreview = createStoredPosterPreview({ get: (...args) => request.get(...args), render: state => Object.assign(posterView, state) })
 
-const isManager = ref(localStorage.getItem('roleCode') === 'MERCHANT_ADMIN' || localStorage.getItem('roleCode') === 'SUPERADMIN')
+// 会话隔离：读实际 token 所在桶（商家页缺商家桶时回落超管桶）。
+const sessionRole = sessionGet(localStorage, 'roleCode', sessionBucket(localStorage, 'MERCHANT'))
+const isManager = ref(sessionRole === 'MERCHANT_ADMIN' || sessionRole === 'SUPERADMIN')
 const deliverForm = ref({
   logisticsCompany: '顺丰速运',
   trackingNumber: ''

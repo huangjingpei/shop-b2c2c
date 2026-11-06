@@ -87,6 +87,7 @@ import request from '../../api/request'
 import { statisticsView, listedProductCount, storeDisplay, STATISTICS_NOTICE } from '../../utils/orderStatistics.mjs'
 import { merchantProductRows } from '../../utils/merchantProducts.mjs'
 import { notificationView } from '../../utils/notificationView.mjs'
+import { sessionBucket, sessionGet } from '../../utils/authSession.mjs'
 
 const storeInfo = ref({})
 const productCount = ref('—')
@@ -94,8 +95,8 @@ const stats = ref(statisticsView())
 // O8 店铺通知（站内已送达；渲染规则集中在 notificationView.mjs，payload 只文本插值）
 const notifications = ref([])
 const banner = computed(() => storeDisplay(storeInfo.value))
-// Q13-A：前端仅做入口隐藏，最终以路由守卫和后端接口拒绝为准。
-const canManageCards = computed(() => localStorage.getItem('roleCode') !== 'MERCHANT_STAFF')
+// Q13-A：前端仅做入口隐藏，最终以路由守卫和后端接口拒绝为准；角色读实际 token 所在桶（会话隔离）。
+const canManageCards = computed(() => sessionGet(localStorage, 'roleCode', sessionBucket(localStorage, 'MERCHANT')) !== 'MERCHANT_STAFF')
 
 const loadData = async () => {
   try {

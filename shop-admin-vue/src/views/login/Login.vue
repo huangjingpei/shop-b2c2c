@@ -67,7 +67,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
-import { cacheProfile, homeFor } from '../../utils/authSession.mjs'
+import { cacheProfile, homeFor, sessionSet } from '../../utils/authSession.mjs'
 
 const router = useRouter()
 const loading = ref(false)
@@ -115,13 +115,14 @@ const handleLogin = async () => {
       scope: 'MERCHANT'
     })
     const { token, roleCode, realName } = res.data
-    localStorage.setItem('token', token)
-    cacheProfile(localStorage, res.data)
-    localStorage.setItem('currentPerspective', 'MERCHANT')
+    // 会话隔离：商家会话只写商家桶（原始键名），不触碰超管桶（admin: 前缀键）。
+    sessionSet(localStorage, 'token', token, 'MERCHANT')
+    cacheProfile(localStorage, res.data, 'MERCHANT')
+    sessionSet(localStorage, 'currentPerspective', 'MERCHANT', 'MERCHANT')
     // D11：审核开店生成的店长账号首次登录必须先改密，改密成功后才进入工作台。
     if (res.data.mustChangePassword) {
       ElMessage.warning('首次登录须先修改初始密码')
-      await router.replace('/change-password')
+      await router.replace('/change-password?p=MERCHANT')
       return
     }
     ElMessage.success(`欢迎回来，${realName || '商家'}！`)

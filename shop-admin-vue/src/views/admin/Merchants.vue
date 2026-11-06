@@ -322,6 +322,7 @@ import { storeDisplay } from '../../utils/orderStatistics.mjs'
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 import { generateTemporaryPassword, isStrongPassword } from '../../utils/adminAccount.mjs'
 import { reviewerState, validateReviewer } from '../../utils/financeReview.mjs'
+import { sessionGet } from '../../utils/authSession.mjs'
 import {
   STORE_ACTION_LABELS,
   STORE_REASON_CODES,
@@ -338,7 +339,8 @@ const merchants = ref([])
 const dialogVisible = ref(false)
 
 // G31：复核人候选由后端按 SUPERADMIN + 启用 + 排除当前账号返回，页面不做角色猜测。
-const currentUserId = localStorage.getItem('userId') || ''
+// 会话隔离：超管页读超管桶（admin: 前缀键）。
+const currentUserId = sessionGet(localStorage, 'userId', 'ADMIN') || ''
 const reviewers = ref([])
 const dualApprovalRequired = ref(false)
 const reviewerPolicy = computed(() => reviewerState({

@@ -5,6 +5,7 @@
 1. 本页为独立页面（不在 AdminLayout 内），标记账号无法访问任何业务页，不得在本页渲染店铺或平台私有数据。
 2. 前端校验只作体验提示，强度与“不得与原密码相同”等规则以后端 /auth/change-password 判定为准。
 3. 改密成功后端会注销该账号全部会话（含当前令牌），本页必须清空本地会话并回到对应登录入口，不得静默沿用旧令牌。
+4. 会话隔离：本页通过 ?p=ADMIN|MERCHANT 识别触发强制改密的会话桶（守卫与登录页跳转时携带）；改密只清理该桶，同浏览器另一桶（超管/商家并存时）保持无感。
 -->
 <template>
   <div class="change-password">
@@ -38,14 +39,20 @@
 
 <script setup>
 import { ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
-import { clearSession, loginPathFor } from '../../utils/authSession.mjs'
+import { clearSession, loginPathFor, resolvePerspective } from '../../utils/authSession.mjs'
 
 const router = useRouter()
+const route = useRoute()
 const loading = ref(false)
 const form = ref({ oldPassword: '', newPassword: '', confirmPassword: '' })
+
+// 触发强制改密的会话桶：优先取守卫/登录页携带的 ?p= 查询，缺失时按存储上下文判定。
+const perspective = route.query.p === 'ADMIN' || route.query.p === 'MERCHANT'
+  ? route.query.p
+  : resolvePerspective(localStorage)
 
 const PASSWORD_PATTERN = /(?=.*[A-Za-z])(?=.*\d)[\s\S]+/
 
@@ -74,13 +81,14 @@ const handleSubmit = async () => {
   if (!validate()) return
   loading.value = true
   try {
+    // 改密请求必须携带触发强制改密的那一桶 token（超管/商家并存时两桶 token 不同）。
     await request.post('/auth/change-password', {
       oldPassword: form.value.oldPassword,
       newPassword: form.value.newPassword
-    })
-    // 后端已注销全部会话；先按视角算入口再清理会话（清理后无法读取 currentPerspective）。
-    const loginTarget = loginPathFor(import.meta.env.BASE_URL, localStorage.getItem('currentPerspective'))
-    clearSession(localStorage)
+    }, { perspective })
+    // 后端已注销该账号全部会话；只清理本桶并回对应入口，另一桶登录状态保持无感。
+    const loginTarget = loginPathFor(import.meta.env.BASE_URL, perspective)
+    clearSession(localStorage, perspective)
     ElMessage.success('密码已修改，请使用新密码重新登录')
     await router.replace(loginTarget)
   } catch {

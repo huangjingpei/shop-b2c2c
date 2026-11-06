@@ -3,6 +3,7 @@
 用途：管理端布局、角色视角切换与菜单框架。
 维护注意：本地角色与视角只控制展示，不授予店铺操作权；未绑定店铺的超管不能默认写店铺1。退出须等服务端确认，网络失败不假装退出；页面身份由路由服务端校验后同步。
 退出跳转按登录时的角色回对应入口：超管回 /admin/login，商家回 /login，不把商家带到私密入口。
+会话隔离：展示身份读取“实际 token 所在桶”（商家页缺商家桶时回落超管桶，保住超管查看商家工作台）；退出只注销并清理该桶，另一桶登录状态无感。
 -->
 <template>
   <el-container class="layout-container">
@@ -127,22 +128,28 @@
 <script setup>
 import { ref, onMounted, watch } from 'vue'
 import request from '../../api/request'
-import { loginPathFor, logoutSession } from '../../utils/authSession.mjs'
+import { loginPathFor, logoutSession, pickToken, sessionGet, sessionSet } from '../../utils/authSession.mjs'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessageBox, ElMessage } from 'element-plus'
 
 const router = useRouter()
 const route = useRoute()
 
-const roleCode = ref(localStorage.getItem('roleCode') || '')
-const realName = ref(localStorage.getItem('realName') || '管理员')
-const storeName = ref(localStorage.getItem('storeName') || '平台总店')
-const merchantId = ref(localStorage.getItem('merchantId') || '')
+// 目标视角由路由前缀决定；展示身份读取实际 token 所在桶（商家页缺商家桶时回落超管桶）。
+const routePerspective = () => route.path.startsWith('/admin/') ? 'ADMIN' : 'MERCHANT'
+const currentBucket = () => pickToken(localStorage, routePerspective()).perspective
+
+const bucket = currentBucket()
+const roleCode = ref(sessionGet(localStorage, 'roleCode', bucket) || '')
+const realName = ref(sessionGet(localStorage, 'realName', bucket) || '管理员')
+const storeName = ref(sessionGet(localStorage, 'storeName', bucket) || '平台总店')
+const merchantId = ref(sessionGet(localStorage, 'merchantId', bucket) || '')
 const loggingOut = ref(false)
-const perspective = ref(roleCode.value === 'SUPERADMIN' ? (localStorage.getItem('currentPerspective') || 'ADMIN') : 'MERCHANT')
+const perspective = ref(roleCode.value === 'SUPERADMIN' ? (sessionGet(localStorage, 'currentPerspective', 'ADMIN') || 'ADMIN') : 'MERCHANT')
 
 const handlePerspectiveChange = (val) => {
-  localStorage.setItem('currentPerspective', val)
+  // 视角偏好属于超管桶；商家视角的接口请求仍按路由自动回落超管 token。
+  sessionSet(localStorage, 'currentPerspective', val, 'ADMIN')
   if (val === 'ADMIN') {
     router.push('/admin/dashboard')
     ElMessage.info('已切换至【平台超级管理员】全局治理视角')
@@ -160,6 +167,7 @@ const handleCommand = async (cmd) => {
   try {
     const cleared = await logoutSession({
       storage: localStorage,
+      perspective: routePerspective(),
       postLogout: () => request.post('/auth/logout', undefined, { skipErrorToast: true, skipAuthRedirect: true })
     })
     if (cleared) {
@@ -173,10 +181,11 @@ const handleCommand = async (cmd) => {
 }
 
 const syncDisplayProfile = () => {
-  roleCode.value = localStorage.getItem('roleCode') || ''
-  realName.value = localStorage.getItem('realName') || '用户'
-  storeName.value = localStorage.getItem('storeName') || '平台总部'
-  merchantId.value = localStorage.getItem('merchantId') || ''
+  const bucket = currentBucket()
+  roleCode.value = sessionGet(localStorage, 'roleCode', bucket) || ''
+  realName.value = sessionGet(localStorage, 'realName', bucket) || '用户'
+  storeName.value = sessionGet(localStorage, 'storeName', bucket) || '平台总部'
+  merchantId.value = sessionGet(localStorage, 'merchantId', bucket) || ''
   if (roleCode.value !== 'SUPERADMIN') perspective.value = 'MERCHANT'
   else perspective.value = route.path.startsWith('/admin/') ? 'ADMIN' : 'MERCHANT'
 }

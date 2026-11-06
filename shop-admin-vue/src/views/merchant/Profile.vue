@@ -116,12 +116,15 @@ import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 import { paymentAccountView as buildPaymentAccountView } from '../../utils/orderStatistics.mjs'
 import { qualificationView, validateExpiryUpdate } from '../../utils/qualificationExpiry.mjs'
+import { sessionBucket, sessionGet } from '../../utils/authSession.mjs'
 
 const saving = ref(false)
 const savingExpiry = ref(false)
 const store = ref({})
 const paymentAccount = ref({})
-const isManager = ref(localStorage.getItem('roleCode') === 'MERCHANT_ADMIN' || localStorage.getItem('roleCode') === 'SUPERADMIN')
+// 会话隔离：读实际 token 所在桶（商家页缺商家桶时回落超管桶）。
+const sessionRole = sessionGet(localStorage, 'roleCode', sessionBucket(localStorage, 'MERCHANT'))
+const isManager = ref(sessionRole === 'MERCHANT_ADMIN' || sessionRole === 'SUPERADMIN')
 
 // O9 资质有效期更新表单：value-format 已保证 YYYY-MM-DD，校验规则与后端一致（未来日期）。
 const expiryForm = reactive({ idCardExpiry: '', licenseExpiry: '' })

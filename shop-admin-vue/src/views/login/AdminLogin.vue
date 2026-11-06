@@ -54,7 +54,7 @@ import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
-import { cacheProfile, homeFor } from '../../utils/authSession.mjs'
+import { cacheProfile, homeFor, sessionSet } from '../../utils/authSession.mjs'
 
 const router = useRouter()
 const loading = ref(false)
@@ -101,13 +101,14 @@ const handleLogin = async () => {
       captchaCode: form.value.captchaCode,
       scope: 'ADMIN'
     })
-    localStorage.setItem('token', res.data.token)
-    cacheProfile(localStorage, res.data)
-    localStorage.setItem('currentPerspective', 'ADMIN')
+    // 会话隔离：超管会话只写超管桶（admin: 前缀键），不覆盖同浏览器已登录的商家桶。
+    sessionSet(localStorage, 'token', res.data.token, 'ADMIN')
+    cacheProfile(localStorage, res.data, 'ADMIN')
+    sessionSet(localStorage, 'currentPerspective', 'ADMIN', 'ADMIN')
     // D11：带强制改密标记的账号先改密再进入控制台。
     if (res.data.mustChangePassword) {
       ElMessage.warning('首次登录须先修改初始密码')
-      await router.replace('/change-password')
+      await router.replace('/change-password?p=ADMIN')
       return
     }
     ElMessage.success(`欢迎回来，${res.data.realName || '管理员'}！`)
