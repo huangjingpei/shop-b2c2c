@@ -12,6 +12,7 @@ package com.shop.b2b2c.mapper;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.shop.b2b2c.entity.TradeOrder;
+import com.shop.b2b2c.common.OrderCursor;
 import com.shop.b2b2c.common.PeerStatus;
 import org.apache.ibatis.annotations.Mapper;
 
@@ -110,22 +111,6 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
                 .orderByDesc(TradeOrder::getId));
     }
 
-    /**
-     * T11：分页必须有 created_at + id 稳定排序，避免同一秒订单在翻页时重复/漏行。
-     * 前端游标式分页改造归属 T24，本卡先修 tiebreaker 与对应索引。
-     */
-    default List<TradeOrder> findByMerchantIdPaged(Long merchantId, int page, int pageSize) {
-        int boundedPage = Math.max(1, page);
-        int boundedSize = Math.min(Math.max(1, pageSize), 200);
-        long offset = (long) (boundedPage - 1) * boundedSize;
-        return selectList(new LambdaQueryWrapper<TradeOrder>()
-                .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
-                .eq(TradeOrder::getMerchantId, merchantId)
-                .orderByDesc(TradeOrder::getCreatedAt)
-                .orderByDesc(TradeOrder::getId)
-                .last("LIMIT " + boundedSize + " OFFSET " + offset));
-    }
-
     default List<TradeOrder> findAllByOrderByCreatedAtDesc() {
         return selectList(new LambdaQueryWrapper<TradeOrder>()
                 .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
@@ -133,15 +118,49 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
                 .orderByDesc(TradeOrder::getId));
     }
 
-    default List<TradeOrder> findAllPaged(int page, int pageSize) {
-        int boundedPage = Math.max(1, page);
-        int boundedSize = Math.min(Math.max(1, pageSize), 200);
-        long offset = (long) (boundedPage - 1) * boundedSize;
-        return selectList(new LambdaQueryWrapper<TradeOrder>()
+    /**
+     * T24：keyset 分页。排序键固定为 created_at DESC + id DESC，游标同时包含两个分量；
+     * 返回 limit + 1 行供调用方判断 hasMore，禁止使用 OFFSET。
+     */
+    default List<TradeOrder> findMerchantKeyset(Long merchantId, String status, OrderCursor before, int limit) {
+        LambdaQueryWrapper<TradeOrder> query = new LambdaQueryWrapper<TradeOrder>()
                 .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
-                .orderByDesc(TradeOrder::getCreatedAt)
+                .eq(TradeOrder::getMerchantId, merchantId)
+                .eq(status != null, TradeOrder::getOrderStatus, status);
+        applyCursor(query, before);
+        return selectList(query.orderByDesc(TradeOrder::getCreatedAt)
                 .orderByDesc(TradeOrder::getId)
-                .last("LIMIT " + boundedSize + " OFFSET " + offset));
+                .last("LIMIT " + limit));
+    }
+
+    default long countMerchant(Long merchantId, String status) {
+        return selectCount(new LambdaQueryWrapper<TradeOrder>()
+                .eq(TradeOrder::getMerchantId, merchantId)
+                .eq(status != null, TradeOrder::getOrderStatus, status));
+    }
+
+    default List<TradeOrder> findAllKeyset(String status, OrderCursor before, int limit) {
+        LambdaQueryWrapper<TradeOrder> query = new LambdaQueryWrapper<TradeOrder>()
+                .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
+                .eq(status != null, TradeOrder::getOrderStatus, status);
+        applyCursor(query, before);
+        return selectList(query.orderByDesc(TradeOrder::getCreatedAt)
+                .orderByDesc(TradeOrder::getId)
+                .last("LIMIT " + limit));
+    }
+
+    default long countAll(String status) {
+        return selectCount(new LambdaQueryWrapper<TradeOrder>()
+                .eq(status != null, TradeOrder::getOrderStatus, status));
+    }
+
+    private static void applyCursor(LambdaQueryWrapper<TradeOrder> query, OrderCursor before) {
+        if (before == null) {
+            return;
+        }
+        query.and(w -> w.lt(TradeOrder::getCreatedAt, before.createdAt())
+                .or(n -> n.eq(TradeOrder::getCreatedAt, before.createdAt())
+                        .lt(TradeOrder::getId, before.id())));
     }
 
     default List<TradeOrder> findStatisticsProjectionByMerchantId(Long merchantId) {

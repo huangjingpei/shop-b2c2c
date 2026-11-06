@@ -78,8 +78,8 @@
 
         <el-table-column prop="status" label="营业状态" width="95">
           <template #default="{ row }">
-            <el-tag :type="row.status === 1 ? 'success' : 'danger'" size="small">
-              {{ row.status === 1 ? '正常' : '已封禁' }}
+            <el-tag :type="storeStatusTagType(row.status)" size="small">
+              {{ storeDisplay(row).status }}
             </el-tag>
           </template>
         </el-table-column>
@@ -99,7 +99,7 @@
     </el-card>
 
     <!-- 1. 新增商户弹窗 -->
-    <el-dialog v-model="dialogVisible" title="新增/开通入驻商户 (个人免执照模式)" width="540px">
+    <el-dialog v-model="dialogVisible" title="新增/开通入驻商户 (个人免执照模式)" width="540px" @closed="resetCreateForm">
       <el-form :model="form" label-width="120px">
         <el-form-item label="店铺唯一编码" required>
           <el-input v-model="form.storeCode" placeholder="如 STORE002" />
@@ -134,7 +134,9 @@
           <el-input v-model="form.adminUsername" placeholder="如 seller02" />
         </el-form-item>
         <el-form-item label="初始密码" required>
-          <el-input v-model="form.adminPassword" placeholder="默认 admin123" />
+          <el-input v-model="form.adminPassword" placeholder="自动生成 16 位强口令，可修改" show-password />
+          <el-button link type="primary" size="small" @click="refreshPassword">重新生成强口令</el-button>
+          <div style="font-size: 11px; color: #64748b;">请通过安全渠道交付店长，首次登录后要求修改；不得使用 admin123 等固定口令。</div>
         </el-form-item>
         <el-form-item label="技术抽成比例(%)">
           <el-input-number v-model="form.commissionRate" :precision="2" :step="0.5" :min="0" :max="100" />
@@ -207,7 +209,11 @@ import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
 import { FEE_STATUS_OPTIONS, feeStatusView, serviceFeeForm, serviceFeePayload } from '../../utils/serviceFee.mjs'
+import { storeDisplay } from '../../utils/orderStatistics.mjs'
+import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
+import { generateTemporaryPassword, isStrongPassword } from '../../utils/adminAccount.mjs'
 
+const createSubmission = createIdempotentSubmission()
 const loading = ref(false)
 const submitLoading = ref(false)
 const merchants = ref([])
@@ -221,11 +227,39 @@ const form = ref({
   idCardNumber: '',
   contactPhone: '',
   bankAccountNumber: '',
-  bankName: '中国工商银行',
+  bankName: '',
   adminUsername: '',
-  adminPassword: 'admin123',
+  adminPassword: '',
   commissionRate: 3.00
 })
+
+const storeStatusTagType = status => {
+  if (status === 1) return 'success'
+  if (status === 2) return 'warning'
+  if (status === 3) return 'danger'
+  return 'info'
+}
+
+const refreshPassword = () => {
+  form.value.adminPassword = generateTemporaryPassword(16)
+}
+
+const resetCreateForm = () => {
+  form.value = {
+    storeCode: '',
+    storeName: '',
+    merchantType: 1,
+    ownerName: '',
+    idCardNumber: '',
+    contactPhone: '',
+    bankAccountNumber: '',
+    bankName: '',
+    adminUsername: '',
+    adminPassword: '',
+    commissionRate: 3.00
+  }
+  refreshPassword()
+}
 
 // 服务费配置
 const feeDialogVisible = ref(false)
@@ -249,28 +283,41 @@ const loadMerchants = async () => {
   loading.value = true
   try {
     const res = await request.get('/admin/merchants')
-    merchants.value = res.data
+    merchants.value = Array.isArray(res.data) ? res.data : []
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '商户列表加载失败')
   } finally {
     loading.value = false
   }
 }
 
 const openDialog = () => {
+  resetCreateForm()
   form.value.storeCode = 'STORE' + Math.floor(100 + Math.random() * 900)
   dialogVisible.value = true
 }
 
 const handleCreate = async () => {
-  if (!form.value.storeCode || !form.value.storeName || !form.value.ownerName || !form.value.adminUsername) {
+  if (submitLoading.value) return
+  if (!form.value.storeCode.trim() || !form.value.storeName.trim() || !form.value.ownerName.trim()
+    || !form.value.idCardNumber.trim() || !form.value.contactPhone.trim() || !form.value.adminUsername.trim()) {
     ElMessage.warning('请填写完整的商户与进件必填项')
     return
   }
+  if (!isStrongPassword(form.value.adminPassword)) {
+    ElMessage.warning('初始密码至少 8 位且包含字母与数字，请重新生成强口令')
+    return
+  }
   submitLoading.value = true
+  const prepared = createSubmission.prepare(form.value)
   try {
-    await request.post('/admin/merchants', form.value)
+    await request.post('/admin/merchants', prepared.body, { headers: prepared.headers })
+    createSubmission.complete()
     ElMessage.success('商户已开通（演示进件通道）')
     dialogVisible.value = false
     loadMerchants()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '商户开通失败，请检查必填项后重试')
   } finally {
     submitLoading.value = false
   }
@@ -278,9 +325,13 @@ const handleCreate = async () => {
 
 const toggleStatus = async (row) => {
   const newStatus = row.status === 1 ? 2 : 1
-  await request.put(`/admin/merchants/${row.id}/status?status=${newStatus}`)
-  ElMessage.success('店铺状态已切换')
-  loadMerchants()
+  try {
+    await request.put(`/admin/merchants/${row.id}/status?status=${newStatus}`)
+    ElMessage.success('店铺状态已切换')
+    loadMerchants()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '店铺状态切换失败')
+  }
 }
 
 const editCommission = (row) => {
@@ -289,10 +340,14 @@ const editCommission = (row) => {
     inputPattern: /^\d+(\.\d{1,2})?$/,
     inputErrorMessage: '请输入有效的数字'
   }).then(async ({ value }) => {
-    await request.put(`/admin/merchants/${row.id}/commission?rate=${value}`)
-    ElMessage.success('费率调整成功')
-    loadMerchants()
-  })
+    try {
+      await request.put(`/admin/merchants/${row.id}/commission?rate=${value}`)
+      ElMessage.success('费率调整成功')
+      loadMerchants()
+    } catch (error) {
+      ElMessage.error(error.response?.data?.message || '费率调整失败')
+    }
+  }).catch(() => {})
 }
 
 // 打开服务费弹窗

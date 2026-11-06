@@ -5,7 +5,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { amountText, statisticsView, listedProductCount, storeDisplay, sharingRecordLabel } from '../shop-admin-vue/src/utils/orderStatistics.mjs'
+import { amountText, statisticsView, listedProductCount, storeDisplay, paymentAccountView, sharingRecordLabel } from '../shop-admin-vue/src/utils/orderStatistics.mjs'
 test('金额字符串保持大额分位，不转浮点', () => {
   assert.equal(amountText('9007199254740993.03'), '9007199254740993.03')
   assert.equal(amountText('0'), '0.00'); assert.equal(amountText('0.1'), '0.10')
@@ -32,6 +32,13 @@ test('零佣金率和真实店铺状态不被演示值覆盖', () => {
   assert.equal(display.rate, 0); assert.equal(display.status, '已打烊'); assert.equal(display.code, 'S0')
   assert.equal(storeDisplay({ status: 3 }).status, '已封禁'); assert.equal(storeDisplay().status, '状态未知')
   assert.notEqual(storeDisplay().code, 'STORE001')
+})
+test('支付账户审核状态区分通过、驳回与待审核', () => {
+  assert.equal(paymentAccountView({ applyStatus: 'PASSED' }).type, 'success')
+  assert.equal(paymentAccountView({ applyStatus: 'REJECTED' }).label.includes('驳回'), true)
+  assert.equal(paymentAccountView({ applyStatus: 'REJECTED' }).type, 'danger')
+  assert.equal(paymentAccountView({ applyStatus: 'PENDING' }).label, '审核中')
+  assert.equal(paymentAccountView({}).label, '审核中')
 })
 test('内部FINISHED记录不表述为资金到账', () => {
   assert.equal(sharingRecordLabel('FINISHED'), '记录完成（待对账）')

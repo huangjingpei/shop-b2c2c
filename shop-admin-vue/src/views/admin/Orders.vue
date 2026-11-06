@@ -35,7 +35,7 @@
       </el-col>
       <el-col :span="6">
         <el-card shadow="never" class="stat-card">
-          <div class="stat-label">代付订单数（含未付款）</div>
+          <div class="stat-label">本页代付订单数</div>
           <div class="stat-val text-blue">{{ peerPayCount }} <span class="stat-unit">笔</span></div>
         </el-card>
       </el-col>
@@ -45,6 +45,12 @@
     <el-alert v-if="stats.unknownOrders > 0 || stats.amountAnomalyOrders > 0" :title="`需核对：未知状态 ${stats.unknownOrders} 单，异常金额 ${stats.amountAnomalyOrders} 单；异常金额未计入汇总。`" type="warning" :closable="false" />
 
     <el-card shadow="never" class="table-card">
+      <div class="order-filter">
+        <el-select v-model="statusFilter" placeholder="按订单状态筛选" style="width: 160px;" @change="reloadOrders">
+          <el-option v-for="option in ORDER_STATUS_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
+        </el-select>
+        <span class="order-total">筛选结果共 {{ total }} 单</span>
+      </div>
       <el-table :data="orders" stripe style="width: 100%" v-loading="loading">
         <!-- 订单号与时间 -->
         <el-table-column label="订单号 / 时间" width="220">
@@ -142,6 +148,9 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-if="hasMore" class="load-more">
+        <el-button :loading="loading" @click="loadOrders(true)">加载更多（已显示 {{ orders.length }} / {{ total }}）</el-button>
+      </div>
     </el-card>
   </div>
 </template>
@@ -149,13 +158,20 @@
 <script setup>
 import { goodsTypeLabel } from '../../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 import { statisticsView, STATISTICS_NOTICE, sharingRecordLabel } from '../../utils/orderStatistics.mjs'
+import { ORDER_STATUS_OPTIONS, buildOrderQuery, mergeOrderPage } from '../../utils/orderList.mjs'
 
 const loading = ref(false)
 const orders = ref([])
+const statusFilter = ref('')
+const total = ref(0)
+const hasMore = ref(false)
+const nextCursor = ref('')
 const stats = ref(statisticsView())
 const peerPayCount = ref(0)
+let loadSequence = 0
 
 const getStatusTag = (status) => {
   switch (status) {
@@ -166,26 +182,61 @@ const getStatusTag = (status) => {
   }
 }
 
-const loadOrders = async () => {
+const loadOrders = async (more = false) => {
+  if (more && (!hasMore.value || loading.value)) return
+  const sequence = ++loadSequence
   loading.value = true
   try {
-    const res = await request.get('/admin/orders')
-    orders.value = res.data.orders || []
+    const res = await request.get('/admin/orders', {
+      params: buildOrderQuery({
+        status: statusFilter.value,
+        cursor: more ? nextCursor.value : '',
+        pageSize: 20
+      })
+    })
+    if (sequence !== loadSequence) return
+    const merged = mergeOrderPage({ orders: orders.value }, res.data, { reset: !more })
+    orders.value = merged.orders
+    total.value = merged.total
+    hasMore.value = merged.hasMore
+    nextCursor.value = merged.nextCursor
     stats.value = statisticsView(res.data.statistics)
-
-    // 计算代付订单数
-    peerPayCount.value = orders.value.filter(o => o.peerPayType > 0).length
+    peerPayCount.value = merged.orders.filter(o => Number(o.peerPayType) > 0).length
+  } catch (error) {
+    if (sequence === loadSequence) {
+      ElMessage.error(error.response?.data?.message || '订单列表加载失败')
+    }
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
 }
 
+const reloadOrders = () => {
+  hasMore.value = false
+  nextCursor.value = ''
+  loadOrders(false)
+}
+
 onMounted(() => {
-  loadOrders()
+  reloadOrders()
 })
 </script>
 
 <style scoped>
+.order-filter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.order-total {
+  font-size: 12px;
+  color: #64748b;
+}
+.load-more {
+  text-align: center;
+  padding: 16px 0 4px;
+}
 .page-header {
   display: flex;
   justify-content: space-between;

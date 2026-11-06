@@ -51,8 +51,8 @@
 
           <div class="account-badge">
             <div class="badge-title">自然人小微进件状态</div>
-            <el-tag type="success" size="large" effect="dark">
-              {{ paymentAccount.applyStatus === 'PASSED' ? '✅ 官方审核已通过并开通' : '审核中' }}
+            <el-tag :type="paymentAccountView.type" size="large" effect="dark">
+              {{ paymentAccountView.label }}
             </el-tag>
           </div>
 
@@ -85,14 +85,17 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
+import { paymentAccountView as buildPaymentAccountView } from '../../utils/orderStatistics.mjs'
 
 const saving = ref(false)
 const store = ref({})
 const paymentAccount = ref({})
 const isManager = ref(localStorage.getItem('roleCode') === 'MERCHANT_ADMIN' || localStorage.getItem('roleCode') === 'SUPERADMIN')
+
+const paymentAccountView = computed(() => buildPaymentAccountView(paymentAccount.value))
 
 const maskBankCard = (num) => {
   if (!num || num.length < 10) return num

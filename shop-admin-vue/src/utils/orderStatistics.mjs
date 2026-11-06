@@ -28,3 +28,11 @@ export function storeDisplay(store) {
   return { name: s.storeName || '店铺资料未加载', code: s.storeCode ?? '—', rate: s.commissionRate ?? '—',
     status: ({ 0: '待审核', 1: '正常营业', 2: '已打烊', 3: '已封禁' })[s.status] ?? '状态未知' }
 }
+
+/** T31：支付账户审核状态，REJECTED 不能与待审核混淆。 */
+export function paymentAccountView(account) {
+  const status = account?.applyStatus
+  if (status === 'PASSED') return { label: '官方审核已通过并开通', type: 'success' }
+  if (status === 'REJECTED') return { label: '审核已驳回，请修改资料后重新提交', type: 'danger' }
+  return { label: '审核中', type: 'warning' }
+}

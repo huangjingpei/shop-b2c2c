@@ -20,6 +20,12 @@
     </div>
 
     <el-card shadow="never" class="table-card">
+      <div class="order-filter">
+        <el-select v-model="statusFilter" placeholder="按订单状态筛选" style="width: 160px;" @change="reloadOrders">
+          <el-option v-for="option in ORDER_STATUS_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
+        </el-select>
+        <span class="order-total">共 {{ total }} 单</span>
+      </div>
       <el-table :data="orders" stripe style="width: 100%" v-loading="loading">
         <!-- 订单基本信息 -->
         <el-table-column label="订单号 / 下单时间" width="220">
@@ -158,6 +164,9 @@
           </template>
         </el-table-column>
       </el-table>
+      <div v-if="hasMore" class="load-more">
+        <el-button :loading="loading" @click="loadOrders(true)">加载更多（已显示 {{ orders.length }} / {{ total }}）</el-button>
+      </div>
     </el-card>
 
     <!-- 1. 实物订单快递发货弹窗 -->
@@ -177,7 +186,7 @@
       </el-form>
       <template #footer>
         <el-button @click="deliverVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleDeliver">确认发货</el-button>
+        <el-button type="primary" :loading="delivering" :disabled="delivering" @click="handleDeliver">确认发货</el-button>
       </template>
     </el-dialog>
 
@@ -370,9 +379,17 @@ import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 import { canPreviewPoster, createStoredPosterPreview } from '../../utils/storedPoster.mjs'
+import { ORDER_STATUS_OPTIONS, buildOrderQuery, mergeOrderPage } from '../../utils/orderList.mjs'
 
 const loading = ref(false)
 const orders = ref([])
+const statusFilter = ref('')
+const total = ref(0)
+const hasMore = ref(false)
+const nextCursor = ref('')
+const delivering = ref(false)
+let loadSequence = 0
+
 const deliverVisible = ref(false)
 const virtualFulfillVisible = ref(false)
 const pushPayVisible = ref(false)
@@ -423,31 +440,65 @@ const formatSpec = (jsonStr) => {
   }
 }
 
-const loadOrders = async () => {
+const loadOrders = async (more = false) => {
+  if (more && (!hasMore.value || loading.value)) return
+  const sequence = ++loadSequence
   loading.value = true
   try {
-    const res = await request.get('/merchant/orders')
-    orders.value = res.data
+    const res = await request.get('/merchant/orders', {
+      params: buildOrderQuery({
+        status: statusFilter.value,
+        cursor: more ? nextCursor.value : '',
+        pageSize: 20
+      })
+    })
+    if (sequence !== loadSequence) return
+    const merged = mergeOrderPage({ orders: orders.value }, res.data, { reset: !more })
+    orders.value = merged.orders
+    total.value = merged.total
+    hasMore.value = merged.hasMore
+    nextCursor.value = merged.nextCursor
+  } catch (error) {
+    if (sequence === loadSequence) {
+      ElMessage.error(error.response?.data?.message || '订单列表加载失败')
+    }
   } finally {
-    loading.value = false
+    if (sequence === loadSequence) loading.value = false
   }
+}
+
+const reloadOrders = () => {
+  hasMore.value = false
+  nextCursor.value = ''
+  loadOrders(false)
 }
 
 const openDeliverDialog = (order) => {
   currentOrder.value = order
-  deliverForm.value.trackingNumber = 'SF' + Math.floor(100000000000 + Math.random() * 900000000000)
+  deliverForm.value.trackingNumber = ''
   deliverVisible.value = true
 }
 
 const handleDeliver = async () => {
-  if (!deliverForm.value.trackingNumber) {
+  if (delivering.value) return
+  if (!deliverForm.value.trackingNumber.trim()) {
     ElMessage.warning('请输入快递单号')
     return
   }
-  await request.post(`/merchant/orders/${currentOrder.value.id}/deliver`, deliverForm.value)
-  ElMessage.success('实物订单发货成功！')
-  deliverVisible.value = false
-  loadOrders()
+  delivering.value = true
+  try {
+    await request.post(`/merchant/orders/${currentOrder.value.id}/deliver`, {
+      ...deliverForm.value,
+      trackingNumber: deliverForm.value.trackingNumber.trim()
+    })
+    ElMessage.success('实物订单发货成功！')
+    deliverVisible.value = false
+    reloadOrders()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '发货失败，请刷新订单状态后重试')
+  } finally {
+    delivering.value = false
+  }
 }
 
 // 线上服务交付
@@ -469,7 +520,7 @@ const handleVirtualFulfill = async () => {
     })
     ElMessage.success('线上服务交付凭证已成功录入，订单已完结！')
     virtualFulfillVisible.value = false
-    loadOrders()
+    reloadOrders()
   } catch (e) {
     ElMessage.error(e.response?.data?.message || '凭证录入失败')
   } finally {
@@ -559,7 +610,7 @@ const handleCreatePushPay = async () => {
     pushSubmission.complete()
     pushPayResult.value = res.data
     ElMessage.success('代客推单账单生成成功！')
-    loadOrders()
+    reloadOrders()
   } catch (e) {
     ElMessage.error(e.response?.data?.message || '推单失败')
   } finally {
@@ -613,11 +664,25 @@ const viewPoster = order => posterPreview.open(order)
 onUnmounted(() => posterPreview.close())
 
 onMounted(() => {
-  loadOrders()
+  reloadOrders()
 })
 </script>
 
 <style scoped>
+.order-filter {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.order-total {
+  font-size: 12px;
+  color: #64748b;
+}
+.load-more {
+  text-align: center;
+  padding: 16px 0 4px;
+}
 .page-header {
   display: flex;
   justify-content: space-between;

@@ -114,7 +114,7 @@
     </el-dialog>
 
     <!-- 发布商品弹窗 -->
-    <el-dialog v-model="dialogVisible" title="发布新商品" width="600px">
+    <el-dialog v-model="dialogVisible" title="发布新商品" width="600px" @closed="resetCreateForm">
       <el-form :model="form" label-width="110px">
         <el-form-item label="挂靠平台类目" required>
           <el-select v-model="form.categoryId" placeholder="请选择平台分类">
@@ -123,7 +123,7 @@
         </el-form-item>
         <el-form-item label="商品交付类型" required>
           <el-radio-group v-model="form.goodsType" @change="resetInitialCardStock">
-            <el-radio :label="2">⚡ 虚拟商品 (卡密自动秒发，16688 模式)</el-radio>
+            <el-radio :label="2">⚡ 虚拟商品 (发货时按卡密库存自动发放)</el-radio>
             <el-radio :label="3">定制服务 (人工录入交付凭证)</el-radio>
             <el-radio :label="1">📦 实物商品 (卖家填运单发货)</el-radio>
           </el-radio-group>
@@ -132,10 +132,10 @@
           <el-input v-model="form.title" placeholder="如 百度网盘 SVIP 超级会员月卡" />
         </el-form-item>
         <el-form-item label="副标题/卖点">
-          <el-input v-model="form.subTitle" placeholder="如 官方直充，24小时秒级自动发货" />
+          <el-input v-model="form.subTitle" placeholder="请填写真实商品卖点，不得承诺未验证的履约时效" />
         </el-form-item>
         <el-form-item label="主图图片 URL" required>
-          <el-input v-model="form.mainImage" placeholder="https://..." />
+          <el-input v-model="form.mainImage" placeholder="/product-placeholder.svg 或自有图片地址" />
         </el-form-item>
         <el-form-item label="起步售价(￥)" required>
           <el-input-number v-model="form.minPrice" :min="0.01" :precision="2" :step="1" />
@@ -180,6 +180,7 @@ const currentRole = localStorage.getItem('roleCode') || ''
 const stockVisible = ref(false), stockSaving = ref(false), stockLoading = ref(false), stockNext = ref(null)
 const stockSkuCode = ref(''), stockRecords = ref([]), stockForm = ref({})
 const stockSubmission = createIdempotentSubmission()
+const productSubmission = createIdempotentSubmission()
 
 const loadStockRecords = async (more = false) => {
   stockLoading.value = true
@@ -267,12 +268,12 @@ const changeStatus = async row => {
   finally { statusLoading.value = null }
 }
 
-const form = ref({
+const emptyCreateForm = () => ({
   categoryId: 1,
   goodsType: 2,
   title: '',
   subTitle: '',
-  mainImage: 'https://images.unsplash.com/photo-1574375927938-d5a98e8ffe85?w=500',
+  mainImage: '/product-placeholder.svg',
   minPrice: 19.90,
   skus: [
     {
@@ -283,6 +284,8 @@ const form = ref({
     }
   ]
 })
+const form = ref(emptyCreateForm())
+const resetCreateForm = () => { form.value = emptyCreateForm() }
 
 const loadProducts = async () => {
   loading.value = true
@@ -291,12 +294,15 @@ const loadProducts = async () => {
     products.value = merchantProductRows(res.data)
     const cRes = await request.get('/public/categories')
     categories.value = cRes.data
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '商品列表加载失败')
   } finally {
     loading.value = false
   }
 }
 
 const openDialog = () => {
+  resetCreateForm()
   dialogVisible.value = true
 }
 const resetInitialCardStock = () => {
@@ -304,16 +310,22 @@ const resetInitialCardStock = () => {
 }
 
 const handleCreate = async () => {
-  if (!form.value.title || !form.value.mainImage) {
+  if (submitLoading.value) return
+  if (!form.value.title?.trim() || !form.value.mainImage?.trim()) {
     ElMessage.warning('请填写商品标题与主图')
     return
   }
   submitLoading.value = true
+  const payload = productCreationPayload(form.value)
+  const prepared = productSubmission.prepare(payload)
   try {
-    await request.post('/merchant/products', productCreationPayload(form.value))
+    await request.post('/merchant/products', prepared.body, { headers: prepared.headers })
+    productSubmission.complete()
     ElMessage.success('商品发布成功')
     dialogVisible.value = false
     loadProducts()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '商品发布失败，请检查必填项后重试')
   } finally {
     submitLoading.value = false
   }

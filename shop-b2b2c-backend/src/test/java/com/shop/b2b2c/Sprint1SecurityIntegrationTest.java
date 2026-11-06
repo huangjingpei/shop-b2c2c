@@ -243,7 +243,7 @@ class Sprint1SecurityIntegrationTest {
         assertNull(orders.findStoredPoster(order.getId(), 2L));
         authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
         String body = mvc.perform(get("/api/v1/merchant/orders").header("Authorization", "Bearer " + token))
-                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data[0].order.posterUrl").isEmpty())
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.orders[0].order.posterUrl").isEmpty())
                 .andReturn().getResponse().getContentAsString();
         assertFalse(body.contains("POSTER-MARKER")); assertTrue(body.length() < largePoster.length());
         mvc.perform(get("/api/v1/merchant/orders/statistics").header("Authorization", "Bearer " + token))
@@ -1055,8 +1055,8 @@ class Sprint1SecurityIntegrationTest {
         statisticsOrder("foreign", 2L, "COMPLETED", "PAID", "9000", "270");
         authUser("SUPERADMIN", null); String token = loginToken();
         mvc.perform(get("/api/v1/admin/orders").header("Authorization", "Bearer " + token))
-                .andExpect(jsonPath("$.data.totalOrders").value(4)).andExpect(jsonPath("$.data.orders.length()").value(4))
-                .andExpect(jsonPath("$.data.totalTurnover").value(9012.0)).andExpect(jsonPath("$.data.totalCommission").value(270.3))
+                .andExpect(jsonPath("$.data.page.total").value(4)).andExpect(jsonPath("$.data.orders.length()").value(4))
+                .andExpect(jsonPath("$.data.totalTurnover").doesNotExist()).andExpect(jsonPath("$.data.totalCommission").doesNotExist())
                 .andExpect(jsonPath("$.data.statistics.paidOrders").value(3)).andExpect(jsonPath("$.data.statistics.paidTurnover").value("9012.00"))
                 .andExpect(jsonPath("$.data.statistics.estimatedCommission").value("270.30"))
                 .andExpect(jsonPath("$.data.statistics.settledCommission").isEmpty()).andExpect(jsonPath("$.data.statistics.netTurnover").isEmpty());
@@ -2314,9 +2314,13 @@ class Sprint1SecurityIntegrationTest {
         second.setCreatedAt(sameSecond);
         orders.save(second);
 
-        List<TradeOrder> page1 = orders.findByMerchantIdPaged(1L, 1, 1);
-        List<TradeOrder> page2 = orders.findByMerchantIdPaged(1L, 2, 1);
+        List<TradeOrder> page1 = orders.findMerchantKeyset(1L, null, null, 1);
         assertEquals(1, page1.size());
+        TradeOrder last = page1.get(0);
+        com.shop.b2b2c.common.OrderCursor cursor =
+                com.shop.b2b2c.common.OrderCursor.decode(
+                        com.shop.b2b2c.common.OrderCursor.encode(last.getCreatedAt(), last.getId()));
+        List<TradeOrder> page2 = orders.findMerchantKeyset(1L, null, cursor, 1);
         assertEquals(1, page2.size());
         assertNotEquals(page1.get(0).getId(), page2.get(0).getId());
         assertTrue(page1.get(0).getId() > page2.get(0).getId(), "id 降序必须作为 created_at 相同的 tiebreaker");
@@ -2643,10 +2647,10 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", "no-store"))
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data[0].order.queryToken").doesNotExist())
-                .andExpect(jsonPath("$.data[0].order.posterUrl").doesNotExist())
-                .andExpect(jsonPath("$.data[0].order.serviceVoucher").value("系统卡密已自动交付"))
-                .andExpect(jsonPath("$.data[0].items[0].cardDetails").value("已自动发放 (共2张)"))
+                .andExpect(jsonPath("$.data.orders[0].order.queryToken").doesNotExist())
+                .andExpect(jsonPath("$.data.orders[0].order.posterUrl").doesNotExist())
+                .andExpect(jsonPath("$.data.orders[0].order.serviceVoucher").value("系统卡密已自动交付"))
+                .andExpect(jsonPath("$.data.orders[0].items[0].cardDetails").value("已自动发放 (共2张)"))
                 .andReturn().getResponse().getContentAsString();
 
         assertFalse(merchantListResp.contains("secretquerytoken1234567890abcdef"));
@@ -2941,6 +2945,15 @@ class Sprint1SecurityIntegrationTest {
                         .content(json.writeValueAsString(deliver)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200));
+        assertEquals("SHIPPED", orders.selectById(physical.getId()).getOrderStatus());
+
+        // T31：重复发货必须被服务端拒绝，不能把已发货订单再次改写运单。
+        mvc.perform(post("/api/v1/merchant/orders/" + physical.getId() + "/deliver")
+                        .header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(deliver)))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value(400));
         assertEquals("SHIPPED", orders.selectById(physical.getId()).getOrderStatus());
 
         // 越权副作用检查：员工发其他店铺的实物订单必须被拒且订单状态不变。
@@ -3348,29 +3361,52 @@ class Sprint1SecurityIntegrationTest {
         o4.setMerchantId(2L);
         orders.save(o4);
 
-        // 1. Merchant 1: Paged query with pageSize=2 returns exactly first page (2 orders)
+        // 1. Merchant 1: keyset with pageSize=2 returns first page plus total/hasMore/nextCursor
         authUser("MERCHANT_ADMIN", 1L);
         String tokenM1 = loginToken();
 
-        mvc.perform(get("/api/v1/merchant/orders")
+        String firstPage = mvc.perform(get("/api/v1/merchant/orders")
                         .header("Authorization", "Bearer " + tokenM1)
-                        .param("page", "1")
                         .param("pageSize", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.length()").value(2))
-                .andExpect(jsonPath("$.data[0].items").isArray())
-                .andExpect(jsonPath("$.data[0].order.queryToken").doesNotExist())
-                .andExpect(jsonPath("$.data[0].order.posterUrl").doesNotExist());
+                .andExpect(jsonPath("$.data.orders.length()").value(2))
+                .andExpect(jsonPath("$.data.page.total").value(3))
+                .andExpect(jsonPath("$.data.page.hasMore").value(true))
+                .andExpect(jsonPath("$.data.orders[0].items").isArray())
+                .andExpect(jsonPath("$.data.orders[0].order.queryToken").doesNotExist())
+                .andExpect(jsonPath("$.data.orders[0].order.posterUrl").doesNotExist())
+                .andReturn().getResponse().getContentAsString();
+        String nextCursor = com.jayway.jsonpath.JsonPath.read(firstPage, "$.data.page.nextCursor");
 
-        // Merchant 1: Page 2 returns the remaining 1 order
-        mvc.perform(get("/api/v1/merchant/orders")
+        // Merchant 1: 游标第二页返回剩余 1 单且 hasMore=false，不重复第一页
+        String secondPage = mvc.perform(get("/api/v1/merchant/orders")
                         .header("Authorization", "Bearer " + tokenM1)
-                        .param("page", "2")
-                        .param("pageSize", "2"))
+                        .param("pageSize", "2")
+                        .param("cursor", nextCursor))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.length()").value(1));
+                .andExpect(jsonPath("$.data.orders.length()").value(1))
+                .andExpect(jsonPath("$.data.page.total").value(3))
+                .andExpect(jsonPath("$.data.page.hasMore").value(false))
+                .andReturn().getResponse().getContentAsString();
+        assertNotEquals(
+                com.jayway.jsonpath.JsonPath.read(firstPage, "$.data.orders[0].order.id"),
+                com.jayway.jsonpath.JsonPath.read(secondPage, "$.data.orders[0].order.id"));
+
+        // 状态筛选与非法参数：非法 pageSize/cursor/status 一律 400
+        mvc.perform(get("/api/v1/merchant/orders").header("Authorization", "Bearer " + tokenM1)
+                        .param("status", "PAID"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.page.total").value(0));
+        mvc.perform(get("/api/v1/merchant/orders").header("Authorization", "Bearer " + tokenM1)
+                        .param("pageSize", "0"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        mvc.perform(get("/api/v1/merchant/orders").header("Authorization", "Bearer " + tokenM1)
+                        .param("cursor", "not-a-cursor"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        mvc.perform(get("/api/v1/merchant/orders").header("Authorization", "Bearer " + tokenM1)
+                        .param("status", "NOT_A_STATUS"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
 
         // 2. Merchant 1 Statistics: Uses lightweight projection (findStatisticsProjectionByMerchantId)
         mvc.perform(get("/api/v1/merchant/orders/statistics")
@@ -3389,11 +3425,11 @@ class Sprint1SecurityIntegrationTest {
 
         mvc.perform(get("/api/v1/admin/orders")
                         .header("Authorization", "Bearer " + adminToken)
-                        .param("page", "1")
                         .param("pageSize", "2"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
-                .andExpect(jsonPath("$.data.totalOrders").value(4))
+                .andExpect(jsonPath("$.data.page.total").value(4))
+                .andExpect(jsonPath("$.data.page.hasMore").value(true))
                 .andExpect(jsonPath("$.data.orders.length()").value(2))
                 .andExpect(jsonPath("$.data.statistics.totalOrders").value(4))
                 .andExpect(jsonPath("$.data.orders[0].queryToken").doesNotExist())
