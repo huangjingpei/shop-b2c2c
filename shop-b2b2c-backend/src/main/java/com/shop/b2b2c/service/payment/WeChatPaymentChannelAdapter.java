@@ -6,6 +6,7 @@
  *  2. 金额从渠道报文 amount.total（分）换算为元；禁止用订单应付金额反填。
  *  3. 商户号使用订单所属商家在渠道侧的 mchid，不使用平台内部 merchantId；凭据仅来自配置，不写日志。
  *  4. 微信请求签名串固定为“方法\\nURL\\n时间戳\\n随机串\\n报文\\n”，GET 的 URL 必须包含查询参数。
+ *  5. 回调 Wechatpay-Timestamp 必须落在 ±300 秒窗口内，超窗按重放拒绝并在审计日志留痕。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -134,6 +135,8 @@ public class WeChatPaymentChannelAdapter implements PaymentChannelAdapter {
         if (timestamp == null || nonce == null || signature == null) {
             throw new BusinessException(401, "微信支付回调缺少验签头");
         }
+        // 财务加固E：先做时间窗防重放，超窗直接拒绝，不进入验签与解密。
+        CallbackReplayGuard.requireWechatTimestamp(timestamp);
         String message = timestamp + "\n" + nonce + "\n" + rawBody + "\n";
         PublicKey publicKey = PemKeySupport.publicKey(platformPublicKey);
         if (!PemKeySupport.verify(message, signature, publicKey)) {

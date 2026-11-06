@@ -6,6 +6,7 @@
  *  2. 实收金额取通知/查单的 total_amount，禁止用订单应付金额反填；只接受 TRADE_SUCCESS / TRADE_FINISHED。
  *  3. 商户渠道号使用订单所属商家的 seller_id，不使用平台内部 merchantId；私钥只来自配置，不写日志。
  *  4. 请求签名统一 RSA2，参数按字典序拼接；不要对 biz_content 二次转义。
+ *  5. 异步通知 notify_time 必须落在 ±300 秒窗口内，超窗按重放拒绝并留审计；口径与微信一致。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -117,6 +118,9 @@ public class AlipayPaymentChannelAdapter implements PaymentChannelAdapter {
         if (!PemKeySupport.verify(content, sign, publicKey)) {
             throw new BusinessException(401, "支付宝异步通知验签失败");
         }
+        // 财务加固E：验签通过后再校验 notify_time 时间窗，超窗按重放拒绝。
+        CallbackReplayGuard.requireAlipayNotifyTime(formParams.get("notify_time"),
+                formParams.get("out_trade_no"));
         String expectedAppId = properties.getAlipay().getAppId();
         String appId = formParams.get("app_id");
         if (expectedAppId != null && !expectedAppId.isBlank() && !expectedAppId.equals(appId)) {

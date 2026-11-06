@@ -5,6 +5,7 @@
  *  1. 用例在进程内生成 RSA 密钥并自签回调报文，不连接微信/支付宝，不读取生产凭据，不写数据库。
  *  2. 只验证适配器与网关入口的安全边界；真实渠道联调仍需用户在具备商户号/证书的环境执行。
  *  3. 修改回调字段或签名算法时必须同步更新本用例，不得删除“篡改报文必须失败”的断言。
+ *  4. 财务加固E：回调时间戳使用当前时间动态生成；超窗用例使用 now-10分钟，避免固定时间失效。
  */
 package com.shop.b2b2c;
 
@@ -36,7 +37,10 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.PrivateKey;
 import java.security.PublicKey;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -72,7 +76,7 @@ class PaymentChannelSecurityTest {
                 + "\"trade_state\":\"SUCCESS\",\"mchid\":\"1900000109\","
                 + "\"amount\":{\"total\":12345,\"currency\":\"CNY\"},\"payer\":{\"openid\":\"openid-1\"}}";
         String body = wechatBody(plaintext);
-        String timestamp = "1780000000";
+        String timestamp = String.valueOf(Instant.now().getEpochSecond());
         String nonce = "nonce-1";
         String message = timestamp + "\n" + nonce + "\n" + body + "\n";
         String signature = sign(message);
@@ -102,13 +106,44 @@ class PaymentChannelSecurityTest {
                 + "\"amount\":{\"total\":100,\"currency\":\"CNY\"},\"payer\":{\"openid\":\"openid-1\"}}";
         String body = wechatBody(plaintext);
         Map<String, String> headers = new LinkedHashMap<>();
-        headers.put("Wechatpay-Timestamp", "1780000000");
+        String timestamp = String.valueOf(Instant.now().getEpochSecond());
+        headers.put("Wechatpay-Timestamp", timestamp);
         headers.put("Wechatpay-Nonce", "nonce-1");
-        headers.put("Wechatpay-Signature", sign("1780000000\nnonce-1\n" + body + "\n"));
+        headers.put("Wechatpay-Signature", sign(timestamp + "\nnonce-1\n" + body + "\n"));
 
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> weChatAdapter().parseCallback(headers, body + " ", null));
         assertTrue(ex.getMessage().contains("验签失败"));
+    }
+
+    @Test
+    void wechatCallbackRejectsStaleTimestampAsReplay() throws Exception {
+        String plaintext = "{\"out_trade_no\":\"SN123\",\"transaction_id\":\"WXTX1\","
+                + "\"trade_state\":\"SUCCESS\",\"mchid\":\"1900000109\","
+                + "\"amount\":{\"total\":100,\"currency\":\"CNY\"}}";
+        String body = wechatBody(plaintext);
+        String staleTimestamp = String.valueOf(Instant.now().getEpochSecond() - 600);
+        Map<String, String> headers = new LinkedHashMap<>();
+        headers.put("Wechatpay-Timestamp", staleTimestamp);
+        headers.put("Wechatpay-Nonce", "nonce-1");
+        headers.put("Wechatpay-Signature", sign(staleTimestamp + "\nnonce-1\n" + body + "\n"));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> weChatAdapter().parseCallback(headers, body, null));
+        assertEquals(401, ex.getCode());
+        assertTrue(ex.getMessage().contains("时间戳超出允许窗口"));
+    }
+
+    @Test
+    void alipayCallbackRejectsStaleNotifyTimeAsReplay() {
+        Map<String, String> params = alipayParams(new BigDecimal("88.50"), "TRADE_SUCCESS");
+        params.put("notify_time", notifyTime(-600));
+        params.put("sign", sign(signContent(params)));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> alipayAdapter().parseCallback(null, null, params));
+        assertEquals(401, ex.getCode());
+        assertTrue(ex.getMessage().contains("时间超出允许窗口"));
     }
 
     @Test
@@ -247,8 +282,14 @@ class PaymentChannelSecurityTest {
         params.put("sign_type", "RSA2");
         params.put("charset", "utf-8");
         params.put("timestamp", "2026-11-06 12:00:00");
+        params.put("notify_time", notifyTime(0));
         params.put("version", "1.0");
         return params;
+    }
+
+    private String notifyTime(long offsetSeconds) {
+        return LocalDateTime.now(ZoneId.of("Asia/Shanghai")).plusSeconds(offsetSeconds)
+                .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
     }
 
     private String signContent(Map<String, String> params) {
