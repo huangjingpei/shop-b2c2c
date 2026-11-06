@@ -309,6 +309,8 @@ CREATE TABLE IF NOT EXISTS inventory_reservation (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 14. 业务幂等摘要及原响应快照（保留原表名；建单与人工库存调整用不同作用域）
+-- T27/Q18-B：幂等轻量映射表。保留 30 天（IdempotencyPurgeJob 清理）；response_json 由应用脱敏后写入，
+-- 不含 queryToken/buyerContact/posterBase64，重放时从 trade_order 回填；未完成占位（response_json IS NULL）不清理。
 CREATE TABLE IF NOT EXISTS order_idempotency (
   request_key VARCHAR(64) NOT NULL PRIMARY KEY,
   request_hash VARCHAR(64) NOT NULL,

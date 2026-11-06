@@ -2,6 +2,7 @@
  * 文件：IdempotencyMapper.java
  * 用途：通过唯一键占位及行锁串行化建单或人工库存调整请求，以及按保留期清理历史快照。
  * 维护注意：沿用order_idempotency表名，调用方必须使用不同业务/身份作用域；MySQL兼容upsert只做无副作用更新以等待并发提交，不能覆盖原参数摘要。所有方法须在同一事务内调用，不依赖影响行数判定首次请求。
+ * T27：建单快照由 OrderIdempotencyService 脱敏后写入，只保留键→订单号及非敏感展示字段；清理默认保留 30 天。
  * deleteExpiredBefore 只删除 response_json 已完成（非空）的过期记录，保留未完成占位避免重试窗口被截断。
  */
 package com.shop.b2b2c.mapper;

@@ -18,7 +18,7 @@ import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.*;
 
 /**
- * R27 单元测试：验证 IdempotencyPurgeJob 的批量清理逻辑与截止时间语义。
+ * R27/T27 单元测试：验证 IdempotencyPurgeJob 的批量清理、保留期、最大轮次与时间预算语义。
  *
  * 覆盖：
  *   TC-R27-01  单批未满时仅执行一次删除
@@ -27,6 +27,8 @@ import static org.mockito.Mockito.*;
  *   TC-R27-04  无可删记录时不触发多余删除
  *   TC-R27-05  purge() 传入的截止时间约等于 now() - retentionHours（误差 ≤ 5s）
  *   TC-R27-06  batchSize 参数正确传递给 Mapper
+ *   TC-R27-07  T27：达到最大轮次后停止继续删除
+ *   TC-R27-08  T27：时间预算耗尽后停止继续删除
  *
  * 注意：测试类与被测类同属 com.shop.b2b2c.config 包，
  *       以访问 purgeWithCutoff(LocalDateTime) 包级可见方法。
@@ -41,12 +43,16 @@ class IdempotencyPurgeJobTest {
     private IdempotencyPurgeJob purgeJob;
 
     private static final int BATCH_SIZE = 500;
-    private static final int RETENTION_HOURS = 72;
+    private static final int RETENTION_HOURS = 720;
+    private static final int MAX_ROUNDS = 20;
+    private static final long TIME_BUDGET_MS = 30_000L;
 
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(purgeJob, "retentionHours", RETENTION_HOURS);
         ReflectionTestUtils.setField(purgeJob, "batchSize", BATCH_SIZE);
+        ReflectionTestUtils.setField(purgeJob, "maxRounds", MAX_ROUNDS);
+        ReflectionTestUtils.setField(purgeJob, "timeBudgetMs", TIME_BUDGET_MS);
     }
 
     /**
@@ -152,5 +158,37 @@ class IdempotencyPurgeJobTest {
         purgeJob.purge();
 
         assertThat(limitCaptor.getValue()).isEqualTo(BATCH_SIZE);
+    }
+
+    /**
+     * TC-R27-07：每批都满额时，达到最大轮次必须停止，避免积压时无限循环。
+     */
+    @Test
+    void stopsAtMaxRoundsWhenBatchesKeepFilling() {
+        ReflectionTestUtils.setField(purgeJob, "maxRounds", 3);
+        when(idempotencyMapper.deleteExpiredBefore(any(LocalDateTime.class), eq(BATCH_SIZE)))
+                .thenReturn(BATCH_SIZE);
+
+        int total = purgeJob.purgeWithCutoff(LocalDateTime.now().minusHours(RETENTION_HOURS));
+
+        assertThat(total).isEqualTo(3 * BATCH_SIZE);
+        verify(idempotencyMapper, times(3))
+                .deleteExpiredBefore(any(LocalDateTime.class), eq(BATCH_SIZE));
+    }
+
+    /**
+     * TC-R27-08：时间预算耗尽后即使仍有满批也停止，剩余积压交给下一周期。
+     */
+    @Test
+    void stopsWhenTimeBudgetExhausted() {
+        ReflectionTestUtils.setField(purgeJob, "timeBudgetMs", 0L);
+        when(idempotencyMapper.deleteExpiredBefore(any(LocalDateTime.class), eq(BATCH_SIZE)))
+                .thenReturn(BATCH_SIZE);
+
+        int total = purgeJob.purgeWithCutoff(LocalDateTime.now().minusHours(RETENTION_HOURS));
+
+        assertThat(total).isEqualTo(BATCH_SIZE);
+        verify(idempotencyMapper, times(1))
+                .deleteExpiredBefore(any(LocalDateTime.class), eq(BATCH_SIZE));
     }
 }

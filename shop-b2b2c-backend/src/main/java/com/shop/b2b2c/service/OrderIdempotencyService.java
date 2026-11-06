@@ -1,7 +1,13 @@
 /*
  * 文件：OrderIdempotencyService.java
  * 用途：为三类HTTP建单提供参数冲突检测、事务内单次执行及原响应重放。
- * 维护注意：幂等键是私密重试凭证，不是身份认证；商家scope必须来自会话。占位、业务写入和结果快照同事务提交；禁止提前提交占位，重放也在内部事务行锁下完成。调用方不得已有外层业务事务，确保重试可以独立回滚；记录不自动过期，清理前需另立保留策略。
+ * 维护注意：
+ *  1. 幂等键是私密重试凭证，不是身份认证；商家scope必须来自会话。
+ *  2. 占位、业务写入和结果快照同事务提交；禁止提前提交占位，重放也在内部事务行锁下完成。
+ *  3. 调用方不得已有外层业务事务，确保重试可以独立回滚。
+ *  4. T27/Q18-B：快照保留 30 天（由 IdempotencyPurgeJob 清理），落库前必须脱敏：
+ *     queryToken/buyerContact 替换为 REDACTED 占位，posterBase64 直接剥离；重放时从 trade_order 回填，
+ *     因此数据库只保留键→订单号及非敏感展示字段，不保存买家领取凭证与隐私。
  */
 package com.shop.b2b2c.service;
 
@@ -20,10 +26,15 @@ import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Supplier;
 
 @Service
 public class OrderIdempotencyService {
+    /** T27：落库时替换敏感响应值；重放时按 orderSn 从 trade_order 回填。 */
+    private static final String REDACTED = "***REDACTED***";
+    private static final Set<String> SENSITIVE_RESPONSE_FIELDS = Set.of("queryToken", "buyerContact");
+
     private final IdempotencyMapper mapper;
     private final ObjectProvider<TradeOrderMapper> orderMapperProvider;
     private final ObjectMapper json;
@@ -61,14 +72,14 @@ public class OrderIdempotencyService {
                     String response = record.getResponseJson();
                     if (response == null) {
                         Map<String, Object> result = action.get();
-                        // R26: 剥离海报大字段 Base64 避免幂等表体积膨胀与重复存储
-                        Map<String, Object> storable = new LinkedHashMap<>(result);
-                        storable.remove("posterBase64");
-                        response = encode(storable);
+                        // T27/Q18-B: 只落库轻量映射（orderSn 与非敏感展示字段），敏感值以占位符替代，海报大字段剥离。
+                        response = encode(sanitize(result));
                         if (mapper.complete(storageKey, response) != 1) throw new IllegalStateException("幂等响应保存失败");
                     }
                     try {
                         Map<String, Object> replayed = json.readValue(response, new TypeReference<Map<String,Object>>() {});
+                        // T27: 首次响应也走同一条回填路径，保证首次与重放响应完全一致。
+                        rehydrate(replayed);
                         // R26: 统一从 trade_order 补齐海报 Base64，保持初次与重放响应契约及字段顺序完全一致
                         if (replayed.containsKey("peerPayToken") && !replayed.containsKey("posterBase64")) {
                             String token = (String) replayed.get("peerPayToken");
@@ -91,6 +102,33 @@ public class OrderIdempotencyService {
             }
         }
     }
+    /** T27：剥离海报大字段并把买家领取凭证/联系方式替换为占位符，数据库不保存敏感响应。 */
+    private Map<String, Object> sanitize(Map<String, Object> result) {
+        Map<String, Object> storable = new LinkedHashMap<>(result);
+        storable.remove("posterBase64");
+        for (String field : SENSITIVE_RESPONSE_FIELDS) {
+            if (storable.containsKey(field)) storable.put(field, REDACTED);
+        }
+        return storable;
+    }
+
+    /** T27：用 trade_order 的原始值回填被脱敏字段；订单已不存在时置 null，绝不把占位符暴露给调用方。 */
+    private void rehydrate(Map<String, Object> replayed) {
+        Object orderSnValue = replayed.get("orderSn");
+        if (!(orderSnValue instanceof String orderSn) || orderSn.isBlank()) return;
+        TradeOrderMapper orders = orderMapperProvider.getIfAvailable();
+        if (orders == null) return;
+        var order = orders.findByOrderSn(orderSn).orElse(null);
+        if (order == null) {
+            for (String field : SENSITIVE_RESPONSE_FIELDS) {
+                if (REDACTED.equals(replayed.get(field))) replayed.put(field, null);
+            }
+            return;
+        }
+        if (REDACTED.equals(replayed.get("queryToken"))) replayed.put("queryToken", order.getQueryToken());
+        if (REDACTED.equals(replayed.get("buyerContact"))) replayed.put("buyerContact", order.getBuyerContact());
+    }
+
     private String encode(Object value) {
         try { return json.writeValueAsString(value); }
         catch (Exception e) { throw new IllegalStateException("幂等数据序列化失败", e); }

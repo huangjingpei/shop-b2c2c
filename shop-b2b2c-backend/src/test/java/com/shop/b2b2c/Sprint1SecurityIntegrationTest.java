@@ -3681,6 +3681,43 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    void t27IdempotencySnapshotRedactsBuyerCredentialsButReplayRestores() throws Exception {
+        String key = "t27-redact-" + UUID.randomUUID().toString().replace("-", "");
+        String body = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"13812345678\"}";
+        String first = mvc.perform(post("/api/v1/peer-pay/buyer/create")
+                        .header("Idempotency-Key", key)
+                        .contentType("application/json")
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn().getResponse().getContentAsString();
+        Map<?, ?> data = (Map<?, ?>) json.readValue(first, Map.class).get("data");
+        String token = (String) data.get("peerPayToken");
+        String orderSn = (String) data.get("orderSn");
+        String queryToken = (String) data.get("queryToken");
+        assertNotNull(queryToken);
+
+        // T27/Q18-B：数据库只保留键→订单号及非敏感展示字段，脱敏 queryToken/buyerContact，剥离海报大字段
+        String stored = jdbc.queryForObject("SELECT response_json FROM order_idempotency WHERE response_json LIKE ?",
+                String.class, "%" + token + "%");
+        assertNotNull(stored);
+        assertTrue(stored.contains(orderSn), "键→订单号映射必须保留");
+        assertFalse(stored.contains(queryToken), "queryToken 不得落库");
+        assertFalse(stored.contains("13812345678"), "buyerContact 不得落库");
+        assertFalse(stored.contains("posterBase64"), "海报大字段不得落库");
+
+        // 重放从 trade_order 回填领取凭证与联系方式，响应与首次完全一致
+        String second = mvc.perform(post("/api/v1/peer-pay/buyer/create")
+                        .header("Idempotency-Key", key)
+                        .contentType("application/json")
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200))
+                .andReturn().getResponse().getContentAsString();
+        assertEquals(first, second);
+    }
+
+    @Test
     void r07OrderCreationCostBudgetingAndFloodingDefense() throws Exception {
         // 1. 正常建单成功并写入数据库
         String normalKey = "r07-normal-key-" + UUID.randomUUID();
