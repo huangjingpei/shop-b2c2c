@@ -145,14 +145,14 @@
 
 首轮脚本用 `'...'` 直接截取 DDL 字符串，V6 的 `DEFAULT ''WECHAT''`、`COMMENT ''...''` 中的双单引号被截断，导致 30 多条列被误报为 `V=[... comment]` vs `S=[...]`。修正为“先还原 `''` 为 `'`、再按列名定位 `schema.sql` 列定义、逐字比较 `COMMENT`”后重新比对，真实差异只有下表 2 条，且均为 `schema.sql` 侧更完整。
 
-### 3.1 列注释逐条比对（39 条）
+### 3.1 列注释逐条比对（41 处带 COMMENT 的列定义，含 V6 两条 MODIFY 的列注释）
 
 | 差异项 | V 脚本原文 | schema.sql 现状 | 语义类别 | 决定 | 理由 |
 | --- | --- | --- | --- | --- | --- |
 | `product_virtual_card.fingerprint_unavailable`（V2 L12） | V 脚本**没有注释** | L141：`指纹不可用标记: 1-缺少明文或解密失败，导入去重时跳过并计数` | 状态枚举/去重口径 | **不补，保留 schema.sql 版本** | V 侧为空、S 侧更完整，不存在“V 有而 S 丢”；保留 S 的说明更利于维护 |
 | `payment_event.next_reconcile_at`（V5 L23） | `G34：下次允许回查时间，NULL 表示立即可扫` | L489：`G34：下次允许回查时间，NULL 表示立即可扫；超过上限转 MANUAL_REVIEW` | 状态枚举/补偿口径 | **不补，保留 schema.sql 版本** | S 侧多出“超过上限转 MANUAL_REVIEW”的处置语义，比 V 更严格；V 的意图已被完整包含 |
 
-其余 **37 条列注释逐字一致**，包含用户点名的四类必须保留语义：
+其余 **39 处列注释逐字一致**（含 V6 两条 `MODIFY COLUMN` 的列注释），包含用户点名的四类必须保留语义：
 
 | 必保类别 | 代表项（V 与 S 原文一致） | schema.sql 行号 |
 | --- | --- | --- |
@@ -161,7 +161,7 @@
 | 阶段二预留标记 | `merchant_payment_account.settlement_account_id` 等 7 列：`T39 阶段二预留…阶段一先不写值`；`trade_order.platform_trade_no`：`T40 阶段二预留…阶段一为空，不得用商家直收流水回填` | L53-L59、L207 |
 | 金额含义 | `refunded_amount`：`T33 已退款商品金额（含渠道处理中预占）`；`fee_refunded_amount`：`T33 已冲正/预占技术服务费（含处理中预占）`；`fee_waived_amount`：`T34 减免金额，推广期等于标准服务费`；`fee_net_amount`：`T34 服务费不含税额` | L183、L184、L197、L198 |
 
-**结论：V1–V6 中没有任何一条列注释在 `schema.sql` 中缺失或被弱化。** 2 条差异均为 `schema.sql` 更完整，决定保留 `schema.sql` 版本，不需要补写。
+**结论：V1–V6 的 41 处带 COMMENT 的列定义中，没有任何一条注释在 `schema.sql` 中缺失或被弱化。** 其中 39 处逐字一致、2 处为 `schema.sql` 侧更完整，决定保留 `schema.sql` 版本，不需要补写。
 V1 的 `attempt_key`、`reissue_count` 在 V 与 S 中均无注释；两者是 T10 内部技术字段，不属于四类必补语义，**不凭空新增**，避免把技术实现细化冒充业务规则。V3 表注释 `卡密明文访问审计表` 在 V 与 S 中逐字一致（S L155）。V1–V6 没有索引注释语句。
 
 ### 3.2 V1 六项点名核对
@@ -194,7 +194,25 @@ V1 的 `attempt_key`、`reissue_count` 在 V 与 S 中均无注释；两者是 T
 
 ## 5. 本轮对 schema.sql 的改动
 
-**无。** 逐条比对确认 `schema.sql` 已包含 V1–V6 的全部最终结构，未发现缺失或定义不同，因此未修改 `schema.sql`，也未删除任何 V 脚本。
+| 位置 | 改动 | 理由 |
+| --- | --- | --- |
+| L672（`payment_channel_statement`） | 外键名 `fk_statement_merchant` → `fk_payment_channel_statement_merchant` | 与外键名唯一性冲突：L324（`billing_statement.shop_id`）已使用 `fk_statement_merchant`，MySQL 8.0.16 起外键约束名要求库内唯一，第二处会在建表时报 `Duplicate foreign key constraint name` 并中断 `schema.sql`。L324 保留原名，因为它是 V6 #51 明确命名的对象，改名会让吸收对照失效 |
+
+另新增静态回归用例 `SchemaConstraintNameTest`：读取 `schema.sql` 文本，断言约束名/触发器名库内唯一、单表内索引名不重复、关键表与列存在；只做文本检查，不启动 Spring、不连接数据库，真实 MySQL 建库仍须用户演练。
+
+### 5.1 全库名称静态扫描
+
+扫描口径：按文本解析 `CONSTRAINT ... FOREIGN KEY`、`CONSTRAINT ... CHECK`、`CREATE TRIGGER`，以及每个 `CREATE TABLE` 块内的 `KEY`/`UNIQUE KEY`/`INDEX`；先剔除 `--` 行注释。
+
+| 类别 | 名称 / 出现位置 | 是否重复 |
+| --- | --- | --- |
+| 外键约束（66 个） | `fk_statement_merchant`：L324 `billing_statement.shop_id`、L672 `payment_channel_statement.merchant_id` | **重复 1 组**；已将 L672 改名，改后 66 个名称互不相同 |
+| 外键约束其余 65 个 | 均只出现 1 次 | 否 |
+| CHECK 约束（16 个） | 均只出现 1 次（`chk_` 前缀，与外键名无交集） | 否 |
+| 触发器（2 个） | `trg_ledger_no_update` L550、`trg_ledger_no_delete` L554 | 否 |
+| 索引/唯一键（68 个定义） | 按表统计表内重名 | 否（表内冲突 0） |
+
+改后重复数为 0。以上为静态文本结论，真实 MySQL 建库仍须用户演练验证。
 
 ## 6. 删除状态
 

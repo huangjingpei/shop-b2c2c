@@ -669,7 +669,7 @@ CREATE TABLE IF NOT EXISTS `payment_channel_statement` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_statement_trade` (`channel`, `channel_trade_no`),
   KEY `idx_statement_merchant_time` (`merchant_id`, `trade_time`),
-  CONSTRAINT fk_statement_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+  CONSTRAINT fk_payment_channel_statement_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='渠道流水';
 
 -- 27. 对账差异队列（T35）：差异只记录不自动平衡，处理动作留痕
