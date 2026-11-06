@@ -1,7 +1,7 @@
 /*
  * 文件：SchemaMySqlTest.java
- * 用途：在临时MySQL8验证schema/记录保留、商品/库存/卡密批次与作废SQL、约束和回滚。
- * 维护注意：仅显式提供schema.mysql.bin时运行；--no-defaults、随机空闲端口和target下独立数据目录隔离现有服务，校验@@datadir后才写入。不能改为连接开发/生产服务，测试实例停止后保留日志和临时数据供检查。
+ * 用途：在临时MySQL8验证schema/记录保留、商品/库存/卡密批次与作废SQL、约束和回滚，并在同一库上连续执行 V1–V6 迁移两次验证幂等与记账唯一。
+ * 维护注意：仅显式提供schema.mysql.bin时运行；--no-defaults、随机空闲端口和target下独立数据目录隔离现有服务，校验@@datadir后才写入。不能改为连接开发/生产服务，测试实例停止后保留日志和临时数据供检查。迁移段只做结构断言，不代表真实存量库演练；真实存量升级见 docs/2026-11-06-migration-baseline-audit.md。
  */
 package com.shop.b2b2c;
 
@@ -9,7 +9,9 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.condition.EnabledIfSystemProperty;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.support.EncodedResource;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.jdbc.datasource.init.ScriptUtils;
+import com.shop.b2b2c.config.SchemaMigrationRunner;
 import java.net.ServerSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
@@ -71,7 +73,7 @@ class SchemaMySqlTest {
                 try (ResultSet result = statement.executeQuery("SHOW TABLES")) {
                     while (result.next()) tables.add(result.getString(1));
                 }
-                assertEquals(20, tables.size());
+                assertEquals(38, tables.size(), "schema.sql 当前基线必须包含 38 张业务表；增删表须同步本断言、README 与迁移覆盖率用例");
                 try (ResultSet indexes = statement.executeQuery("SHOW INDEX FROM inventory_reservation WHERE Key_name='idx_reservation_expiry'")) {
                     List<String> columns = new ArrayList<>();
                     while (indexes.next()) columns.add(indexes.getString("Column_name"));
@@ -80,7 +82,7 @@ class SchemaMySqlTest {
                 try (ResultSet foreignKeys = statement.executeQuery(
                         "SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA=DATABASE() AND CONSTRAINT_TYPE='FOREIGN KEY'")) {
                     assertTrue(foreignKeys.next());
-                    assertTrue(foreignKeys.getInt(1) >= 25, "开发期基线应写入完整外键约束");
+                    assertTrue(foreignKeys.getInt(1) >= 66, "schema.sql 基线必须保持 66 个外键；减少外键须先更新 V6 与审计记录");
                 }
                 try (ResultSet seed = statement.executeQuery("SELECT goods_type FROM product WHERE id=6")) {
                     assertTrue(seed.next()); assertEquals(3, seed.getInt(1));
@@ -109,6 +111,21 @@ class SchemaMySqlTest {
                 }
                 try (ResultSet otherDatabase = statement.executeQuery("SHOW DATABASES LIKE 'shop_b2b2c'")) {
                     assertFalse(otherDatabase.next(), "schema不得隐式创建固定名称数据库");
+                }
+                // 存量库路径：在同一 schema.sql 库上连续执行 V1–V6 两次，必须无报错且每个版本只记账一次。
+                // 这是迁移幂等与“结构已符合基线时不重复重建”的可执行契约，不能用 H2 或文本断言代替。
+                var migrationDataSource = new DriverManagerDataSource(
+                        url.replace("/?", "/bootstrap_contract_test?"), "root", "");
+                var migrationRunner = new SchemaMigrationRunner(migrationDataSource, true, "classpath:db/migrations");
+                migrationRunner.run(null);
+                migrationRunner.run(null);
+                try (ResultSet applied = statement.executeQuery("SELECT COUNT(*) FROM schema_migration")) {
+                    assertTrue(applied.next());
+                    assertEquals(6, applied.getInt(1), "V1–V6 必须各记账一次");
+                }
+                try (ResultSet duplicate = statement.executeQuery(
+                        "SELECT version FROM schema_migration GROUP BY version HAVING COUNT(*) > 1")) {
+                    assertFalse(duplicate.next(), "同一迁移版本不得重复记账");
                 }
                 verifyProductEditingSql(url);
                 }

@@ -382,3 +382,45 @@
 - 建议归属：T20/T36 网关模板同批；若保留别名，须两云同步并补 `test_nginx_gateway.py` 断言，避免只改一处。
 - 影响面：外部监控若使用 `/readyz` 会在两云 404；改用 `/api/v1/auth/ready` 可正常工作。
 
+## G38 迁移执行时机晚于 Web 端口监听（已登记未做）
+
+- 发现位置：[SchemaMigrationRunner.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/SchemaMigrationRunner.java)、[application.yml](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/application.yml)。
+- 现象：迁移器实现 `ApplicationRunner`，在 Spring Boot 内嵌 Web 容器已监听之后才执行；迁移耗时期间端口可被访问，结构可能仍是旧版。
+- 未改原因：提前到 Bean 初始化阶段会与 `spring.sql.init`（`schema.sql` 导入）争抢执行顺序，新库可能在建表前跑迁移；改动影响启动契约与全部集成测试，本卡只做审计与结构对齐。
+- 建议归属：部署运维；以单实例停机发布或 `/readyz` 就绪门禁规避，必要时再设计“迁移完成前拒绝业务请求”的启动闸门。
+- 影响面：迁移窗口内的请求可能命中旧结构（如缺列）而报错；不会写坏数据，因迁移失败会阻断启动。
+
+## G39 V 系列不创建 V1 之后新增的 19 张表（路径约束，需运维遵守）
+
+- 发现位置：[db/migrations](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/migrations)、[db/schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql)。
+- 现象：`trade_refund`、`merchant_account`、`merchant_account_ledger`、结算/分账/入驻等 19 张表只由 `schema.sql` 的 `CREATE TABLE IF NOT EXISTS` 创建；只跑 V 系列不会建这些表。
+- 未改原因：把 19 张表复制进迁移会形成两份权威结构，后续表结构变更要改两处，漂移风险更大；维持“schema.sql 建表 + V 脚本补旧表增量”的单一来源。
+- 建议归属：部署运维；存量库升级必须先导入 `db/schema.sql`（部署 `--migrate`）再启动应用。缺表时 `ALTER TABLE` 会报“表不存在”并阻断启动，属明确失败，不会静默半迁移。
+- 影响面：若运维跳过 `--migrate` 直接重启应用，启动会失败或业务查询缺表；不会产生错误数据。
+
+## G40 多实例并发启动时迁移记账主键冲突（已登记未做）
+
+- 发现位置：[SchemaMigrationRunner.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/SchemaMigrationRunner.java) 的 `isApplied` / `recordApplied`。
+- 现象：两个实例同时启动且都判断某版本未应用时，两者都会执行幂等脚本，随后插入同一 `schema_migration` 主键，后插入者启动失败。
+- 未改原因：当前部署为单实例 systemd；多实例迁移锁需要数据库命名锁或外部编排，属部署架构决策，不在本卡范围。
+- 建议归属：多实例部署改造时处理；最低要求先发布单实例完成迁移再扩副本。
+- 影响面：后启动实例启动失败（非静默），数据库结构不会双写错乱；需人工重启。
+
+## G41 旧库排序规则与新表不一致会导致建外键失败（上线前须确认）
+
+- 发现位置：[db/schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql) 各表 `DEFAULT CHARSET=utf8mb4`（未显式 `COLLATE`）、[V6__s1_legacy_structure_reconcile.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/migrations/V6__s1_legacy_structure_reconcile.sql)。
+- 现象：由 MySQL 5.7 延续的旧库可能保留 `utf8mb4_general_ci`，而 MySQL 8 新建表使用 `utf8mb4_0900_ai_ci`；两端排序规则不同时 MySQL 拒绝建立外键，V6 与 `--migrate` 导入都会失败。
+- 未改原因：统一排序规则需要逐表 `ALTER ... CONVERT TO` 全量重建，属数据迁移动作，不能在幂等结构脚本里静默执行；开发期允许重建库。
+- 建议归属：上线前环境核对；按 [迁移与基线审计](2026-11-06-migration-baseline-audit.md) §5.1 先检查 `information_schema.tables.table_collation`，不一致则重建库后再迁移。
+- 影响面：迁移被阻断（明确失败），不会写入半套外键；但需要运维先做库级决策。
+
+## G42 账本表无表内操作人，人工调整入口未实现
+
+- 发现位置：[db/schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql) 的 `merchant_account_ledger`、[MerchantAccountService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantAccountService.java)。
+- 现象：`merchant_account_ledger` 有 `balance_after`/`arrears_after`/`created_at`，但没有表内 `operator_id`；`entry_type` 声明了 `ADJUSTMENT`，代码尚无人工调整入口。
+- 未改原因：当前入账全部由订单/退款/充值单驱动，操作人可由对应单据的 `confirmed_by`/`requested_by` 追溯；补一个永远为空的列会造成“审计字段齐全”的假象。
+- 建议归属：开放人工调整功能时，同批补 `operator_id` 与调整原因，并写入用例。
+- 影响面：现阶段无资金操作缺失审计；若绕过单据直接改账本（当前无入口），将无法在表内追溯操作人。
+
+
+

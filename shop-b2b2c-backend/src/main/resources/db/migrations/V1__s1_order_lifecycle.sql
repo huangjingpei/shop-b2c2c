@@ -55,14 +55,38 @@ PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
--- 5. 预占到期游标索引补齐 order_id；索引可重建，不删除任何业务数据
-SET @idx_exists := (SELECT COUNT(*) FROM information_schema.statistics
+-- 5. 预占到期游标索引补齐 order_id；只在定义不符时重建，先建后换，失败不留“无索引”中间态
+SET @idx_cols := (SELECT LOWER(GROUP_CONCAT(column_name ORDER BY seq_in_index))
+    FROM information_schema.statistics
     WHERE table_schema = DATABASE() AND table_name = 'inventory_reservation' AND index_name = 'idx_reservation_expiry');
-SET @ddl := IF(@idx_exists = 0,
-    'SELECT 1',
-    'ALTER TABLE inventory_reservation DROP INDEX idx_reservation_expiry');
+SET @swap_exists := (SELECT COUNT(*) FROM information_schema.statistics
+    WHERE table_schema = DATABASE() AND table_name = 'inventory_reservation' AND index_name = 'idx_reservation_expiry_v2');
+SET @need_swap := IF(@idx_cols IS NULL OR @idx_cols <> 'status,expires_at,order_id', 1, 0);
+
+-- 5.1 先建同列临时索引（已存在则跳过）
+SET @ddl := IF(@need_swap = 1 AND @swap_exists = 0,
+    'ALTER TABLE inventory_reservation ADD INDEX idx_reservation_expiry_v2 (status, expires_at, order_id)',
+    'SELECT 1');
 PREPARE stmt FROM @ddl;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
-ALTER TABLE inventory_reservation ADD INDEX idx_reservation_expiry (status, expires_at, order_id);
+-- 5.2 仅当旧索引存在且定义不符时删除旧索引
+SET @ddl := IF(@need_swap = 1 AND @idx_cols IS NOT NULL,
+    'ALTER TABLE inventory_reservation DROP INDEX idx_reservation_expiry',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- 5.3 重新读取索引状态后再改名，避免使用 5.2 之前的旧变量
+SET @final_exists := (SELECT COUNT(*) FROM information_schema.statistics
+    WHERE table_schema = DATABASE() AND table_name = 'inventory_reservation' AND index_name = 'idx_reservation_expiry');
+SET @swap_exists := (SELECT COUNT(*) FROM information_schema.statistics
+    WHERE table_schema = DATABASE() AND table_name = 'inventory_reservation' AND index_name = 'idx_reservation_expiry_v2');
+SET @ddl := IF(@need_swap = 1 AND @final_exists = 0 AND @swap_exists > 0,
+    'ALTER TABLE inventory_reservation RENAME INDEX idx_reservation_expiry_v2 TO idx_reservation_expiry',
+    'SELECT 1');
+PREPARE stmt FROM @ddl;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;

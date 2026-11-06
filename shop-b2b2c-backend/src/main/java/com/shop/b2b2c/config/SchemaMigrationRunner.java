@@ -26,7 +26,6 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.List;
 
 @Component
@@ -124,8 +123,37 @@ public class SchemaMigrationRunner implements ApplicationRunner {
             String version = filename.substring(0, filename.length() - ".sql".length());
             migrations.add(new MigratingResource(version, resource));
         }
-        migrations.sort(Comparator.comparing(MigratingResource::version));
+        migrations.sort((left, right) -> compareVersions(left.version(), right.version()));
         return migrations;
+    }
+
+    /**
+     * 仅供排序与测试使用：按版本号中 V 之后的数字段比较，避免字典序把 V10 排到 V2 之前。
+     * 数字段相同的版本再按完整版本名比较；无法解析数字的版本排在最后，保持确定性顺序。
+     */
+    public static int compareVersions(String left, String right) {
+        int leftNumber = numericVersion(left);
+        int rightNumber = numericVersion(right);
+        if (leftNumber != rightNumber) {
+            return Integer.compare(leftNumber, rightNumber);
+        }
+        return left.compareTo(right);
+    }
+
+    private static int numericVersion(String version) {
+        int start = version.startsWith("V") ? 1 : 0;
+        int end = start;
+        while (end < version.length() && Character.isDigit(version.charAt(end))) {
+            end++;
+        }
+        if (end == start) {
+            return Integer.MAX_VALUE;
+        }
+        try {
+            return Integer.parseInt(version.substring(start, end));
+        } catch (NumberFormatException overflow) {
+            return Integer.MAX_VALUE;
+        }
     }
 
     /**
