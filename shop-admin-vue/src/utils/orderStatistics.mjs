@@ -26,7 +26,7 @@ export function listedProductCount(products) {
 export function storeDisplay(store) {
   const s = store || {}
   return { name: s.storeName || '店铺资料未加载', code: s.storeCode ?? '—', rate: s.commissionRate ?? '—',
-    status: ({ 0: '待审核', 1: '正常营业', 2: '已打烊', 3: '已封禁' })[s.status] ?? '状态未知' }
+    status: ({ 0: '待审核', 1: '正常营业', 2: '已打烊', 3: '已封禁', 4: '已注销' })[s.status] ?? '状态未知' }
 }
 
 /** T31：支付账户审核状态，REJECTED 不能与待审核混淆。 */

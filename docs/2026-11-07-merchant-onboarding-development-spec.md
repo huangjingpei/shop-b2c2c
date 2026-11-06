@@ -610,7 +610,7 @@ CREATE TABLE IF NOT EXISTS merchant_store_status_audit (
   action VARCHAR(24) NOT NULL COMMENT 'OPEN/PAUSE/RESUME/FREEZE/UNFREEZE/CLOSE/CANCEL',
   from_status TINYINT NULL,
   to_status TINYINT NOT NULL,
-  reason_code VARCHAR(32) NULL COMMENT 'RISK/ARREARS/MERCHANT_REQUEST/EXPIRED_LICENSE/OTHER',
+  reason_code VARCHAR(32) NULL COMMENT '店铺状态原因码，字典见附录 A.5',
   reason VARCHAR(512) NULL,
   operator_id BIGINT NULL,
   confirmed_by BIGINT NULL,
@@ -1110,6 +1110,22 @@ npm --prefix shop-storefront-vue run build
 ### A.5 店铺状态动作
 
 `OPEN`、`PAUSE`、`RESUME`、`FREEZE`、`UNFREEZE`、`CLOSE`、`CANCEL`
+
+店铺状态原因码（`merchant_store_status_audit.reason_code`，冻结/解封/关店/注销必填；`OTHER` 时 `reason` 必填）：
+
+| 原因码 | 中文名 | 典型动作 |
+| --- | --- | --- |
+| `VIOLATION` | 违规经营 | 冻结/注销 |
+| `RISK_COMPLAINT` | 投诉风控 | 冻结 |
+| `ARREARS` | 欠费未缴 | 冻结/关店 |
+| `EXPIRED_LICENSE` | 证照过期（含 O9 逾期自动冻结的系统动作） | 冻结 |
+| `MERCHANT_REQUEST` | 商家申请 | 解封/关店 |
+| `QUALIFICATION_EXPIRED` | 资质过期 | 冻结 |
+| `STRATEGY_ADJUST` | 平台策略调整 | 冻结/注销 |
+| `ILLEGAL_OPERATION` | 非法经营 | 冻结/注销 |
+| `REPEATED_VIOLATION` | 多次违规 | 冻结/注销 |
+| `SUSPECTED_RISK` | 疑似风险 | 冻结 |
+| `OTHER` | 其他（必须填写具体原因） | 全部 |
 
 ### A.6 收款账户状态/动作
 

@@ -31,6 +31,8 @@ test('零佣金率和真实店铺状态不被演示值覆盖', () => {
   const display = storeDisplay({ storeName: '本店', storeCode: 'S0', commissionRate: 0, status: 2 })
   assert.equal(display.rate, 0); assert.equal(display.status, '已打烊'); assert.equal(display.code, 'S0')
   assert.equal(storeDisplay({ status: 3 }).status, '已封禁'); assert.equal(storeDisplay().status, '状态未知')
+  // O6：状态 4 为已注销终态，不得落入“状态未知”。
+  assert.equal(storeDisplay({ status: 4 }).status, '已注销')
   assert.notEqual(storeDisplay().code, 'STORE001')
 })
 test('支付账户审核状态区分通过、驳回与待审核', () => {

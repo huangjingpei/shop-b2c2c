@@ -39,6 +39,25 @@ CREATE TABLE IF NOT EXISTS `merchant_store` (
   UNIQUE KEY `uk_store_code` (`store_code`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商户店铺主表';
 
+-- 1a. 店铺状态流转审计（O6）：冻结/解封/关店/注销全留痕，append-only；
+--     同一事务内 CAS 更新 merchant_store.status 并写入本表，并发只有一个成功
+CREATE TABLE IF NOT EXISTS `merchant_store_status_audit` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `action` VARCHAR(16) NOT NULL COMMENT 'OPEN/PAUSE/RESUME/FREEZE/UNFREEZE/CLOSE/CANCEL',
+  `from_status` TINYINT NOT NULL,
+  `to_status` TINYINT NOT NULL COMMENT '0-待开通 1-营业 2-打烊 3-冻结 4-已注销(终态)',
+  `reason_code` VARCHAR(32) NOT NULL,
+  `reason` VARCHAR(512) NULL,
+  `operator_id` BIGINT NULL COMMENT '为空表示系统任务（如资质过期自动冻结）',
+  `confirmed_by` BIGINT NULL COMMENT '复核人；解封/注销双人复核时必填',
+  `approval_mode` VARCHAR(16) NULL COMMENT 'SAME_OPERATOR-非严格模式同人放行并告警 / DUAL-双人复核',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_store_status_audit_merchant` (`merchant_id`, `created_at`),
+  CONSTRAINT fk_store_status_audit_store FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='店铺状态流转审计';
+
 -- 2. 微信/支付宝官方二级商户进件账户表
 CREATE TABLE IF NOT EXISTS `merchant_payment_account` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,

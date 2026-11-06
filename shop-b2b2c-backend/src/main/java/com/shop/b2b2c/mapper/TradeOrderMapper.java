@@ -231,4 +231,12 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
     int countPaidOrdersByPeriod(@Param("merchantId") Long merchantId,
                                 @Param("from") LocalDateTime from,
                                 @Param("to") LocalDateTime to);
+
+    /**
+     * O6 关店前置条件：统计店铺未完结订单（已支付待发货 + 已发货待收货）；
+     * UNPAID 预占单自动过期不算未完结，与开发文档"PAID/WAIT_SHIP/SHIPPED"口径一致。
+     */
+    @Select("SELECT COUNT(*) FROM trade_order WHERE merchant_id = #{merchantId} "
+            + "AND order_status IN ('PAID','SHIPPED')")
+    int countOngoingByMerchantId(@Param("merchantId") Long merchantId);
 }

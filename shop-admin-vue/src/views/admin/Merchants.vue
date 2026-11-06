@@ -1,7 +1,7 @@
 <!--
 文件：Merchants.vue
 用途：平台商户资料、佣金、服务费、营业状态和收款模式配置页面。
-维护注意：进件仍有模拟数据，不能把成功提示当真实渠道开通；后台校验为权威；服务费五种编码分别展示，未知值须明确选择，配置不代表扣费或停服；日期按LocalDate提交。G31：调价与开店初始费率必须提供复核人入口，候选排除当前账号；无第二账号时明确提示“需至少分配两个财务账号”，前端不绕过后端双人复核。
+维护注意：进件仍有模拟数据，不能把成功提示当真实渠道开通；后台校验为权威；服务费五种编码分别展示，未知值须明确选择，配置不代表扣费或停服；日期按LocalDate提交。G31：调价与开店初始费率必须提供复核人入口，候选排除当前账号；无第二账号时明确提示“需至少分配两个财务账号”，前端不绕过后端双人复核。O6：打烊/开业仅营业(1)/打烊(2)走旧开关；冻结/解封/关店/注销统一走 /store-status（原因码必填、解封双人、终态警示），状态审计只读时间线来自 /store-status-audits；动作/原因码规则集中在 utils/storeStatusActions.mjs，与后端字典同步维护。
 -->
 <template>
   <div class="merchants-page">
@@ -88,14 +88,19 @@
         </el-table-column>
 
         <!-- 管理操作 -->
-        <el-table-column label="管理操作" width="220" fixed="right">
+        <el-table-column label="管理操作" width="260" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" link @click="openFeeDialog(row)">配置服务费</el-button>
             <el-button size="small" type="warning" link @click="openChannelDialog(row)">切换通道</el-button>
             <el-button size="small" type="info" link @click="editCommission(row)">费率</el-button>
-            <el-button size="small" :type="row.status === 1 ? 'danger' : 'success'" link @click="toggleStatus(row)">
+            <!-- O6：打烊/恢复仅营业(1)/打烊(2)可走旧开关；冻结(3)/注销(4)状态下该开关无合法动作 -->
+            <el-button v-if="row.status === 1 || row.status === 2" size="small"
+              :type="row.status === 1 ? 'danger' : 'success'" link @click="toggleStatus(row)">
               {{ row.status === 1 ? '打烊' : '开业' }}
             </el-button>
+            <el-button v-if="statusActionAvailable(row)" size="small" type="danger" link
+              @click="openStatusActionDialog(row)">冻结/解封/注销</el-button>
+            <el-button size="small" type="info" link @click="openAuditDrawer(row)">状态审计</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -244,6 +249,67 @@
       </template>
     </el-dialog>
 
+    <!-- 5. O6 店铺状态操作弹窗（冻结/解封/关店/注销，原因码 + 审计 + 解封双人复核） -->
+    <el-dialog v-model="statusActionDialogVisible" title="店铺状态操作（全程审计留痕）" width="540px">
+      <el-form label-width="110px">
+        <el-form-item label="店铺">
+          <span style="font-weight: 600;">{{ statusActionForm.storeName }}</span>
+          <el-tag size="small" style="margin-left: 8px;" :type="storeStatusTagType(statusActionForm.status)">
+            当前：{{ storeDisplay(statusActionForm).status }}
+          </el-tag>
+        </el-form-item>
+        <el-form-item label="状态操作" required>
+          <el-radio-group v-model="statusActionForm.action">
+            <el-radio-button v-for="act in statusActionOptions" :key="act" :label="act">
+              {{ STORE_ACTION_LABELS[act] }}
+            </el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="原因码" required>
+          <el-select v-model="statusActionForm.reasonCode" style="width: 100%" placeholder="必须选择字典内原因码">
+            <el-option v-for="item in STORE_REASON_CODES" :key="item.value"
+              :label="`${item.value}（${item.label}）`" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="原因说明" :required="statusActionForm.reasonCode === 'OTHER'">
+          <el-input v-model="statusActionForm.reason" type="textarea" :rows="2" maxlength="512" show-word-limit
+            placeholder="原因码为 OTHER 时必填；写入审计，不对商家展示操作人隐私" />
+        </el-form-item>
+        <el-form-item label="复核人" :required="statusActionReviewerRequired">
+          <el-select v-model="statusActionForm.confirmedBy" clearable style="width: 100%"
+            :placeholder="reviewerPlaceholder">
+            <el-option v-for="item in reviewerPolicy.candidates" :key="item.id"
+              :label="reviewerLabel(item)" :value="item.id" />
+          </el-select>
+          <div class="review-hint">解封按后端双人复核开关强制；关店/注销选填复核人时后端强制换人校验。</div>
+        </el-form-item>
+        <el-alert v-if="statusActionTerminal" type="error" :closable="false" show-icon
+          title="关店/注销为终态操作：需无未完结订单、无处理中退款、无未确认批次或欠费、商品全部下架；成功后商家账号全部停用，不可恢复。" />
+        <el-alert v-else-if="statusActionForm.action === 'UNFREEZE'" type="warning" :closable="false" show-icon
+          title="解封后店铺恢复营业并可正常交易结算；操作与复核人写入审计。" />
+      </el-form>
+      <template #footer>
+        <el-button @click="statusActionDialogVisible = false">取消</el-button>
+        <el-button type="danger" :loading="statusActionSaving" @click="submitStatusAction">确认执行</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 6. O6 店铺状态审计时间线 -->
+    <el-drawer v-model="auditDrawerVisible" :title="`店铺状态审计 - ${auditStoreName}`" size="480px">
+      <el-skeleton v-if="auditLoading" :rows="4" animated />
+      <el-timeline v-else-if="auditItems.length" style="padding-left: 4px;">
+        <el-timeline-item v-for="item in auditItems" :key="item.id" :timestamp="item.createdAt" placement="top">
+          <div style="font-weight: 600;">{{ item.view.actionLabel }}</div>
+          <div class="audit-line">原因码：{{ item.view.reasonLabel || '—' }}</div>
+          <div class="audit-line">
+            {{ item.view.operatorLabel }}<template v-if="item.view.confirmedByLabel"> · {{ item.view.confirmedByLabel }}</template> · {{ item.view.approvalLabel }}
+          </div>
+          <div v-if="item.reason" class="audit-line">说明：{{ item.reason }}</div>
+        </el-timeline-item>
+      </el-timeline>
+      <el-empty v-else description="暂无状态审计记录" />
+    </el-drawer>
+
   </div>
 </template>
 
@@ -256,6 +322,14 @@ import { storeDisplay } from '../../utils/orderStatistics.mjs'
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 import { generateTemporaryPassword, isStrongPassword } from '../../utils/adminAccount.mjs'
 import { reviewerState, validateReviewer } from '../../utils/financeReview.mjs'
+import {
+  STORE_ACTION_LABELS,
+  STORE_REASON_CODES,
+  auditView,
+  availableStatusActions,
+  requiresDualApproval,
+  validateStoreStatusAction
+} from '../../utils/storeStatusActions.mjs'
 
 const createSubmission = createIdempotentSubmission()
 const loading = ref(false)
@@ -321,6 +395,7 @@ const storeStatusTagType = status => {
   if (status === 1) return 'success'
   if (status === 2) return 'warning'
   if (status === 3) return 'danger'
+  if (status === 4) return 'info'
   return 'info'
 }
 
@@ -373,6 +448,32 @@ const commissionForm = ref({
   reason: '',
   confirmedBy: ''
 })
+
+// O6 店铺状态操作（冻结/解封/关店/注销：原因码 + 审计 + 解封双人复核）
+const statusActionDialogVisible = ref(false)
+const statusActionSaving = ref(false)
+const statusActionOptions = ref([])
+const statusActionForm = ref({
+  storeId: null,
+  storeName: '',
+  status: null,
+  action: '',
+  reasonCode: '',
+  reason: '',
+  confirmedBy: ''
+})
+const statusActionTerminal = computed(() =>
+  statusActionForm.value.action === 'CLOSE' || statusActionForm.value.action === 'CANCEL')
+// 解封的双人强制跟随后端开关；关店/注销复核人选填（选了后端强制换人校验）。
+const statusActionReviewerRequired = computed(() =>
+  requiresDualApproval(statusActionForm.value.action) && reviewerPolicy.value.dualApprovalRequired)
+const statusActionAvailable = row => availableStatusActions(row?.status).length > 0
+
+// O6 状态审计时间线
+const auditDrawerVisible = ref(false)
+const auditLoading = ref(false)
+const auditStoreName = ref('')
+const auditItems = ref([])
 
 const loadMerchants = async () => {
   loading.value = true
@@ -497,6 +598,79 @@ const openChannelDialog = (row) => {
   channelDialogVisible.value = true
 }
 
+// O6 打开状态操作弹窗：动作选项由当前状态决定（营业/打烊→冻结/关店/注销；冻结→解封）
+const openStatusActionDialog = (row) => {
+  const options = availableStatusActions(row.status)
+  if (options.length === 0) {
+    ElMessage.warning('当前状态无可执行的状态操作')
+    return
+  }
+  statusActionForm.value = {
+    storeId: row.id,
+    storeName: row.storeName,
+    status: row.status,
+    action: options[0],
+    reasonCode: '',
+    reason: '',
+    confirmedBy: ''
+  }
+  statusActionOptions.value = options
+  statusActionDialogVisible.value = true
+}
+
+// O6 提交状态操作：前端只做初筛，状态迁移/原因码/双人复核以后端为准
+const submitStatusAction = async () => {
+  if (statusActionSaving.value) return
+  const verdict = validateStoreStatusAction({
+    action: statusActionForm.value.action,
+    reasonCode: statusActionForm.value.reasonCode,
+    reason: statusActionForm.value.reason
+  })
+  if (!verdict.ok) {
+    ElMessage.warning(verdict.message)
+    return
+  }
+  let confirmedBy = null
+  const chosen = statusActionForm.value.confirmedBy
+  const reviewerChosen = chosen !== '' && chosen !== null && chosen !== undefined
+  if (requiresDualApproval(verdict.payload.action) || reviewerChosen) {
+    const selection = guardReviewer(chosen)
+    if (!selection) return
+    confirmedBy = selection.confirmedBy
+  }
+  const body = { ...verdict.payload }
+  if (body.reason === null) delete body.reason
+  if (confirmedBy !== null) body.confirmedBy = confirmedBy
+  statusActionSaving.value = true
+  try {
+    await request.post(`/admin/merchants/${statusActionForm.value.storeId}/store-status`, body)
+    ElMessage.success('店铺状态操作已完成并写入审计')
+    statusActionDialogVisible.value = false
+    loadMerchants()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '店铺状态操作失败')
+  } finally {
+    statusActionSaving.value = false
+  }
+}
+
+// O6 状态审计时间线：只读展示，动作/原因码/复核方式由共享规则模块翻译
+const openAuditDrawer = async (row) => {
+  auditStoreName.value = row.storeName || ''
+  auditItems.value = []
+  auditDrawerVisible.value = true
+  auditLoading.value = true
+  try {
+    const res = await request.get(`/admin/merchants/${row.id}/store-status-audits`)
+    auditItems.value = (Array.isArray(res.data) ? res.data : [])
+      .map(item => ({ ...item, view: auditView(item) }))
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '状态审计加载失败')
+  } finally {
+    auditLoading.value = false
+  }
+}
+
 const handleSaveChannel = async () => {
   channelSaving.value = true
   try {
@@ -550,5 +724,11 @@ onMounted(() => {
 
 .review-alert {
   margin: 4px 0 8px;
+}
+
+.audit-line {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.6;
 }
 </style>

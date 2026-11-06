@@ -69,6 +69,8 @@ class MerchantSettlementServiceTest {
     private final MerchantCollectionStatusAuditMapper auditMapper =
             mock(MerchantCollectionStatusAuditMapper.class);
     private final SysUserMapper userMapper = mock(SysUserMapper.class);
+    private final com.shop.b2b2c.mapper.MerchantStoreMapper storeMapper =
+            mock(com.shop.b2b2c.mapper.MerchantStoreMapper.class);
     private final ServiceFeeSnapshotService snapshotService = new ServiceFeeSnapshotService();
 
     /** 用例里的复核人 8L 统一按“启用 SUPERADMIN”返回，聚焦结算与账本规则本身。 */
@@ -96,7 +98,7 @@ class MerchantSettlementServiceTest {
 
     private SettlementService settlementService(boolean dualApprovalRequired) {
         return new SettlementService(batchMapper, itemMapper, ledgerMapper, orderMapper, refundMapper,
-                eventMapper, snapshotService, guard(dualApprovalRequired));
+                eventMapper, snapshotService, guard(dualApprovalRequired), storeMapper);
     }
 
     @Test

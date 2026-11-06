@@ -27,7 +27,9 @@ class MerchantStoreUpdateTest {
     private MerchantController controller(MerchantStoreMapper stores) {
         return new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class),
-                new com.shop.b2b2c.service.MerchantStoreGuard(stores));
+                new com.shop.b2b2c.service.MerchantStoreGuard(stores),
+                mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
+                mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));
     }
 
     @Test
@@ -95,20 +97,27 @@ class MerchantStoreUpdateTest {
     void zeroAffectedRowsForSameValuesAreAllowedWithoutStaleEntitySave() {
         var stores = mock(MerchantStoreMapper.class);
         var feePolicy = mock(MerchantFeePolicyService.class);
-        when(stores.findById(1L)).thenReturn(Optional.of(new MerchantStore()));
+        var statusService = mock(com.shop.b2b2c.service.MerchantStoreStatusService.class);
+        // O6：打烊(2)->恢复营业(1)经状态机服务处理，控制器不再直接定向改状态列。
+        var store = new MerchantStore();
+        store.setStatus(2);
+        when(stores.findById(1L)).thenReturn(Optional.of(store));
         var c = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy,
-                new com.shop.b2b2c.service.MerchantStoreGuard(stores));
-        assertEquals(200, c.updateStatus(1L, 1).getCode());
+                new com.shop.b2b2c.service.MerchantStoreGuard(stores),
+                statusService,
+                mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));
         try (var security = mockStatic(SecurityUtils.class)) {
-            // G31 起调价操作人取自服务端会话；本用例聚焦定向更新，显式注入登录ID。
+            // G31 起操作人取自服务端会话；状态机写审计同样需要登录ID。
             security.when(SecurityUtils::getCurrentUserId).thenReturn(2L);
+            assertEquals(200, c.updateStatus(1L, 1).getCode());
+            // G31 起调价操作人取自服务端会话；本用例聚焦定向更新，显式注入登录ID。
             assertEquals(200, c.updateCommission(1L, new BigDecimal("3.00"), "测试费率调整", 2L).getCode());
         }
         var channel = new MerchantController.PaymentChannelConfigDTO(); channel.setPaymentChannelType("C");
         channel.setCustomPayQrcode("");
         assertEquals(200, c.updatePaymentChannel(1L, channel).getCode());
-        verify(stores).updateStatusOnly(1L, 1);
+        verify(statusService).applyAction(eq(1L), eq("RESUME"), isNull(), isNull(), eq(2L), isNull());
         verify(stores).updatePaymentChannelOnly(1L, "C", "");
         // T39：费率调整统一走政策服务，控制器不得再用旧实体回写整行或直接改展示镜像。
         verify(feePolicy).adjust(eq(1L), any(MerchantFeePolicyService.AdjustForm.class), any());
@@ -116,13 +125,16 @@ class MerchantStoreUpdateTest {
         verify(stores, never()).save(any());
     }
     @Test
-    void persistenceFailurePropagatesInsteadOfRetryingWithWholeEntity() {
+    void directFreezeViaLegacyStatusEndpointIsRejectedWithoutPersistence() {
         var stores = mock(MerchantStoreMapper.class);
-        when(stores.findById(1L)).thenReturn(Optional.of(new MerchantStore()));
-        var failure = new org.springframework.dao.DataAccessResourceFailureException("isolated persistence failure");
-        when(stores.updateStatusOnly(1L, 3)).thenThrow(failure);
-        assertSame(failure, assertThrows(org.springframework.dao.DataAccessResourceFailureException.class,
-                () -> controller(stores).updateStatus(1L, 3)));
+        var store = new MerchantStore();
+        store.setStatus(1);
+        when(stores.findById(1L)).thenReturn(Optional.of(store));
+        // O6：旧接口不再支持直接置 3（冻结必须走 /store-status 带原因码+双人/审计），直接 400 且不做任何持久化。
+        var ex = assertThrows(com.shop.b2b2c.common.BusinessException.class,
+                () -> controller(stores).updateStatus(1L, 3));
+        org.junit.jupiter.api.Assertions.assertEquals(400, ex.getCode());
+        verify(stores, never()).updateStatusOnly(any(), any());
         verify(stores, never()).save(any());
     }
 

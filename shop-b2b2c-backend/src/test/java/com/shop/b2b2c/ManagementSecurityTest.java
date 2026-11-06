@@ -32,7 +32,9 @@ class ManagementSecurityTest {
         var feePolicy = mock(MerchantFeePolicyService.class);
         var controller = new MerchantController(store, account, user,
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy,
-                new com.shop.b2b2c.service.MerchantStoreGuard(store));
+                new com.shop.b2b2c.service.MerchantStoreGuard(store),
+                mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
+                mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));
         assertThrows(BusinessException.class, () -> controller.updateCommission(1L,
                 value == null ? null : new BigDecimal(value), "测试费率调整", 3L));
         verifyNoInteractions(store, account, user, feePolicy);
@@ -50,7 +52,9 @@ class ManagementSecurityTest {
             security.when(SecurityUtils::getCurrentUserId).thenReturn(3L);
             new MerchantController(store, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                     mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy,
-                    new com.shop.b2b2c.service.MerchantStoreGuard(store))
+                    new com.shop.b2b2c.service.MerchantStoreGuard(store),
+                    mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
+                    mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class))
                     .updateCommission(1L, new BigDecimal(value), "测试费率调整", 3L);
         }
         verify(feePolicy).adjust(eq(1L), argThat(form -> form.getRateBps() != null
@@ -86,7 +90,9 @@ class ManagementSecurityTest {
         var stores = mock(MerchantStoreMapper.class);
         var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class),
-                new com.shop.b2b2c.service.MerchantStoreGuard(stores));
+                new com.shop.b2b2c.service.MerchantStoreGuard(stores),
+                mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
+                mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));
         var fee = new MerchantController.ServiceFeeConfigDTO(); fee.setMonthlyFee(new BigDecimal("-1"));
         assertThrows(BusinessException.class, () -> controller.updateServiceFee(1L, fee));
         fee.setMonthlyFee(BigDecimal.ZERO); fee.setFeeStatus("invented");
@@ -106,7 +112,9 @@ class ManagementSecurityTest {
         var users = mock(SysUserMapper.class);
         var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), users,
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class),
-                new com.shop.b2b2c.service.MerchantStoreGuard(stores));
+                new com.shop.b2b2c.service.MerchantStoreGuard(stores),
+                mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
+                mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));
         var dto = new MerchantController.CreateMerchantDTO();
         dto.setStoreCode("test"); dto.setStoreName("test"); dto.setOwnerName("owner");
         dto.setIdCardNumber("identity"); dto.setContactPhone("phone"); dto.setAdminUsername("admin");
@@ -144,7 +152,9 @@ class ManagementSecurityTest {
         when(stores.findById(5L)).thenReturn(java.util.Optional.of(provisioned));
         var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                 onboarding, mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class),
-                new com.shop.b2b2c.service.MerchantStoreGuard(stores));
+                new com.shop.b2b2c.service.MerchantStoreGuard(stores),
+                mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
+                mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));
         var dto = new MerchantController.CreateMerchantDTO();
         dto.setStoreCode("test"); dto.setStoreName("test"); dto.setOwnerName("owner");
         dto.setIdCardNumber("identity"); dto.setContactPhone("phone"); dto.setAdminUsername("admin");

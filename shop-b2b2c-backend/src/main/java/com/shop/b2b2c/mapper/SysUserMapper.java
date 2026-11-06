@@ -32,4 +32,12 @@ public interface SysUserMapper extends BaseMapper<SysUser> {
         return Optional.ofNullable(selectOne(new LambdaQueryWrapper<SysUser>()
                 .eq(SysUser::getUsername, username)));
     }
+
+    /**
+     * O6 关店副作用：停用店铺全部商家账号（店长+员工），平台超管不受影响（merchant_id 为 NULL）。
+     * 只停用不删除，账号与审计数据保留可追溯。
+     */
+    @org.apache.ibatis.annotations.Update("UPDATE sys_user SET is_active = 0 "
+            + "WHERE merchant_id = #{merchantId} AND is_active = 1")
+    int disableByMerchantId(@org.apache.ibatis.annotations.Param("merchantId") Long merchantId);
 }

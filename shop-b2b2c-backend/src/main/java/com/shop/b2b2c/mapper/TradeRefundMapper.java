@@ -155,4 +155,11 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
     java.util.List<TradeRefund> findSuccessfulOrderRefundsByPeriod(@Param("merchantId") Long merchantId,
                                                                     @Param("from") java.time.LocalDateTime from,
                                                                     @Param("to") java.time.LocalDateTime to);
+
+    /**
+     * O6 关店前置条件：统计店铺处理中的退款单；冻结/关店不阻断既有退款履约，但关店前必须清零。
+     */
+    @org.apache.ibatis.annotations.Select("SELECT COUNT(*) FROM trade_refund WHERE merchant_id = #{merchantId} "
+            + "AND status = 'PROCESSING'")
+    int countProcessingByMerchantId(@Param("merchantId") Long merchantId);
 }

@@ -8,6 +8,8 @@
  *  4. 明细金额来自订单级快照；旧订单无快照时以 commission_amount 兜底，并在文档标注为历史订单口径。
  *  5. 财务基线 18：确认接口的复核人由 FinanceApprovalGuard 判定，严格缺复核人 428、同人 403；
  *     宽松模式未传按操作人处理并落 SAME_OPERATOR；prepared_by 仍独立记录制单人。
+ *  6. O6 结算 HOLD：店铺冻结（merchant_store.status=3）期间禁止确认批次（409），
+ *     草稿可继续生成但不得进入资金确认；关店前置条件由 MerchantStoreStatusService 校验。
  */
 package com.shop.b2b2c.service;
 
@@ -47,6 +49,7 @@ public class SettlementService {
     private final PaymentEventMapper paymentEventMapper;
     private final ServiceFeeSnapshotService snapshotService;
     private final FinanceApprovalGuard approvalGuard;
+    private final com.shop.b2b2c.mapper.MerchantStoreMapper storeMapper;
 
     /**
      * 生成或重算某店某月结算草稿。已确认批次直接拒绝，避免改写历史账单。
@@ -162,6 +165,11 @@ public class SettlementService {
         }
         if (!"DRAFT".equals(batch.getStatus())) {
             throw new BusinessException(409, "结算批次已确认");
+        }
+        // O6 结算 HOLD：店铺冻结期间暂停批次确认，解封后恢复；草稿生成不受限。
+        com.shop.b2b2c.entity.MerchantStore store = storeMapper.selectById(batch.getMerchantId());
+        if (store != null && Integer.valueOf(3).equals(store.getStatus())) {
+            throw new BusinessException(409, "店铺已冻结，结算批次暂停确认（HOLD），解封后恢复");
         }
         // 财务基线 18：双人复核开关打开时必须由操作人显式选择不同复核人；缺复核人返回 428，同人 403。
         // 开发/试点关闭时允许同人并落 SAME_OPERATOR；prepared_by 仍独立记录制单人。

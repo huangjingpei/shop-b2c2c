@@ -36,6 +36,21 @@ CREATE TABLE IF NOT EXISTS `merchant_store` (
   PRIMARY KEY (`id`)
 );
 
+-- 1a. 店铺状态流转审计（O6）
+CREATE TABLE IF NOT EXISTS merchant_store_status_audit (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT NOT NULL,
+  action VARCHAR(16) NOT NULL,
+  from_status TINYINT NOT NULL,
+  to_status TINYINT NOT NULL,
+  reason_code VARCHAR(32) NOT NULL,
+  reason VARCHAR(512) NULL,
+  operator_id BIGINT NULL,
+  confirmed_by BIGINT NULL,
+  approval_mode VARCHAR(16) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 2. 微信/支付宝官方二级商户进件账户表
 CREATE TABLE IF NOT EXISTS `merchant_payment_account` (
   `id` BIGINT  NOT NULL AUTO_INCREMENT,

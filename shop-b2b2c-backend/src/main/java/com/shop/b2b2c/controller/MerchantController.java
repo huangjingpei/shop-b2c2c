@@ -1,7 +1,7 @@
 /*
  * 文件：MerchantController.java
  * 用途：平台商户配置及商家本店资料接口。
- * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效。T39 起超管开通也必须走入驻申请与审核留痕，阶段一收款账户写入 merchant_settlement_account，不再生成 SUB+时间戳/PASSED 假进件值。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。Q13-A：员工资料读取走白名单，身份证/银行卡默认脱敏，资料修改仅店长。O4：应急开通建店后店铺为 status=0 待开通（协议签齐自动开通或超管 open 兜底）；商家资料修改等写操作先经 MerchantStoreGuard.requireOpen 闸门。
+ * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效。T39 起超管开通也必须走入驻申请与审核留痕，阶段一收款账户写入 merchant_settlement_account，不再生成 SUB+时间戳/PASSED 假进件值。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。Q13-A：员工资料读取走白名单，身份证/银行卡默认脱敏，资料修改仅店长。O4：应急开通建店后店铺为 status=0 待开通（协议签齐自动开通或超管 open 兜底）；商家资料修改等写操作先经 MerchantStoreGuard.requireOpen 闸门。O6：冻结/解封/关店/注销走 POST /store-status（MerchantStoreStatusService 状态机，CAS+审计）；旧 PUT /status 仅保留打烊/恢复开关，不再支持直接置 3。
  */
 package com.shop.b2b2c.controller;
 
@@ -48,6 +48,40 @@ public class MerchantController {
     private final MerchantFeePolicyService feePolicyService;
     /** O4 商家写接口营业状态闸门；统一收口在 MerchantStoreGuard，不在各接口各写一套。 */
     private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
+    /** O6 店铺状态机：冻结/解封/关店/注销统一入口（CAS + 审计同事务）。 */
+    private final com.shop.b2b2c.service.MerchantStoreStatusService storeStatusService;
+    private final com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper storeStatusAuditMapper;
+
+    @Data
+    public static class StoreStatusActionDTO {
+        /** PAUSE/RESUME/FREEZE/UNFREEZE/CLOSE/CANCEL。 */
+        private String action;
+        /** 冻结/解封/关店/注销必填（附录 A.5 字典）；打烊/恢复可空。 */
+        private String reasonCode;
+        private String reason;
+        /** 解封必填（双人复核）；关店/注销传入时强制换人复核。 */
+        private Long confirmedBy;
+    }
+
+    @Operation(summary = "【超管】店铺状态操作：打烊/恢复/冻结/解封(双人)/关店/注销（全审计）")
+    @PostMapping("/api/v1/admin/merchants/{id}/store-status")
+    public R<java.util.Map<String, Object>> applyStoreStatus(@PathVariable Long id,
+                                                             @RequestBody StoreStatusActionDTO dto) {
+        if (dto == null) {
+            throw new BusinessException(400, "店铺状态操作不能为空");
+        }
+        return R.ok(storeStatusService.applyAction(id, dto.getAction(), dto.getReasonCode(),
+                dto.getReason(), SecurityUtils.getCurrentUserId(), dto.getConfirmedBy()));
+    }
+
+    @Operation(summary = "【超管】店铺状态流转审计时间线")
+    @GetMapping("/api/v1/admin/merchants/{id}/store-status-audits")
+    public R<List<com.shop.b2b2c.entity.MerchantStoreStatusAudit>> storeStatusAudits(@PathVariable Long id) {
+        if (storeMapper.selectById(id) == null) {
+            throw new BusinessException(404, "店铺不存在");
+        }
+        return R.ok(storeStatusAuditMapper.findByMerchantId(id));
+    }
 
     // ==========================================
     // 平台超级管理员视角 API (/api/v1/admin/merchants)
@@ -165,13 +199,29 @@ public class MerchantController {
         return R.ok("商户开通成功", store);
     }
 
-    @Operation(summary = "【超管】变更店铺营业状态 (打烊/封禁/营业)")
+    /**
+     * 旧版直接改状态接口：O6 起仅保留打烊(2)/恢复营业(1)开关并改走状态机写审计；
+     * 冻结(3)/解封必须改用 POST /store-status 携带原因码（解封需双人复核），
+     * 待开通(0)无对应动作。已注销(4)终态只能经关店/注销流程进入，本接口不接受。
+     */
+    @Operation(summary = "【超管】变更店铺营业状态（仅打烊/恢复；冻结解封请用 /store-status）")
     @PutMapping("/api/v1/admin/merchants/{id}/status")
-    @Transactional(rollbackFor = Exception.class)
     public R<Void> updateStatus(@PathVariable Long id, @RequestParam Integer status) {
         ManagementGuards.status(status);
-        requireStore(id);
-        storeMapper.updateStatusOnly(id, status);
+        if (id == null || id <= 0) throw new BusinessException(400, "店铺编号不合法");
+        MerchantStore store = storeMapper.findById(id)
+                .orElseThrow(() -> new BusinessException(404, "店铺不存在"));
+        Integer current = store.getStatus();
+        String action;
+        if (Integer.valueOf(2).equals(status) && Integer.valueOf(1).equals(current)) {
+            action = com.shop.b2b2c.service.MerchantStoreStatusService.ACTION_PAUSE;
+        } else if (Integer.valueOf(1).equals(status) && Integer.valueOf(2).equals(current)) {
+            action = com.shop.b2b2c.service.MerchantStoreStatusService.ACTION_RESUME;
+        } else {
+            throw new BusinessException(400,
+                    "该接口仅支持打烊/恢复切换；冻结/解封/注销请使用 /store-status 并携带原因码");
+        }
+        storeStatusService.applyAction(id, action, null, null, SecurityUtils.getCurrentUserId(), null);
         return R.ok("状态更新成功", null);
     }
 

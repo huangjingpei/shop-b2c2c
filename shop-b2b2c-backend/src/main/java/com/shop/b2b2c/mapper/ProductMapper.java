@@ -85,4 +85,11 @@ public interface ProductMapper extends BaseMapper<Product> {
                 .eq(Product::getMerchantId, merchantId)
                 .eq(Product::getStatus, status));
     }
+
+    /** O6 关店前置条件：统计店铺在售商品数；>0 时禁止关店（须先全部下架）。 */
+    default long countByMerchantIdAndStatus(Long merchantId, Integer status) {
+        return selectCount(new LambdaQueryWrapper<Product>()
+                .eq(Product::getMerchantId, merchantId)
+                .eq(Product::getStatus, status));
+    }
 }

@@ -45,4 +45,9 @@ public interface MerchantSettlementBatchMapper extends BaseMapper<MerchantSettle
                 .eq(MerchantSettlementBatch::getStatus, "CONFIRMED")
                 .orderByAsc(MerchantSettlementBatch::getId));
     }
+
+    /** O6 关店前置条件：存在未确认批次（DRAFT）或欠费未结清（arrears_amount>0）时禁止关店。 */
+    @Select("SELECT COUNT(*) FROM merchant_settlement_batch WHERE merchant_id = #{merchantId} "
+            + "AND (status = 'DRAFT' OR arrears_amount > 0)")
+    int countBlockingByMerchantId(@Param("merchantId") Long merchantId);
 }

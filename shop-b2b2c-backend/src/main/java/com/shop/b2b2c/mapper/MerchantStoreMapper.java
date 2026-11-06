@@ -31,6 +31,16 @@ public interface MerchantStoreMapper extends BaseMapper<MerchantStore> {
     @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET status = 1 WHERE id = #{id} AND status = 0")
     int openIfPending(@org.apache.ibatis.annotations.Param("id") Long id);
 
+    /**
+     * O6 状态机 CAS：仅当当前状态在 expected 集合内才迁移到 newStatus；
+     * 影响 0 行表示并发或非法流转，调用方必须抛 409，禁止据此静默成功。
+     */
+    @org.apache.ibatis.annotations.Update("<script>UPDATE merchant_store SET status = #{newStatus} WHERE id = #{id} AND status IN "
+            + "<foreach collection='expected' item='s' open='(' separator=',' close=')'>#{s}</foreach></script>")
+    int updateStatusCas(@org.apache.ibatis.annotations.Param("id") Long id,
+                        @org.apache.ibatis.annotations.Param("expected") java.util.List<Integer> expected,
+                        @org.apache.ibatis.annotations.Param("newStatus") Integer newStatus);
+
     @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET commission_rate = #{rate} WHERE id = #{id}")
     int updateCommissionOnly(@org.apache.ibatis.annotations.Param("id") Long id,
                              @org.apache.ibatis.annotations.Param("rate") java.math.BigDecimal rate);

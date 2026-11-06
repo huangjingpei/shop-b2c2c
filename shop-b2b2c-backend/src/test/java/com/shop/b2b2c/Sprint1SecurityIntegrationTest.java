@@ -135,8 +135,18 @@ class Sprint1SecurityIntegrationTest {
         var onlyStatus = new com.shop.b2b2c.controller.MerchantController.ServiceFeeConfigDTO();
         onlyStatus.setFeeStatus("TRIAL");
         // T39：佣金已迁移到独立费率政策表，不再用旧实体回写 merchant_store；本用例只覆盖仍写店铺列的四条路径。
+        // O6：状态写入收口到状态机（打烊 1->2 走 updateStatusCas），旧直置冻结(3)入口已移除；
+        // 过期写被并发提交抢先后 CAS 影响 0 行返回 409，正是本用例要验证的防覆盖结果。
+        Runnable pauseStore = () -> {
+            try (var security = mockStatic(SecurityUtils.class)) {
+                security.when(SecurityUtils::getCurrentUserId).thenReturn(2L);
+                merchantController.updateStatus(1L, 2);
+            } catch (BusinessException conflict) {
+                assertEquals(409, conflict.getCode(), "过期的状态写入只能因 CAS 冲突失败");
+            }
+        };
         List<Runnable> stale = List.of(
-                () -> merchantController.updateStatus(1L, 3),
+                pauseStore,
                 () -> merchantController.updateServiceFee(1L, fee),
                 () -> merchantController.updatePaymentChannel(1L, channel),
                 () -> {
@@ -151,21 +161,21 @@ class Sprint1SecurityIntegrationTest {
                 },
                 () -> merchantController.updateServiceFee(1L, fee));
         List<Runnable> committed = List.of(
-                () -> merchantController.updateStatus(1L, 3),
+                pauseStore,
                 () -> merchantController.updatePaymentChannel(1L, channel),
                 () -> merchantController.updateServiceFee(1L, fee),
-                () -> merchantController.updateStatus(1L, 3),
+                pauseStore,
                 () -> merchantController.updateServiceFee(1L, onlyStatus));
         for (int i = 0; i < stale.size(); i++) {
             jdbc.update("UPDATE merchant_store SET status=1,commission_rate=3,monthly_fee=0,fee_status='NORMAL',payment_channel_type='C',notice=NULL WHERE id=1");
             interleaveStoreWrites(stale.get(i), committed.get(i));
             var result = stores.findById(1L).orElseThrow();
             if (i == 0) {
-                assertEquals(3, result.getStatus());
+                assertEquals(2, result.getStatus());
                 // 佣金展示镜像独立于其它配置更新，不能被状态写入带回旧值。
                 assertEquals(0, new java.math.BigDecimal("3.00").compareTo(result.getCommissionRate()));
             } else if (i == 3) {
-                assertEquals(3, result.getStatus()); assertEquals("new notice", result.getNotice());
+                assertEquals(2, result.getStatus()); assertEquals("new notice", result.getNotice());
                 assertNull(stores.findById(2L).orElseThrow().getNotice());
             } else {
                 assertEquals(0, new java.math.BigDecimal("29.00").compareTo(result.getMonthlyFee()));
@@ -1595,10 +1605,13 @@ class Sprint1SecurityIntegrationTest {
         jdbc.update("UPDATE merchant_store SET status=1, commission_rate=3.00, notice='old notice' WHERE id=1");
 
         // 2. 超管将店铺封禁 (status=3) 并调高费率至 5.00%（调高次日生效，展示镜像今日仍为 3.00%）
+        // O6：冻结改走 /store-status 携带原因码（全审计），旧 PUT /status 直置冻结已移除。
         authUser("SUPERADMIN", null);
         String adminToken = loginToken();
-        mvc.perform(put("/api/v1/admin/merchants/1/status?status=3")
-                        .header("Authorization", "Bearer " + adminToken))
+        mvc.perform(post("/api/v1/admin/merchants/1/store-status")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json")
+                        .content("{\"action\":\"FREEZE\",\"reasonCode\":\"VIOLATION\",\"reason\":\"测试封禁\"}"))
                 .andExpect(status().isOk());
         mvc.perform(put("/api/v1/admin/merchants/1/commission?rate=5.00")
                         .header("Authorization", "Bearer " + adminToken))
@@ -1621,12 +1634,15 @@ class Sprint1SecurityIntegrationTest {
         assertEquals(3, banned.getStatus(), "O4: 拒绝路径不得触碰店铺状态");
 
         // 4. 超管解封恢复营业 (status=1) 后，商家可正常更新展示公告与电话
+        // O6：解封走 /store-status 携带原因码（默认宽松模式 SAME_OPERATOR 放行；严格模式需 confirmedBy 双人复核）。
         cn.dev33.satoken.stp.StpUtil.logout(200L);
         jdbc.update("DELETE FROM sys_user WHERE id=200");
         authUser("SUPERADMIN", null);
         String reopenToken = loginToken();
-        mvc.perform(put("/api/v1/admin/merchants/1/status?status=1")
-                        .header("Authorization", "Bearer " + reopenToken))
+        mvc.perform(post("/api/v1/admin/merchants/1/store-status")
+                        .header("Authorization", "Bearer " + reopenToken)
+                        .contentType("application/json")
+                        .content("{\"action\":\"UNFREEZE\",\"reasonCode\":\"MERCHANT_REQUEST\",\"reason\":\"整改完成\"}"))
                 .andExpect(status().isOk());
         cn.dev33.satoken.stp.StpUtil.logout(200L);
         jdbc.update("DELETE FROM sys_user WHERE id=200");
