@@ -13,6 +13,9 @@
       <el-button type="primary" icon="Plus" @click="openDialog">新增/审批开通商户</el-button>
     </div>
 
+    <el-alert v-if="reviewerPolicy.singleAdminMode" :title="reviewerPolicy.singleAdminNotice"
+      type="warning" :closable="false" show-icon class="policy-alert" />
+
     <el-card shadow="never" class="table-card">
       <el-table :data="merchants" stripe style="width: 100%" v-loading="loading">
         <el-table-column prop="id" label="ID" width="60" />

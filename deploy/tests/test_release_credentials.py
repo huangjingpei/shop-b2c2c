@@ -1,6 +1,7 @@
 # 文件：test_release_credentials.py
 # 用途：生产发布脚本凭据契约用例，断言两云 .env 模板包含必填键与前台地址、部署脚本缺失即终止、
-#       仓库脚本不再回退真实Redis/数据库/管理员默认口令，且结构基线不含演示账号。
+#       财务双人复核开关缺失/非法值被拒绝（G36）、仓库脚本不再回退真实Redis/数据库/管理员默认口令，
+#       且结构基线不含演示账号。
 # 维护注意：只读取仓库文本，不执行部署、不连接MySQL/Nginx；真实发布与管理员首登仍由环境负责人在Linux验证。
 import unittest
 from pathlib import Path
@@ -87,11 +88,37 @@ class CloudDeployCredentialContractTest(unittest.TestCase):
                     "SPRING_DATASOURCE_USERNAME", "SPRING_DATASOURCE_PASSWORD",
                     "REDIS_PASS", "APP_FRONTEND_STOREFRONT_URL",
                     "BOOTSTRAP_ADMIN_USERNAME", "BOOTSTRAP_ADMIN_PASSWORD",
+                    "FINANCE_DUAL_APPROVAL_REQUIRED",
                     cfg["server_name_key"],
                 ]:
                     self.assertIn(key, script)
                 self.assertIn(".env 缺少 ${key}", script)
                 self.assertIn("for key in", script)
+
+    def test_deploy_script_requires_finance_dual_approval_key(self):
+        """缺键即中止：该键必须在必填集合内，不能靠 application.yml 的 false 默认静默放行。"""
+        for cloud, cfg in CLOUDS.items():
+            with self.subTest(cloud=cloud):
+                script = (cfg["server_dir"] / "04-deploy.sh").read_text(encoding="utf-8")
+                required_block = script.split("REQUIRED_ENV_KEYS=(", 1)[1].split(")", 1)[0]
+                self.assertIn("FINANCE_DUAL_APPROVAL_REQUIRED", required_block)
+                self.assertIn('[[ -n "${!key:-}" ]] || die ".env 缺少 ${key}', script)
+
+    def test_deploy_script_rejects_non_boolean_finance_switch(self):
+        """非法值拒绝：只接受 true/false，yes/1/空值等拼写不得被当作关闭或开启。"""
+        for cloud, cfg in CLOUDS.items():
+            with self.subTest(cloud=cloud):
+                script = (cfg["server_dir"] / "04-deploy.sh").read_text(encoding="utf-8")
+                self.assertIn('case "${FINANCE_DUAL_APPROVAL_REQUIRED}" in', script)
+                self.assertIn("true|false)", script)
+                self.assertIn("只接受 true 或 false", script)
+                self.assertNotIn("FINANCE_DUAL_APPROVAL_REQUIRED:-", script)
+
+    def test_env_examples_enable_finance_dual_approval(self):
+        for cloud in CLOUDS:
+            with self.subTest(cloud=cloud):
+                example = (DEPLOY_DIR / cloud / "env.example.sh").read_text(encoding="utf-8")
+                self.assertIn('FINANCE_DUAL_APPROVAL_REQUIRED="true"', example)
 
     def test_deploy_script_has_no_credential_default_fallbacks(self):
         for cloud, cfg in CLOUDS.items():

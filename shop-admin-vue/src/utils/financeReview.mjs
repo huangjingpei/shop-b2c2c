@@ -4,10 +4,14 @@
  * 维护注意：
  *  1. 本模块只做前端提示与参数校验，最终是否允许同人/缺复核人由后端 FinanceApprovalGuard 判定，不得在前端绕过。
  *  2. 复核人候选必须排除当前操作人；严格模式没有第二个账号时给出“需至少分配两个财务账号”的明确提示。
- *  3. 宽松模式允许不选复核人，但请求会按当前操作人记录同人复核（SAME_OPERATOR），仅限开发/试点。
+ *  3. 宽松模式允许不选复核人，但请求会按当前操作人记录同人复核（SAME_OPERATOR），仅限开发/试点；
+ *     页面必须显式展示“当前为单管理员模式”，不能只靠浏览器外日志发现控制被关闭。
  *  4. id 兼容后端 Long 的字符串序列化，比较一律用 String，不要用 === 直接比较数字与字符串。
  */
 export const NO_SECOND_ACCOUNT_MESSAGE = '需至少分配两个财务账号后才能执行双人复核'
+
+/** 开关关闭时的管理端显式提示：与后端 WARN 同一口径，避免职责分离控制被静默取消。 */
+export const SINGLE_ADMIN_MODE_MESSAGE = '当前为单管理员模式：双人复核开关未开启，确认操作将按当前操作人记录同人复核（仅开发/试点）'
 
 export const REVIEWER_ERROR = Object.freeze({
   NO_SECOND_ACCOUNT: 'NO_SECOND_ACCOUNT',
@@ -40,6 +44,8 @@ export function reviewerState({ dualApprovalRequired, reviewers, currentUserId }
     candidates,
     blocked: strict && candidates.length === 0,
     hasSecondAccount: candidates.length > 0,
+    singleAdminMode: !strict,
+    singleAdminNotice: strict ? '' : SINGLE_ADMIN_MODE_MESSAGE,
     notice: candidates.length === 0 ? NO_SECOND_ACCOUNT_MESSAGE : ''
   }
 }

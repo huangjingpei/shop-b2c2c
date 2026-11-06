@@ -3,7 +3,7 @@
  * 用途：财务双人复核开关（财务基线 18）统一判定：调价、结算确认、充值确认、开店初始费率共用同一口径。
  * 维护注意：
  *  1. 开关 shop.finance.dual-approval-required 由 FINANCE_DUAL_APPROVAL_REQUIRED 注入；开发/试点默认 false，生产部署脚本显式 true。
- *  2. 关闭时允许同人操作，但调用方必须把返回的 SAME_OPERATOR 持久化到业务记录，并已由本类写 WARN 审计日志。
+ *  2. 关闭时允许同人操作，但调用方必须把返回的 SAME_OPERATOR 持久化到业务记录，并已由本类对每次资金操作写 WARN。
  *  3. 打开时未选复核人返回 428（明确缺参，不再是泛化 403），同人返回 403；不同人始终放行并返回 DUAL_APPROVAL。
  *  4. 调用方必须通过 resolveReviewer 取得实际落库的复核人：未传时按操作人处理（仅开关关闭时允许）。
  *  5. 不同人的复核人必须在服务端校验：启用状态 + SUPERADMIN；禁用、非超管、不存在一律 403，不能只信任前端候选列表。
@@ -54,14 +54,17 @@ public class FinanceApprovalGuard {
         if (operatorId == null) {
             throw new BusinessException(400, "必须记录操作人");
         }
+        if (!dualApprovalRequired) {
+            // 开关关闭即职责分离控制失效：每次真实资金操作都落显式 WARN，不论是否传复核人。
+            log.warn("财务双人复核未开启（单管理员模式） action={} operatorId={} reviewerId={} hint=仅限开发/试点，生产必须设置 FINANCE_DUAL_APPROVAL_REQUIRED=true",
+                    action, operatorId, reviewerId);
+        }
         if (reviewerId == null) {
             if (dualApprovalRequired) {
                 // 生产严格模式：缺复核人是缺参，不是同人，必须返回可区分的业务码供前端提示。
                 throw new BusinessException(CODE_MISSING_REVIEWER,
                         action + "：已开启双人复核，必须选择复核人（confirmedBy）");
             }
-            log.warn("财务缺少复核人 action={} operatorId={} mode={} hint=未传按操作人处理，生产禁止单管理员模式",
-                    action, operatorId, MODE_SAME_OPERATOR);
             return MODE_SAME_OPERATOR;
         }
         if (!operatorId.equals(reviewerId)) {
@@ -70,8 +73,6 @@ public class FinanceApprovalGuard {
         if (dualApprovalRequired) {
             throw new BusinessException(403, action + "：操作人与复核人不能为同一人（已开启双人复核）");
         }
-        log.warn("财务同人复核 action={} operatorId={} mode={} hint=生产环境禁止单管理员模式",
-                action, operatorId, MODE_SAME_OPERATOR);
         return MODE_SAME_OPERATOR;
     }
 

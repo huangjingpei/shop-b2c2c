@@ -61,11 +61,18 @@ REQUIRED_ENV_KEYS=(
   SPRING_DATASOURCE_USERNAME SPRING_DATASOURCE_PASSWORD
   REDIS_PASS APP_FRONTEND_STOREFRONT_URL
   BOOTSTRAP_ADMIN_USERNAME BOOTSTRAP_ADMIN_PASSWORD
+  FINANCE_DUAL_APPROVAL_REQUIRED
   SHOP_SERVER_NAME
 )
 for key in "${REQUIRED_ENV_KEYS[@]}"; do
   [[ -n "${!key:-}" ]] || die ".env 缺少 ${key}，拒绝回退默认值或空口令"
 done
+
+# 财务双人复核开关只接受 true/false：拼写错误或空值不得被当作“关闭”放行。
+case "${FINANCE_DUAL_APPROVAL_REQUIRED}" in
+  true|false) ;;
+  *) die ".env 的 FINANCE_DUAL_APPROVAL_REQUIRED 只接受 true 或 false，当前值非法" ;;
+esac
 
 if [[ "${BOOTSTRAP_ADMIN_PASSWORD}" == "admin123" ]]; then
   die "BOOTSTRAP_ADMIN_PASSWORD 不得使用演示默认口令 admin123"

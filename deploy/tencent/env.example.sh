@@ -39,6 +39,10 @@ REDIS_PORT="6379"
 REDIS_PASS=""
 REDIS_DB="2"
 
+# ---------------- 财务双人复核（生产必须 true；04-deploy.sh 缺键即中止，只接受 true/false） ----------------
+# 开发/试点 false 时同人复核落 SAME_OPERATOR 并写 WARN，禁止用于生产。
+FINANCE_DUAL_APPROVAL_REQUIRED="true"
+
 # ---------------- JVM 内存调优 ----------------
 JAVA_XMX="512m"
 

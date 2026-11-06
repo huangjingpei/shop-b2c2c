@@ -859,7 +859,7 @@
 | 部署·腾讯云状态脚本 | [06-status.sh](file:///e:/shop-b2b2c/deploy/tencent/server/06-status.sh) 直连与代理仍探 `/api/v1/auth/health`，与阿里云状态脚本、两云 `04-deploy.sh` 的 `/api/v1/auth/ready` 不一致；[deploy.sh](file:///e:/shop-b2b2c/deploy/tencent/deploy.sh#L199) 完成提示同 | 过期用件 | 一般（运维误判就绪状态） | 上线前必修 | **已修**：统一为 `/api/v1/auth/ready`，标题改“就绪探测” |
 | 部署·阿里云状态脚本 | [06-status.sh](file:///e:/shop-b2b2c/deploy/aliyun/server/06-status.sh#L39-L49) 硬编码 `Host: mall.graddu.com`，且 B 端后台探 `/` 而非实际入口 `/console/` | 过期用件 | 一般（换域名/配置后探测失真） | 上线前必修 | **已修**：改用 `${GMALL_SERVER_NAME:-mall.graddu.com}`，后台探 `/console/` |
 | 前端·公开列表筛选 | [publicCatalog.mjs](file:///e:/shop-b2b2c/shop-storefront-vue/src/utils/publicCatalog.mjs) 的 `normalizeCategoryId` 用 `Number()` 校验类目 Long，超过 2^53 会静默丢筛选条件；现网类目 ID 很小 | 整洁性 | 一般 | 可登记 | 不动，登记为缺口 G35 |
-| 部署·财务复核开关校验 | 两云 `02-init-infra.sh` 生成的 `.env` 已固定 `FINANCE_DUAL_APPROVAL_REQUIRED=true`，但 [04-deploy.sh](file:///e:/shop-b2b2c/deploy/aliyun/server/04-deploy.sh#L59-L68) 等必填键清单未包含它；手工维护 `.env` 漏写时生产按 `application.yml` 默认 `false` 静默启用单管理员 | 整洁性（配置硬化缺口） | 权限/资金 | 可登记 | 不动，登记为缺口 G36（手工部署路径须人工核对） |
+| 部署·财务复核开关校验 | 两云 `02-init-infra.sh` 生成的 `.env` 已固定 `FINANCE_DUAL_APPROVAL_REQUIRED=true`，但 [04-deploy.sh](file:///e:/shop-b2b2c/deploy/aliyun/server/04-deploy.sh#L59-L75) 等必填键清单未包含它；手工维护 `.env` 漏写时生产按 `application.yml` 默认 `false` 静默启用单管理员 | 真缺陷（原判整洁性，用户 2026-11-06 上调：职责分离不得静默取消） | 权限/资金 | 上线前必修 | **已修**：两云必填键缺失即中止且只接受 `true|false`；新增 `FinanceApprovalConfigValidator` 在 `prod` 下开关非 `true` 阻断启动；宽松模式每次资金操作写 WARN；管理端展示“当前为单管理员模式”；补部署契约、启动阻断/放行、`SAME_OPERATOR` 与前端展示用例（G36） |
 | 部署·网关模板 | 两云 per-cloud Nginx（[nginx-gmall.conf](file:///e:/shop-b2b2c/deploy/aliyun/server/nginx-gmall.conf)、[nginx-shop.conf](file:///e:/shop-b2b2c/deploy/tencent/server/nginx-shop.conf)）无 `/healthz`、`/readyz` 别名，仅通用模板 [nginx.prod.conf](file:///e:/shop-b2b2c/deploy/nginx/nginx.prod.conf#L27-L38) 有；脚本实际探 `/api/v1/auth/*`，不误判，但模板与文档存在漂移 | 过期用件 | 一般 | 可登记 | 不动，登记为缺口 G37 |
 
 ### 9.2 未发现问题（成组列出，说明查了什么）
@@ -879,10 +879,10 @@
 
 ### 9.3 验证状态
 
-- 本次改动（库存 DTO 双格式、幂等 ObjectMapper、两云状态脚本）**均未由代理编译/运行**，状态为“已实现·待人工验证”。
-- 用户复跑入口：`mvn -f shop-b2b2c-backend/pom.xml test`（预期：新增 `inventoryAcceptsStringifiedLongIdsFromAdminUi` 通过，其余 713 条不回退）。
-- 部署脚本改动属 shell 文本，未运行；`deploy/tests` 隔离用例仍由用户按 §7 入口执行。
-- 本次未扩改前端与部署模板；G35–G37 只登记，不顺手改造。
+- 本次扫描改动（库存 DTO 双格式、幂等 ObjectMapper、两云状态脚本）与 G36 整改（部署必填键/值校验、生产启动阻断、宽松模式 WARN、管理端单管理员提示）**均未由代理编译/运行**，状态为“已实现·待人工验证”。
+- 用户复跑入口：`mvn -f shop-b2b2c-backend/pom.xml test`（预期新增 `inventoryAcceptsStringifiedLongIdsFromAdminUi`、`FinanceApprovalConfigValidatorTest` 三条、`looseModeMissingReviewerStillRecordsSameOperator` 通过，其余 713 条不回退）。
+- 部署脚本改动属 shell 文本，未运行；隔离用例入口 `python3 -m unittest discover -s deploy/tests -p 'test_release_credentials.py' -v`，前端规则入口 `node --test shared/financeReview.test.mjs`，均由用户执行。
+- 本次未扩改前端与部署模板；G35/G37 只登记，不顺手改造；G36 已按用户判定从“可登记”上调为上线前必修并完成整改。
 
 ### 9.4 尚未扫描（不推测、不记为无问题）
 

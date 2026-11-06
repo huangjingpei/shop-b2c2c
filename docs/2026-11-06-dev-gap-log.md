@@ -359,13 +359,20 @@
 - 建议归属：T37 后续统一 ID 文本处理；改时按 `inventoryAdjustment.mjs` 的 `idText` 口径，拒绝已失真 number 并保留十进制字符串。
 - 影响面：不影响当前交易与资金；仅极端大 ID 时筛选失效。
 
-## G36 部署必填键未含 FINANCE_DUAL_APPROVAL_REQUIRED（已登记未做）
+## G36 部署必填键与生产启动未强制 FINANCE_DUAL_APPROVAL_REQUIRED（已整改·待人工验证）
 
-- 发现位置：[04-deploy.sh](file:///e:/shop-b2b2c/deploy/aliyun/server/04-deploy.sh#L59-L68) 与腾讯云同名脚本的 `REQUIRED_ENV_KEYS`；[application.yml](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/application.yml#L149) 默认 `false`。
-- 现象：两云 `02-init-infra.sh` 生成的 `.env` 已写 `FINANCE_DUAL_APPROVAL_REQUIRED=true`，但手工维护 `.env`（或复用旧 `.env`）时缺失该键不会被部署预检拦截，生产会按默认 `false` 允许同人复核并只落 `SAME_OPERATOR`。
-- 未改原因：补齐需同时改两云两脚本与部署契约用例，属配置硬化，不是本轮扫描发现的运行期缺陷；按“规则未定不扩大改造”只登记。
-- 建议归属：T19/T23 部署键校验同批；补入必填键并加一条“缺失即终止”的隔离用例，不改变后端开关语义。
-- 影响面：手工部署路径存在静默单管理员风险；`02-init-infra.sh` 标准路径不受影响。文档已注明手工部署须核对实际生效值。
+- 发现位置：[04-deploy.sh](file:///e:/shop-b2b2c/deploy/aliyun/server/04-deploy.sh#L59-L75) 与腾讯云同名脚本的 `REQUIRED_ENV_KEYS`；[application.yml](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/application.yml#L149) 默认 `false`。
+- 现象：两云 `02-init-infra.sh` 生成的 `.env` 已写 `FINANCE_DUAL_APPROVAL_REQUIRED=true`，但手工维护 `.env`（或复用旧 `.env`）时缺失该键不会被部署预检拦截，生产会按默认 `false` 允许同人复核并只落 `SAME_OPERATOR`，等于职责分离控制被静默取消。
+- 定性：不是“可登记整洁性”，而是**上线前必修**；与 T36“证书失败不静默降级”同一原则。用户 2026-11-06 明确判定上升。
+- 已整改：
+  - 部署侧：两云 `04-deploy.sh` 把 `FINANCE_DUAL_APPROVAL_REQUIRED` 加入 `REQUIRED_ENV_KEYS`（缺失即 `die` 中止），并新增 `case` 只接受 `true|false`，其它值直接报错；腾讯云 `env.example.sh` 同步补键。
+  - 运行侧：新增 [FinanceApprovalConfigValidator.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/FinanceApprovalConfigValidator.java)，`prod` profile 下开关非 `true` 时在 bean 构造期抛出 `IllegalStateException` 阻断启动并给出明确原因；dev/test 仍允许 `false`。
+  - 应用侧：[FinanceApprovalGuard.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/FinanceApprovalGuard.java#L53-L77) 在开关关闭时对**每次真实资金操作**写显式 WARN（不论是否传复核人）；[financeReview.mjs](file:///e:/shop-b2b2c/shop-admin-vue/src/utils/financeReview.mjs) 增加 `singleAdminMode/singleAdminNotice`，财务复核页与商户治理页展示“当前为单管理员模式”。
+  - 用例：`test_release_credentials.py` 增缺键中止、非法值拒绝、env 示例含 true；`FinanceApprovalConfigValidatorTest` 增 prod false 阻断、prod true 放行、dev false 放行；`FinanceApprovalGuardTest` 增宽松模式缺复核人仍落 `SAME_OPERATOR`；`financeReview.test.mjs` 增单管理员模式展示。
+- 文档：本文与[部署入口与路径约定](部署入口与路径约定.md#L22-L31)已写明“生产必须开启”。
+- 验证：代理未运行 mvn/编译/测试/构建，未执行部署脚本，未连数据库；状态为**已实现·待人工验证**，复跑入口 `mvn -f shop-b2b2c-backend/pom.xml test` 与 `python3 -m unittest discover -s deploy/tests -p 'test_release_credentials.py' -v`。
+- 影响面：`02-init-infra.sh` 标准路径不变；手工部署路径由“静默单管理员”改为“缺键/非法值中止、prod 非 true 阻断启动”。
+
 
 ## G37 两云 Nginx 模板缺 /healthz、/readyz 别名（已登记未做）
 

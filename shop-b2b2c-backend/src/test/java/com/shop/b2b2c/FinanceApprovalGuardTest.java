@@ -4,7 +4,8 @@
  * 维护注意：
  *  1. 使用 Mockito 隔离 SysUserMapper，不启动 Spring、不连接数据库。
  *  2. 资质校验必须位于 resolveReviewer，服务层所有财务动作共用；不要为单个入口另写校验。
- *  3. 同人复核与缺复核人的开关口径仍由 verify 覆盖；本用例聚焦“不同人复核”的账号资质。
+ *  3. 同人复核与缺复核人的开关口径仍由 verify 覆盖；本用例聚焦“不同人复核”的账号资质，
+ *     并回归 G36 宽松模式缺复核人仍落 SAME_OPERATOR。
  */
 package com.shop.b2b2c;
 
@@ -81,6 +82,13 @@ class FinanceApprovalGuardTest {
     void sameOperatorInLooseModeSkipsEligibilityLookup() {
         assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, loose.verify("调价", 7L, 7L));
         assertEquals(7L, loose.resolveReviewer(7L, 7L));
+        verify(userMapper, never()).selectById(anyLong());
+    }
+
+    @Test
+    void looseModeMissingReviewerStillRecordsSameOperator() {
+        assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, loose.verify("结算确认", 7L, null));
+        assertEquals(7L, loose.resolveReviewer(7L, null));
         verify(userMapper, never()).selectById(anyLong());
     }
 

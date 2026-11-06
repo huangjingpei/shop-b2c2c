@@ -1,6 +1,7 @@
 /*
  * 文件：financeReview.test.mjs
- * 用途：G31 复核人前端规则回归：严格模式必填、禁用自身、无第二账号明确提示、宽松模式同人放行。
+ * 用途：G31/G36 复核人前端规则回归：严格模式必填、禁用自身、无第二账号明确提示、宽松模式同人放行、
+ *       开关关闭时管理端必须展示“当前为单管理员模式”。
  * 维护注意：只测纯函数，不调用接口；最终权限与落库口径仍以后端 FinanceApprovalGuard 用例为准。
  */
 import test from 'node:test'
@@ -8,6 +9,7 @@ import assert from 'node:assert/strict'
 import {
   NO_SECOND_ACCOUNT_MESSAGE,
   REVIEWER_ERROR,
+  SINGLE_ADMIN_MODE_MESSAGE,
   reviewerOptions,
   reviewerState,
   validateReviewer
@@ -116,4 +118,15 @@ test('宽松模式无第二账号仍允许提交但保留明确提示', () => {
   assert.equal(result.ok, true)
   assert.equal(result.code, 'SAME_OPERATOR')
   assert.equal(result.message, NO_SECOND_ACCOUNT_MESSAGE)
+})
+
+test('开关关闭时管理端展示当前为单管理员模式', () => {
+  const loose = reviewerState({ dualApprovalRequired: false, reviewers, currentUserId: 1 })
+  assert.equal(loose.singleAdminMode, true)
+  assert.equal(loose.singleAdminNotice, SINGLE_ADMIN_MODE_MESSAGE)
+  assert.match(loose.singleAdminNotice, /当前为单管理员模式/)
+
+  const strict = reviewerState({ dualApprovalRequired: true, reviewers, currentUserId: 1 })
+  assert.equal(strict.singleAdminMode, false)
+  assert.equal(strict.singleAdminNotice, '')
 })

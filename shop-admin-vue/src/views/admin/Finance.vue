@@ -22,8 +22,8 @@
     <el-alert v-else-if="reviewerPolicy.dualApprovalRequired"
       title="已开启双人复核：提交前必须选择另一位管理员作为复核人" type="info"
       :closable="false" show-icon class="policy-alert" />
-    <el-alert v-else title="开发/试点模式：未选择复核人时按当前操作人记录同人复核（SAME_OPERATOR）"
-      type="info" :closable="false" show-icon class="policy-alert" />
+    <el-alert v-else :title="reviewerPolicy.singleAdminNotice"
+      type="warning" :closable="false" show-icon class="policy-alert" />
 
     <el-card shadow="never" class="table-card">
       <template #header>

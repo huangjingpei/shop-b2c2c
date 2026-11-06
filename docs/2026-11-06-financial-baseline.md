@@ -123,7 +123,7 @@
 - **批次 C：职责分离与双人留痕（c0de750，开关与 approvalMode 随本轮交付补齐）**
   - 改前：调价、结算确认、充值确认均允许同一人操作且无复核人强校验。
   - 改后：统一由 `FinanceApprovalGuard` 判定。`shop.finance.dual-approval-required=true` 时调价/结算/充值/开店初始费率的操作人与复核人必须不同，相同 403；`false`（开发/试点默认）时允许同人，但必须落 `approvalMode=SAME_OPERATOR` 并写 WARN，不同人落 `DUAL_APPROVAL`。结算批次以 `prepared_by`、充值单以 `requested_by` 作为申请人，缺失仍 400；调价与开店初始费率未显式传复核人时，严格模式返回 428（缺参），宽松模式按操作人处理并落 `SAME_OPERATOR`。结算批次新增 `prepared_by`，充值单新增 `requested_by`，开店初始费率新增可选 `rateConfirmedBy` 并走同一入口。
-  - 生产约束：部署脚本 `.env` 固定 `FINANCE_DUAL_APPROVAL_REQUIRED=true`；单管理员模式仅限开发/试点。
+  - 生产约束：部署脚本 `.env` 固定 `FINANCE_DUAL_APPROVAL_REQUIRED=true`；两云 `04-deploy.sh` 将其列为必填键（缺失即中止、只接受 true/false）；`prod` profile 启动时校验非 true 直接阻断（`FinanceApprovalConfigValidator`）；单管理员模式仅限开发/试点，并会在后端 WARN 与管理端“当前为单管理员模式”提示。
   - G31 补丁：严格模式缺复核人不再按“同人 403”，改为业务码 428（HTTP Precondition Required）；宽松模式未传仍按操作人处理并落 `SAME_OPERATOR`。管理端补齐调价、开店初始费率、结算批次、充值确认的复核人选择，候选为除当前账号外的启用 SUPERADMIN；无第二账号时明确提示“需至少分配两个财务账号”。前端只传参，不改变后端角色与复核判定。复核人资质在服务端 `FinanceApprovalGuard.resolveReviewer` 统一校验：必须是启用状态的 SUPERADMIN；被禁用超管、非超管、不存在账号一律 403，不能以“操作人≠复核人”代替身份校验，也不依赖前端候选列表。
 - **批次 D：对账差异重试上限（651c15b）**
   - 改前：差异可无限重试，状态长期停留 RETRY，无法区分积压与需人工。
