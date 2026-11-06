@@ -135,7 +135,8 @@ const loading = ref(false)
 const submitLoading = ref(false)
 const dialogVisible = ref(false)
 const cards = ref([])
-const cardSku = ref(''), onlyAvailable = ref(false), cardNext = ref(null), appliedCardSku = undefined
+const cardSku = ref(''), onlyAvailable = ref(false), cardNext = ref(null)
+let appliedCardSku = undefined
 const revealLoading = ref(null), exportSku = ref(''), exportLoading = ref(false)
 const importProducts = ref([]), importSkus = ref([]), skuLoading = ref(false), voidLoading = ref(null)
 const currentRole = localStorage.getItem('roleCode') || ''
