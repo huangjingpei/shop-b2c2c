@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+文件：logback-spring.xml
+用途：按 Spring profile 分日志策略——本地调试业务日志全量实时可见（IDEA 控制台 DEBUG），
+      生产只保留关键日志（INFO+ 控制台兜底 + 文件滚动归档 + 错误单独文件）。
+维护注意：
+1. 本地（任何非 prod profile）：root INFO 抑制第三方框架噪音，com.shop.b2b2c DEBUG，
+   不产任何文件，避免本地磁盘堆积。
+2. 生产（prod）：root 只收 INFO+；文件按天滚动、单文件 50MB 上限、保留 30 天、总量 2GB 封顶、gzip 压缩；
+   ERROR 级单独落 error 文件便于值班快速定位。日志目录默认相对 logs/（systemd WorkingDirectory 即应用根，
+   部署脚本 01-prepare-server.sh 已建），可用环境变量 LOG_PATH 覆盖。
+3. 任何新增 logger 不得把证件号、银行卡号、卡密、密码打到 INFO 及以下可见级别；
+   MyBatis SQL 全环境保持 NoLoggingImpl（SchemaInitializationTest 隐私守卫），
+   SQL 参数含买家联系方式/领取凭证/卡密，本地临时排查可自行切换 Slf4jImpl 但不得提交。
+4. 测试环境由 src/test/resources/logback-test.xml 覆盖（logback 优先读取），保持测试输出安静。
+-->
+<configuration>
+
+    <property name="LOG_PATH" value="${LOG_PATH:-logs}"/>
+    <property name="CONSOLE_PATTERN_LOCAL"
+              value="%clr(%d{HH:mm:ss.SSS}){faint} %clr(%5p) %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} : %m%n%xEx"/>
+    <property name="PATTERN_PROD"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%15.15t] %-40.40logger{39} : %m%n%xEx"/>
+
+    <!-- 本地/开发：控制台全量实时，本工程与 SQL DEBUG -->
+    <springProfile name="!prod">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>${CONSOLE_PATTERN_LOCAL}</pattern>
+            </encoder>
+        </appender>
+
+        <logger name="com.shop.b2b2c" level="DEBUG"/>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+        </root>
+    </springProfile>
+
+    <!-- 生产：关键日志落文件滚动归档，ERROR 单独文件；控制台保留给 journald 兜底 -->
+    <springProfile name="prod">
+        <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+            <encoder>
+                <pattern>${PATTERN_PROD}</pattern>
+            </encoder>
+        </appender>
+
+        <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>${LOG_PATH}/shop-b2b2c.log</file>
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <fileNamePattern>${LOG_PATH}/shop-b2b2c.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+                <maxFileSize>50MB</maxFileSize>
+                <maxHistory>30</maxHistory>
+                <totalSizeCap>2GB</totalSizeCap>
+            </rollingPolicy>
+            <encoder>
+                <pattern>${PATTERN_PROD}</pattern>
+            </encoder>
+        </appender>
+
+        <appender name="ERROR_FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+            <file>${LOG_PATH}/shop-b2b2c-error.log</file>
+            <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+                <level>ERROR</level>
+            </filter>
+            <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+                <fileNamePattern>${LOG_PATH}/shop-b2b2c-error.%d{yyyy-MM-dd}.%i.log.gz</fileNamePattern>
+                <maxFileSize>20MB</maxFileSize>
+                <maxHistory>60</maxHistory>
+                <totalSizeCap>1GB</totalSizeCap>
+            </rollingPolicy>
+            <encoder>
+                <pattern>${PATTERN_PROD}</pattern>
+            </encoder>
+        </appender>
+
+        <root level="INFO">
+            <appender-ref ref="CONSOLE"/>
+            <appender-ref ref="FILE"/>
+            <appender-ref ref="ERROR_FILE"/>
+        </root>
+    </springProfile>
+
+</configuration>

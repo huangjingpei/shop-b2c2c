@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+文件：logback-test.xml
+用途：测试（mvn test/H2）专用日志配置：logback 在测试 classpath 优先读本文件而非 logback-spring.xml；
+      只保留控制台输出、root 与本工程 INFO（不 DEBUG、不打 SQL、不产文件），保持测试报告可读。
+维护注意：
+1. 不要在本文件开 com.shop.b2b2c 或 mapper 包 DEBUG——测试输出须保持可读；
+   MyBatis SQL 全环境 NoLoggingImpl（SchemaInitializationTest 隐私守卫），与本文件无关。
+2. 测试断言日志行为的用例（如支付对账 WARN 场景）依赖控制台输出，不得把 root 提到 WARN 以上。
+3. 本地调试看 DEBUG 请直接启动应用（logback-spring.xml 的 !prod 档），不要改本文件。
+-->
+<configuration>
+
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %5p [%15.15t] %-40.40logger{39} : %m%n%xEx</pattern>
+        </encoder>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+</configuration>

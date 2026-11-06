@@ -58,6 +58,8 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
     cache-enabled: false
+    # 隐私红线（SchemaInitializationTest 守卫）：SQL 参数含买家联系方式、领取凭证、卡密，任何环境不得打印；
+    # 本地临时排查 SQL 可自行切换 Slf4jImpl，但不得提交。
     log-impl: org.apache.ibatis.logging.nologging.NoLoggingImpl
 
 # Sa-Token 权限与多端会话配置
