@@ -91,8 +91,45 @@ test('reset与apply保持职责边界', () => {
   assert.deepEqual(state.currentSku.value, { id: 11 })
 })
 
+test('T28 旧请求迟到不得覆盖新商品或复位新请求loading', async () => {
+  const state = createState()
+  let releaseOld
+  const gate = new Promise(resolve => { releaseOld = resolve })
+  let current = 'old'
+  const oldCall = loadProductDetail(
+    '1',
+    async () => { await gate; return { data: { data: { product: { id: 1, title: '旧商品' } } } } },
+    state,
+    () => current === 'old'
+  )
+  current = 'new'
+  const newCall = loadProductDetail(
+    '2',
+    async () => ({ data: { data: { product: { id: 2, title: '新商品' }, skus: [{ id: 21 }] } } }),
+    state,
+    () => current === 'new'
+  )
+  await newCall
+  assert.equal(state.product.value.id, 2)
+  releaseOld()
+  const oldResult = await oldCall
+  assert.equal(oldResult.stale, true)
+  assert.equal(state.product.value.id, 2, '旧响应不得覆盖新商品')
+  assert.deepEqual(state.skus.value, [{ id: 21 }])
+  assert.equal(state.loading.value, false)
+})
+
+test('T28 复制工具与错误态入口存在，不再预填默认手机号', () => {
+  const source = detailSource
+  assert.ok(source.includes("from '@shared/clipboard.mjs'"), '必须复用共享剪贴板工具')
+  assert.ok(source.includes('errorMsg') && source.includes('retry++'), '失败必须提供错误态与重试')
+  assert.ok(source.includes('旧响应') || source.includes('sequence === loadSequence'), '必须使用请求序号')
+  assert.equal(source.includes('13912345678'), false, '不得预填默认手机号')
+  assert.equal(source.includes('复制失败，请手动长按复制：'), false, '失败提示不得拼接原文')
+})
+
 test('代付等视图绑定声明必须早于watch immediate执行', () => {
-  const watchIndex = detailSource.indexOf('watch(() => route.params.id')
+  const watchIndex = detailSource.indexOf('watch([() => route.params.id, retry]')
   assert.ok(watchIndex >= 0, '未找到路由watch')
   for (const name of ['peerPayModalOpen', 'generatingPeerPay', 'peerPayResult', 'peerMessage', 'quickMessages', 'isWeChat', 'showWechatGuide']) {
     const declaration = detailSource.indexOf(`const ${name} =`)

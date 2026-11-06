@@ -2,6 +2,7 @@
 文件：Orders.vue
 用途：商家订单查询、推单、实物发货、定制服务履约及已存海报按需预览页面。
 维护注意：推单重试须保留幂等键，成功才重置；人工履约仅对类型3且PAID展示，类型2缺卡不能用人工交付替代；按钮可见性不替代服务端租户/状态验证。列表不再含海报正文；点击经本店接口读取，关闭/卸载使旧请求失效，修改规则同步工具单元测试。
+T28：卡密详情请求带序号，切换订单或关闭弹窗后迟到的旧响应不得覆盖当前弹窗内容。
 -->
 <template>
   <div class="merchant-orders">
@@ -350,7 +351,7 @@
     </el-dialog>
 
     <!-- 5. 查看订单履约详情与卡密明文弹窗 (R04: 单单授权查询) -->
-    <el-dialog v-model="cardDetailVisible" title="订单卡密交付详情" width="500px">
+    <el-dialog v-model="cardDetailVisible" title="订单卡密交付详情" width="500px" @closed="invalidateCardDetailLoad">
       <div v-loading="cardDetailLoading">
         <div v-if="cardDetailOrder">
           <p><strong>订单号：</strong>{{ cardDetailOrder.orderSn }}</p>
@@ -533,22 +534,28 @@ const cardDetailVisible = ref(false)
 const cardDetailLoading = ref(false)
 const cardDetailOrder = ref(null)
 const cardDetailItems = ref([])
+// T28：详情请求序号，关闭弹窗或切换订单后旧响应失效
+let cardDetailSequence = 0
+const invalidateCardDetailLoad = () => { cardDetailSequence++ }
 
 const viewOrderCards = async (order) => {
+  const sequence = ++cardDetailSequence
   cardDetailOrder.value = order
   cardDetailItems.value = []
   cardDetailVisible.value = true
   cardDetailLoading.value = true
   try {
     const res = await request.get(`/merchant/orders/${order.id}`)
+    if (sequence !== cardDetailSequence) return
     if (res && res.data) {
       cardDetailOrder.value = res.data.order || order
       cardDetailItems.value = res.data.items || []
     }
   } catch (err) {
+    if (sequence !== cardDetailSequence) return
     ElMessage.error(err.response?.data?.message || err.message || '获取订单卡密详情失败')
   } finally {
-    cardDetailLoading.value = false
+    if (sequence === cardDetailSequence) cardDetailLoading.value = false
   }
 }
 

@@ -2,6 +2,7 @@
 文件：PeerPayCashier.vue
 用途：代付账单详情、倒计时、分享海报及结果展示。
 维护注意：本页不接收或展示领取凭证、卡密及服务交付内容；真实付款未开放，禁止恢复随机付款人Mock调用。将来取消预占须保存ownerToken并显式授权；本地倒计时不是库存锁或支付状态权威来源。
+T28：账单与海报请求使用序号，token 切换时立即清空旧海报并作废旧响应；失败态可重试；复制走 @shared/clipboard.mjs，失败只提示手动复制。
 -->
 <template>
   <div class="min-h-screen bg-[#F5F5F7] text-slate-800 antialiased pb-12">
@@ -33,7 +34,14 @@
         <div class="w-12 h-12 bg-rose-50 text-rose-500 rounded-full flex items-center justify-center mx-auto mb-3 text-2xl font-bold">!</div>
         <h3 class="text-base font-bold text-slate-900">账单获取失败</h3>
         <p class="text-xs text-slate-500 mt-1.5">{{ errorMsg }}</p>
-        <router-link to="/" class="mt-5 inline-block px-5 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 transition">
+        <button
+          type="button"
+          @click="loadDetail()"
+          class="mt-5 inline-block px-5 py-2 rounded-xl bg-slate-900 text-white text-xs font-semibold hover:bg-slate-800 transition"
+        >
+          重新加载
+        </button>
+        <router-link to="/" class="mt-3 block text-xs text-slate-500 hover:text-slate-700">
           返回商城首页
         </router-link>
       </div>
@@ -324,6 +332,7 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
+import { copyText } from '@shared/clipboard.mjs'
 
 const route = useRoute()
 const router = useRouter()
@@ -354,6 +363,16 @@ const adBanner = ref(null)
 
 const lockCountdown = ref(0)
 let timer = null
+// T28：账单与海报请求序号；token 切换或重试时递增，旧响应不得写回。
+let detailSequence = 0
+let posterSequence = 0
+
+const resetPoster = () => {
+  posterSequence++
+  posterBase64.value = ''
+  posterLoading.value = false
+  showPosterModal.value = false
+}
 
 // 计算黑底倒计时盒子中的 [00] : [14] : [49]
 const countdownHours = computed(() => {
@@ -394,33 +413,10 @@ const startCountdownTimer = (seconds) => {
   }, 1000)
 }
 
-const copyToClipboard = (text, successMsg) => {
-  if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(() => {
-      alert(successMsg)
-    }).catch(() => {
-      fallbackCopy(text, successMsg)
-    })
-  } else {
-    fallbackCopy(text, successMsg)
-  }
-}
-
-const fallbackCopy = (text, successMsg) => {
-  const ta = document.createElement('textarea')
-  ta.value = text
-  ta.style.position = 'fixed'
-  ta.style.left = '-9999px'
-  document.body.appendChild(ta)
-  ta.focus()
-  ta.select()
-  try {
-    document.execCommand('copy')
-    alert(successMsg)
-  } catch (e) {
-    alert('复制失败，请手动长按复制：' + text)
-  }
-  document.body.removeChild(ta)
+const copyToClipboard = async (text, successMsg) => {
+  // T28：统一安全上下文判断与降级；失败提示不拼接复制内容。
+  const result = await copyText(text)
+  alert(result.ok ? successMsg : '复制失败，请手动长按选择后复制')
 }
 
 const handleShareWechat = () => {
@@ -447,28 +443,35 @@ const openPosterModal = async () => {
   }
   const token = route.params.token || detail.value?.token
   if (!token) return
+  const sequence = ++posterSequence
   posterLoading.value = true
   try {
     const res = await axios.get(`/api/v1/peer-pay/poster/${token}`)
+    // T28：token 已切换/关闭弹窗时丢弃迟到的海报。
+    if (sequence !== posterSequence) return
     if (res.data?.code === 200 && res.data?.data) {
       posterBase64.value = res.data.data
     }
   } catch (e) {
     console.error('海报加载失败', e)
   } finally {
-    posterLoading.value = false
+    if (sequence === posterSequence) posterLoading.value = false
   }
 }
 
 const loadDetail = async (currentToken = route.params.token) => {
   if (!currentToken) return
+  const sequence = ++detailSequence
   if (timer) clearInterval(timer)
+  resetPoster()
   loading.value = true
   errorMsg.value = ''
   detail.value = null
   isPaidSuccess.value = false
   try {
     const res = await axios.get(`/api/v1/peer-pay/detail/${currentToken}`)
+    // T28：旧账单响应不得覆盖当前 token 的详情。
+    if (sequence !== detailSequence) return
     if (res.data.code === 200) {
       detail.value = res.data.data
       if (detail.value.productTitle) {
@@ -483,9 +486,10 @@ const loadDetail = async (currentToken = route.params.token) => {
       errorMsg.value = res.data.message || '账单不存在'
     }
   } catch (err) {
+    if (sequence !== detailSequence) return
     errorMsg.value = err.response?.data?.message || '网络连接异常，无法加载代付账单'
   } finally {
-    loading.value = false
+    if (sequence === detailSequence) loading.value = false
   }
 }
 
@@ -512,5 +516,8 @@ watch(() => route.params.token, (newToken) => {
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  // T28：卸载后丢弃未完成的详情/海报响应
+  detailSequence++
+  posterSequence++
 })
 </script>

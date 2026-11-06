@@ -5,6 +5,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { buildOrderQuery, mergeOrderPage, readOrderPage, orderStatusLabel } from '../shop-admin-vue/src/utils/orderList.mjs'
 
 test('查询参数保留不透明游标并只带非空筛选', () => {
@@ -33,4 +34,13 @@ test('缺失分页元数据不伪造尾页，非法结构按空页处理', () =>
   assert.deepEqual(readOrderPage(null), { orders: [], total: 0, hasMore: false, nextCursor: '' })
   assert.equal(orderStatusLabel('PAID'), '待发货')
   assert.equal(orderStatusLabel('UNKNOWN'), 'UNKNOWN')
+})
+
+test('T28 卡密详情迟到响应不得覆盖新订单弹窗', () => {
+  const source = readFileSync(new URL('../shop-admin-vue/src/views/merchant/Orders.vue', import.meta.url), 'utf8')
+  const fn = source.slice(source.indexOf('const viewOrderCards ='))
+  assert.ok(fn.includes('const sequence = ++cardDetailSequence'))
+  assert.ok(fn.includes('sequence !== cardDetailSequence'))
+  assert.ok(fn.indexOf('cardDetailItems.value = []') < fn.indexOf('request.get('), '打开弹窗先清空旧卡密')
+  assert.ok(source.includes('@closed="invalidateCardDetailLoad"'), '关闭弹窗必须作废未完成请求')
 })

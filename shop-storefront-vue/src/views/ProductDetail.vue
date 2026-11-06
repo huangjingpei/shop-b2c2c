@@ -2,10 +2,22 @@
 文件：ProductDetail.vue
 用途：商品/SKU选择、待付款建单及买家代付分享。
 维护注意：建单重试保留幂等键，业务成功才重置；checkout只建UNPAID单，真实支付未开放；不得根据HTTP成功显示已到账或发卡。类型3为人工服务，参数和金额最终由服务端校验。
+T28：详情加载使用请求序号，快速切换商品时旧响应不得覆盖当前商品；失败显示错误态并可重试；不预填手机号；复制走 @shared/clipboard.mjs，失败只提示手动复制，不把卡密原文带入提示。
 -->
 <template>
   <div v-if="loading" class="text-center py-16 text-slate-400 text-sm">
     正在加载商品详情与变体数据...
+  </div>
+  <div v-else-if="errorMsg" role="alert" class="max-w-md mx-auto text-center py-16 text-slate-500 space-y-3">
+    <p class="text-sm font-medium">{{ errorMsg }}</p>
+    <button
+      type="button"
+      @click="retry++"
+      class="px-4 py-2 rounded-lg bg-slate-900 text-white text-xs font-bold hover:bg-slate-800 transition"
+    >
+      重新加载
+    </button>
+    <router-link to="/" class="block text-xs text-orange-600 hover:underline">返回全品类大厅</router-link>
   </div>
   <div v-else-if="product" class="max-w-5xl mx-auto space-y-6">
     <!-- 面包屑导航 -->
@@ -413,6 +425,7 @@ import { ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
 import { loadProductDetail } from '../utils/productDetail.mjs'
+import { copyText } from '@shared/clipboard.mjs'
 
 const route = useRoute()
 const loading = ref(false)
@@ -422,8 +435,11 @@ const skus = ref([])
 const store = ref(null)
 const currentSku = ref(null)
 const quantity = ref(1)
-const buyerContact = ref('13912345678')
+const buyerContact = ref('')
 const successResult = ref(null)
+const errorMsg = ref('')
+const retry = ref(0)
+let loadSequence = 0
 
 const currentPrice = () => {
   const base = currentSku.value?.price || product.value?.minPrice || 0
@@ -446,8 +462,17 @@ const formatSpec = (jsonStr) => {
 
 const loadProduct = async (id = route.params.id) => {
   if (!id) return
-  const result = await loadProductDetail(id, productId => axios.get(`/api/v1/public/products/${productId}`), viewState)
-  if (!result.ok && result.error) console.error(result.error)
+  const sequence = ++loadSequence
+  errorMsg.value = ''
+  const result = await loadProductDetail(
+    id,
+    productId => axios.get(`/api/v1/public/products/${productId}`),
+    viewState,
+    () => sequence === loadSequence
+  )
+  // T28：过期请求不写状态、不报错，避免旧商品/旧错误覆盖当前资源。
+  if (sequence !== loadSequence) return
+  if (!result.ok && !result.stale) errorMsg.value = '商品详情加载失败，请检查网络后重试'
 }
 
 // 所有响应式绑定必须先于 watch/immediate 调用声明，避免 setup 阶段同步加载时访问未初始化变量。
@@ -475,7 +500,7 @@ const viewState = {
   peerPayResult
 }
 
-watch(() => route.params.id, (newId) => {
+watch([() => route.params.id, retry], ([newId]) => {
   if (newId) {
     loadProduct(newId)
   }
@@ -511,11 +536,12 @@ const handleCheckout = async () => {
   }
 }
 
-const copyAllCards = () => {
-  if (successResult.value?.cards) {
-    navigator.clipboard.writeText(successResult.value.cards.join('\n'))
-    alert('卡密已成功复制到剪贴板！')
-  }
+const copyAllCards = async () => {
+  const cards = successResult.value?.cards
+  if (!Array.isArray(cards) || cards.length === 0) return
+  // T28：统一安全上下文判断与降级；失败提示不含卡密原文。
+  const result = await copyText(cards.join('\n'))
+  alert(result.ok ? '卡密已成功复制到剪贴板！' : '复制失败，请手动长按选择后复制')
 }
 
 // ★ 找人代付核心逻辑（响应式变量已在加载逻辑之前声明，避免TDZ）
@@ -559,33 +585,9 @@ const handleCreatePeerPay = async () => {
   }
 }
 
-const copyToClipboard = (text, successMsg) => {
-  if (navigator.clipboard && window.isSecureContext) {
-    navigator.clipboard.writeText(text).then(() => {
-      alert(successMsg)
-    }).catch(() => {
-      fallbackCopy(text, successMsg)
-    })
-  } else {
-    fallbackCopy(text, successMsg)
-  }
-}
-
-const fallbackCopy = (text, successMsg) => {
-  const ta = document.createElement('textarea')
-  ta.value = text
-  ta.style.position = 'fixed'
-  ta.style.left = '-9999px'
-  document.body.appendChild(ta)
-  ta.focus()
-  ta.select()
-  try {
-    document.execCommand('copy')
-    alert(successMsg)
-  } catch (e) {
-    alert('复制失败，请手动长按复制：' + text)
-  }
-  document.body.removeChild(ta)
+const copyToClipboard = async (text, successMsg) => {
+  const result = await copyText(text)
+  alert(result.ok ? successMsg : '复制失败，请手动长按选择后复制')
 }
 
 const copyWechatShareCard = () => {
