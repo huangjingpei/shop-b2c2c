@@ -188,3 +188,66 @@
 - 未实现原因：平台代收与分账依赖支付机构分账资质、协议与沙箱联调；用户明确本轮只做骨架，不得调用真实代收/分账接口，也不得形成资金池。
 - 建议归属：T40 资质后阶段；取得资质后按 Q09-A 灰度切换，补真实渠道调用、验签/防重放/乱序容忍、冻结/退分/退款联动与 T+1 四方对账。
 - 影响面：`shop.settlement.platform-collect-enabled` 默认 false；T40 状态只能表述为“骨架已实现·待资质后联调”，不得标为可用或已完成；阶段一 `MERCHANT_DIRECT` 流程不受影响。
+
+## G20 财务基线缺口总表（2026-11-06 自检）
+
+- 发现位置：[docs/2026-11-06-financial-baseline.md](2026-11-06-financial-baseline.md) 第 3–4 节；覆盖 T32/T33/T34/T35/T39/T40。
+- 现象：24 条硬性基线中，本轮已整改 A/B/C/D/E 五项；其余仍为“部分合规/缺失”，不得表述为已完成。
+- 建议归属：按下列 G21–G29 分批；任何新增资金功能必须先过基线文档判定。
+
+## G21 T+1 定时对账与长短款分类未实现（已登记未做）
+
+- 发现位置：[ReconciliationService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ReconciliationService.java)。
+- 现象：有手工 `reconcile` 入口与差异队列，但无 T+1 调度、无长款/短款分类、无处理时限与超时升级。
+- 建议归属：后续对账专项；不得用“差异已入队”替代 T+1 闭环。
+
+## G22 支付事件/充值/对账差异状态迁移未统一 CAS（已登记未做）
+
+- 发现位置：`PaymentEventService`、`MerchantAccountService.confirmRecharge`、`ReconciliationService.resolve`。
+- 现象：部分状态推进使用锁行后 `updateById`，未统一“条件更新 + 状态校验 + 审计”；并发下依赖行锁而非 CAS。
+- 建议归属：状态机专项；改造时必须保留现有幂等键与审计字段。
+
+## G23 费率政策缺“同店同生效时点”唯一键（已登记未做）
+
+- 发现位置：[schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql) `merchant_fee_policy`。
+- 现象：已有生效区间逻辑，但数据库层没有 `(merchant_id, effective_from)` 唯一索引，并发调价仍可能写入同一生效时点。
+- 建议归属：费率专项；开发期可直接加唯一索引，需先确认存量重算口径。
+
+## G24 复式记账与余额重算/漂移告警未实现（未实现·仅登记）
+
+- 发现位置：[MerchantAccountLedgerMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/MerchantAccountLedgerMapper.java)、`merchant_account`。
+- 现象：当前为单边 DEBIT/CREDIT + `balance_after`，可由账本重算但无重算入口、无快照/漂移告警；不等同复式记账。
+- 建议归属：账务内核专项；需先确认科目表与借贷规则，不能直接把单边账本称为复式记账。
+
+## G25 币种绑定未覆盖订单/账本/退款（未实现·仅登记）
+
+- 发现位置：`trade_order`、`merchant_account_ledger`、`trade_refund`。
+- 现象：仅 `payment_event` 有币种；其他资金表按单币种 CNY 假设，无列级约束。
+- 建议归属：多币种专项；单币种期间须在接口/文档明确“仅 CNY”。
+
+## G26 发票域不存在（未实现·仅登记）
+
+- 现象：技术服务费开票状态、发票号、红冲发票均无表、无接口。
+- 建议归属：税务口径确认后立项；本轮只登记，不写代码。
+
+## G27 二清持牌与分账资质（资质依赖，未实现）
+
+- 发现位置：[ProfitSharingChannelAdapter.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/ProfitSharingChannelAdapter.java)。
+- 现象：T40 通道占位且默认关闭；平台代收再分账必须由持牌机构完成，平台不得形成资金池。
+- 建议归属：资质与通道联调；取得资质前不得开启 `shop.settlement.platform-collect-enabled`。
+
+## G28 资金异常告警阈值与备份恢复演练未实现（未实现·仅登记）
+
+- 现象：扣费失败率、退款率、对账差异、余额漂移均无阈值与告警通道；备份脚本存在但无恢复演练与账实核对记录。
+- 建议归属：运维专项；演练记录必须由环境负责人执行并留档。
+
+## G29 回调持久化审计表缺失（本轮已知限制）
+
+- 发现位置：[CallbackReplayGuard.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/CallbackReplayGuard.java)。
+- 现象：超窗回调已拒绝并写 WARN 结构化审计日志，但未持久化到审计表，无法在后台检索。
+- 建议归属：审计专项；补表前不得把日志留存表述为完整审计。
+
+## G30 开发环境单管理员与职责分离的冲突（需业务确认）
+
+- 现象：财务基线 C 要求调价人/复核人、结算制单人/确认人、充值申请人/确认人必须不同；当前开发环境若只有一个超管账号，确认类操作会被 403 拒绝。
+- 建议归属：业务/环境确认；生产至少配置两个具备财务权限的账号，或明确单人环境的例外审批口径。不得为了跑通而放宽分离校验。
