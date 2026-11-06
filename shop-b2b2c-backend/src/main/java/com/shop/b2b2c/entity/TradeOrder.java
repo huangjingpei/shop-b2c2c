@@ -4,6 +4,7 @@
  * 维护注意：支付、取消、超时及履约写路径须共用订单行锁与事务；不能仅凭普通save实现幂等。peerStatus默认INIT并复用PeerStatus编码；未知旧值不自动转换或视作已预占，状态字段保持String兼容API。
  * T33：refundedAmount/feeRefundedAmount 含处理中预占，不能据此单独把订单视为已退款；订单是否 REFUNDED 由 trade_refund 成功记录累计判断。
  * T34：新增订单级服务费快照字段；下单时按商家当前费率固化，支付成功后按快照扣费，后续费率调整不得回溯已下单订单。
+ * T40：platformTradeNo 仅阶段二平台代收写入；阶段一必须保持为空，不得用商家直收流水回填。
  */
 package com.shop.b2b2c.entity;
 
@@ -57,6 +58,8 @@ public class TradeOrder {
     private String collectionMode = "MERCHANT_DIRECT"; // T32 新增：MERCHANT_DIRECT / PLATFORM_COLLECT
     private String payChannel = "WECHAT"; // T32 新增：真实支付渠道 WECHAT/ALIPAY，替代 A/B/C 一列双语义
     private String payTradeNo;
+    /** T40 阶段二预留：平台代收渠道流水号；阶段一为空，不得用商家直收流水回填。 */
+    private String platformTradeNo;
     private String logisticsCompany;
     private String trackingNumber;
     private LocalDateTime deliveryTime;

@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `collection_mode` VARCHAR(24) NOT NULL DEFAULT 'MERCHANT_DIRECT' COMMENT 'T32 新增：MERCHANT_DIRECT/PLATFORM_COLLECT，阶段一固定商家直收',
   `pay_channel` VARCHAR(32) NOT NULL DEFAULT 'WECHAT' COMMENT 'T32 新增：真实支付渠道快照 WECHAT/ALIPAY',
   `pay_trade_no` VARCHAR(128) DEFAULT NULL COMMENT '第三方支付交易流水号',
+  `platform_trade_no` VARCHAR(128) NULL COMMENT 'T40 阶段二预留：平台代收渠道流水号；阶段一为空，不得用商家直收流水回填',
   `logistics_company` VARCHAR(64) DEFAULT NULL COMMENT '快递物流公司',
   `tracking_number` VARCHAR(128) DEFAULT NULL COMMENT '快递单号',
   `delivery_time` DATETIME DEFAULT NULL COMMENT '发货时间',
@@ -807,3 +808,97 @@ CREATE TABLE IF NOT EXISTS `merchant_fee_audit` (
   KEY `idx_fee_audit_merchant` (`merchant_id`, `created_at`),
   CONSTRAINT fk_fee_audit_policy FOREIGN KEY (`policy_id`) REFERENCES `merchant_fee_policy` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='费率政策审计';
+
+-- ========================================================
+-- T40 阶段二平台代收与分账骨架（默认不启用；取得支付/分账资质并完成通道联调后才可写入真实结果）
+-- 说明：以下表只承载本地账本与结算骨架，不调用微信/支付宝分账接口，不产生真实资金流转。
+-- ========================================================
+
+-- 34. 平台代收结算台账（T40）：一笔平台代收订单一条，记录实收、平台留成与商家应结，金额必须守恒
+CREATE TABLE IF NOT EXISTS `platform_collection_settlement` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `order_id` BIGINT UNSIGNED NOT NULL COMMENT '平台代收订单ID',
+  `order_sn` VARCHAR(64) NOT NULL COMMENT '订单号快照',
+  `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '所属店铺ID',
+  `payment_event_id` BIGINT UNSIGNED NULL COMMENT '渠道到账事件ID',
+  `platform_trade_no` VARCHAR(128) NOT NULL COMMENT '平台代收渠道流水号',
+  `gross_amount` DECIMAL(12,2) NOT NULL COMMENT '渠道实收金额',
+  `platform_retain_amount` DECIMAL(12,2) NOT NULL COMMENT '平台留成（含技术服务费）',
+  `merchant_payable_amount` DECIMAL(12,2) NOT NULL COMMENT '应分给商家的净额',
+  `settled_amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '已结算给商家的金额；骨架阶段保持0',
+  `refunded_amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '已退分/已退款冲减金额',
+  `settlement_status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/HOLD/SETTLED/DIFFERENCE',
+  `settle_batch_id` BIGINT UNSIGNED NULL COMMENT '关联 merchant_settlement_batch；阶段二出账后回填',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_platform_settlement_order` (`order_id`),
+  KEY `idx_platform_settlement_merchant` (`merchant_id`, `settlement_status`),
+  KEY `idx_platform_settlement_trade` (`platform_trade_no`),
+  CONSTRAINT `chk_platform_settlement_amounts` CHECK (`gross_amount` >= 0.00 AND `platform_retain_amount` >= 0.00
+      AND `merchant_payable_amount` >= 0.00 AND `settled_amount` >= 0.00 AND `refunded_amount` >= 0.00
+      AND `merchant_payable_amount` + `platform_retain_amount` = `gross_amount`),
+  CONSTRAINT fk_platform_settlement_order FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
+  CONSTRAINT fk_platform_settlement_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
+  CONSTRAINT fk_platform_settlement_event FOREIGN KEY (`payment_event_id`) REFERENCES `payment_event` (`id`),
+  CONSTRAINT fk_platform_settlement_batch FOREIGN KEY (`settle_batch_id`) REFERENCES `merchant_settlement_batch` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='平台代收结算台账（骨架，不产生真实资金）';
+
+-- 35. 分账明细账本（T40）：同一订单+接收方幂等；分账金额与平台留成必须等于实收
+CREATE TABLE IF NOT EXISTS `split_detail` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `order_id` BIGINT UNSIGNED NOT NULL COMMENT '平台代收订单ID',
+  `order_sn` VARCHAR(64) NOT NULL,
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `payment_event_id` BIGINT UNSIGNED NULL,
+  `payment_account_id` BIGINT UNSIGNED NOT NULL COMMENT '分账接收方：复用 merchant_payment_account 绑定记录，不另建接收方表',
+  `channel` VARCHAR(32) NOT NULL COMMENT 'WECHAT/ALIPAY',
+  `platform_trade_no` VARCHAR(128) NOT NULL,
+  `gross_amount` DECIMAL(12,2) NOT NULL COMMENT '该笔分账对应的渠道实收',
+  `platform_retain_amount` DECIMAL(12,2) NOT NULL COMMENT '平台留成',
+  `fee_amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '留成中的技术服务费，来自订单快照',
+  `split_amount` DECIMAL(12,2) NOT NULL COMMENT '应分给接收方的金额',
+  `split_status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/PROCESSING/FINISHED/FAILED/REVERSED',
+  `freeze_until` DATETIME NULL COMMENT '渠道冻结截止时间；以渠道能力为准，骨架阶段为空',
+  `reversed_amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '累计退分金额',
+  `channel_split_no` VARCHAR(128) NULL COMMENT '渠道分账单号；未联调前为空',
+  `failure_reason` VARCHAR(255) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_split_order_receiver` (`order_id`, `payment_account_id`),
+  KEY `idx_split_merchant_status` (`merchant_id`, `split_status`),
+  KEY `idx_split_platform_trade` (`platform_trade_no`),
+  CONSTRAINT `chk_split_amounts` CHECK (`gross_amount` >= 0.00 AND `platform_retain_amount` >= 0.00
+      AND `fee_amount` >= 0.00 AND `split_amount` >= 0.00 AND `reversed_amount` >= 0.00
+      AND `split_amount` + `platform_retain_amount` = `gross_amount`
+      AND `reversed_amount` <= `split_amount`),
+  CONSTRAINT fk_split_order FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
+  CONSTRAINT fk_split_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
+  CONSTRAINT fk_split_event FOREIGN KEY (`payment_event_id`) REFERENCES `payment_event` (`id`),
+  CONSTRAINT fk_split_account FOREIGN KEY (`payment_account_id`) REFERENCES `merchant_payment_account` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='分账明细账本（骨架，不调用真实分账通道）';
+
+-- 36. 退分账本（T40）：退款前必须先退分；同一分账明细+退款单幂等
+CREATE TABLE IF NOT EXISTS `split_reverse` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `split_detail_id` BIGINT UNSIGNED NOT NULL,
+  `refund_id` BIGINT UNSIGNED NOT NULL COMMENT '关联 trade_refund',
+  `refund_no` VARCHAR(64) NOT NULL,
+  `order_sn` VARCHAR(64) NOT NULL,
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `reverse_amount` DECIMAL(12,2) NOT NULL COMMENT '本次退分金额',
+  `reverse_status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/PROCESSING/FINISHED/FAILED',
+  `channel_reverse_no` VARCHAR(128) NULL COMMENT '渠道退分单号；未联调前为空',
+  `failure_reason` VARCHAR(255) NULL,
+  `operator_id` BIGINT NULL COMMENT '发起退分的操作人；系统任务可为空，但不得省略来源退款单号',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_split_reverse_refund` (`split_detail_id`, `refund_id`),
+  KEY `idx_split_reverse_merchant` (`merchant_id`, `reverse_status`),
+  CONSTRAINT `chk_split_reverse_amount` CHECK (`reverse_amount` > 0.00),
+  CONSTRAINT fk_split_reverse_detail FOREIGN KEY (`split_detail_id`) REFERENCES `split_detail` (`id`),
+  CONSTRAINT fk_split_reverse_refund FOREIGN KEY (`refund_id`) REFERENCES `trade_refund` (`id`),
+  CONSTRAINT fk_split_reverse_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='退分账本（骨架，不调用真实退分通道）';

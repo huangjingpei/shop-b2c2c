@@ -181,6 +181,7 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `collection_mode` VARCHAR(24) NOT NULL DEFAULT 'MERCHANT_DIRECT' COMMENT 'T32 新增：MERCHANT_DIRECT/PLATFORM_COLLECT',
   `pay_channel` VARCHAR(32) NOT NULL DEFAULT 'WECHAT' COMMENT 'T32 新增：真实支付渠道快照 WECHAT/ALIPAY',
   `pay_trade_no` VARCHAR(128) DEFAULT NULL COMMENT '第三方支付交易流水号',
+  `platform_trade_no` VARCHAR(128) NULL COMMENT 'T40 阶段二预留：平台代收渠道流水号',
   `logistics_company` VARCHAR(64) DEFAULT NULL COMMENT '快递物流公司',
   `tracking_number` VARCHAR(128) DEFAULT NULL COMMENT '快递单号',
   `delivery_time` DATETIME DEFAULT NULL COMMENT '发货时间',
@@ -671,4 +672,74 @@ CREATE TABLE IF NOT EXISTS merchant_fee_audit (
   confirmed_by BIGINT NULL,
   effective_from TIMESTAMP NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 34. 平台代收结算台账（T40 骨架，仅本地账本）
+CREATE TABLE IF NOT EXISTS platform_collection_settlement (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  order_id BIGINT NOT NULL,
+  order_sn VARCHAR(64) NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  payment_event_id BIGINT NULL,
+  platform_trade_no VARCHAR(128) NOT NULL,
+  gross_amount DECIMAL(12,2) NOT NULL,
+  platform_retain_amount DECIMAL(12,2) NOT NULL,
+  merchant_payable_amount DECIMAL(12,2) NOT NULL,
+  settled_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  refunded_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  settlement_status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  settle_batch_id BIGINT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_platform_settlement_order UNIQUE (order_id),
+  CONSTRAINT chk_platform_settlement_amounts CHECK (gross_amount >= 0.00 AND platform_retain_amount >= 0.00
+    AND merchant_payable_amount >= 0.00 AND settled_amount >= 0.00 AND refunded_amount >= 0.00
+    AND merchant_payable_amount + platform_retain_amount = gross_amount)
+);
+
+-- 35. 分账明细账本（T40 骨架，不调用真实通道）
+CREATE TABLE IF NOT EXISTS split_detail (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  order_id BIGINT NOT NULL,
+  order_sn VARCHAR(64) NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  payment_event_id BIGINT NULL,
+  payment_account_id BIGINT NOT NULL,
+  channel VARCHAR(32) NOT NULL,
+  platform_trade_no VARCHAR(128) NOT NULL,
+  gross_amount DECIMAL(12,2) NOT NULL,
+  platform_retain_amount DECIMAL(12,2) NOT NULL,
+  fee_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  split_amount DECIMAL(12,2) NOT NULL,
+  split_status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  freeze_until TIMESTAMP NULL,
+  reversed_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  channel_split_no VARCHAR(128) NULL,
+  failure_reason VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_split_order_receiver UNIQUE (order_id, payment_account_id),
+  CONSTRAINT chk_split_amounts CHECK (gross_amount >= 0.00 AND platform_retain_amount >= 0.00
+    AND fee_amount >= 0.00 AND split_amount >= 0.00 AND reversed_amount >= 0.00
+    AND split_amount + platform_retain_amount = gross_amount
+    AND reversed_amount <= split_amount)
+);
+
+-- 36. 退分账本（T40 骨架，不调用真实通道）
+CREATE TABLE IF NOT EXISTS split_reverse (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  split_detail_id BIGINT NOT NULL,
+  refund_id BIGINT NOT NULL,
+  refund_no VARCHAR(64) NOT NULL,
+  order_sn VARCHAR(64) NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  reverse_amount DECIMAL(12,2) NOT NULL,
+  reverse_status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  channel_reverse_no VARCHAR(128) NULL,
+  failure_reason VARCHAR(255) NULL,
+  operator_id BIGINT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_split_reverse_refund UNIQUE (split_detail_id, refund_id),
+  CONSTRAINT chk_split_reverse_amount CHECK (reverse_amount > 0.00)
 );
