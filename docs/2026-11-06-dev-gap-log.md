@@ -40,6 +40,8 @@
 - 不属本卡范围的原因：T29 属 S4，涉及前端保存/回传凭据与重试交互；S1 未包含前端改造。
 - 建议归属：T29；上线必须与 T10 同批，前端需持久化 ownerToken，不得继续只带幂等键恢复。
 - 影响面：在 T29 完成前，现有前端若重试 pre-lock 会收到“已被其他付款人预占中”；不影响首次预占与取消（取消已要求 X-Reservation-Token）。
+- 关闭情况：T29 已随 S4 实现（提交 0bf223e）。前端按分享 token 在 sessionStorage 保存 ownerToken，Idempotency-Key 尝试键与 ownerToken 分离；刷新恢复回传 `X-Reservation-Token`，离开/超时/切换 token 调 cancel-lock。上线顺序：后端 T10（8874b6a）先发、前端 T29 后发，禁止前端先发。
+- 残留：若 pre-lock 响应在网络上丢失，客户端拿不到 ownerToken，重试仍会被判为“已被其他付款人预占中”；当前不做 attemptKey 授权兜底，需等待预占到期后重新发起。真实支付通道仍未开放。
 
 ## G05 T11 keyset 分页与 T24 同批约束在 S1 无法满足
 
