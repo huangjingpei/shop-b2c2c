@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS `merchant_payment_account` (
   `bank_account_name` VARCHAR(64) NOT NULL COMMENT '结算开户人姓名',
   `bank_account_number` VARCHAR(64) NOT NULL COMMENT '结算银行卡号',
   `bank_name` VARCHAR(128) NOT NULL COMMENT '开户银行支行名称',
-  `apply_status` VARCHAR(32) NOT NULL DEFAULT 'PASSED' COMMENT '进件状态: AUDITING-审核中, PASSED-已开通, REJECTED-已驳回；阶段一不写假PASSED',
+  `apply_status` VARCHAR(32) NOT NULL DEFAULT 'AUDITING' COMMENT '进件状态: AUDITING-审核中, PASSED-已开通, REJECTED-已驳回；默认必须是审核中，阶段一不写假PASSED',
   `reject_reason` VARCHAR(255) DEFAULT NULL COMMENT '驳回原因',
   `settlement_account_id` BIGINT UNSIGNED NULL COMMENT 'T39 阶段二预留：关联 merchant_settlement_account，阶段一先不写值',
   `binding_status` VARCHAR(24) NOT NULL DEFAULT 'UNBOUND' COMMENT 'T39 阶段二预留：UNBOUND/BINDING/BOUND/REJECTED/DISABLED，只允许渠道真实结果推进',
@@ -188,7 +188,7 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `platform_discount_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 平台优惠金额',
   `shipping_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 运费，不计入服务费基数',
   `order_tax_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 订单税额（价税分离）',
-  `fee_policy_id` BIGINT NULL COMMENT 'T34 订单级费率快照来源的政策ID；T39 起写 merchant_fee_policy.id，历史订单可为空',
+  `fee_policy_id` BIGINT UNSIGNED NULL COMMENT 'T34 订单级费率快照来源的政策ID；T39 起写 merchant_fee_policy.id，历史订单可为空',
   `fee_rate_bps` INT NOT NULL DEFAULT 0 COMMENT 'T34 订单级费率快照，万分比；300 表示 3%',
   `fee_rate_type` VARCHAR(24) NOT NULL DEFAULT 'NORMAL' COMMENT 'T34 费率类型 NORMAL/PROMOTION；PROMOTION 表示推广期 0 费率',
   `fee_base_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 服务费计费基数=商品成交额-商家优惠',
@@ -219,16 +219,19 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `service_voucher` TEXT DEFAULT NULL COMMENT '线上服务交付凭证 (卡密/网盘/交付报告)',
   `lock_expire_time` DATETIME DEFAULT NULL COMMENT '两段式库存预扣到期时间',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '订单任意字段（含状态、退款预占、服务费状态）最近变更时间',
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_order_sn` (`order_sn`),
   UNIQUE KEY `uk_peer_pay_token` (`peer_pay_token`),
+  UNIQUE KEY `uk_query_token` (`query_token`),
   KEY `idx_merchant_order` (`merchant_id`, `order_status`),
   KEY `idx_contact` (`buyer_contact`),
-  KEY `idx_query_token` (`query_token`),
   KEY `idx_order_created` (`created_at`, `id`),
   KEY `idx_merchant_created` (`merchant_id`, `created_at`, `id`),
   KEY `idx_order_expiry` (`order_status`, `lock_expire_time`, `id`),
   CONSTRAINT `chk_order_amounts` CHECK (`total_amount` >= 0.00 AND `pay_amount` >= 0.00),
+  CONSTRAINT `chk_order_refund_within_paid` CHECK (`refunded_amount` >= 0.00 AND `refunded_amount` <= `pay_amount`
+      AND `fee_refunded_amount` >= 0.00 AND `fee_refunded_amount` <= `commission_amount`),
   CONSTRAINT fk_order_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='交易订单主表';
 
@@ -530,7 +533,7 @@ CREATE TABLE IF NOT EXISTS `merchant_account_ledger` (
   `balance_after` DECIMAL(12,2) NOT NULL COMMENT '入账后可用余额',
   `arrears_after` DECIMAL(12,2) NOT NULL COMMENT '入账后欠费余额',
   `biz_type` VARCHAR(24) NOT NULL COMMENT 'ORDER/REFUND/RECHARGE/ADJUSTMENT',
-  `biz_id` BIGINT NULL COMMENT '业务主键（订单ID/退款ID/充值单ID）',
+  `biz_id` BIGINT UNSIGNED NULL COMMENT '业务主键（订单ID/退款ID/充值单ID）',
   `order_sn` VARCHAR(64) NULL COMMENT '关联订单号',
   `refund_no` VARCHAR(64) NULL COMMENT '关联退款单号',
   `idempotency_key` VARCHAR(128) NOT NULL COMMENT '入账幂等键，全表唯一',
@@ -541,7 +544,8 @@ CREATE TABLE IF NOT EXISTS `merchant_account_ledger` (
   KEY `idx_ledger_merchant_created` (`merchant_id`, `created_at`, `id`),
   KEY `idx_ledger_order` (`order_sn`),
   CONSTRAINT fk_ledger_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
-  CONSTRAINT `chk_ledger_amount` CHECK (`amount` >= 0.00)
+  CONSTRAINT `chk_ledger_amount` CHECK (`amount` >= 0.00),
+  CONSTRAINT `chk_ledger_balance_nonnegative` CHECK (`balance_after` >= 0.00 AND `arrears_after` >= 0.00)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='服务费账本';
 
 -- 21.1 服务费账本 append-only 兜底（财务基线 7）：账本只允许 INSERT，更正必须追加红冲分录，禁止 UPDATE/DELETE。
@@ -566,7 +570,7 @@ CREATE TABLE IF NOT EXISTS `merchant_recharge_order` (
   `voucher_proof_url` VARCHAR(512) NULL COMMENT '转账凭证图片/文件地址',
   `payer_name` VARCHAR(128) NULL COMMENT '付款人名称',
   `status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/CONFIRMED/REJECTED',
-  `ledger_entry_id` BIGINT NULL COMMENT '确认入账对应的账本ID',
+  `ledger_entry_id` BIGINT UNSIGNED NULL COMMENT '确认入账对应的账本ID',
   `confirmed_by` BIGINT NULL COMMENT '确认人用户ID',
   `confirmed_at` DATETIME NULL COMMENT '确认时间',
   `approval_mode` VARCHAR(24) NULL COMMENT '复核模式：SAME_OPERATOR=单管理员开关关闭下同人复核；DUAL_APPROVAL=双人复核',
@@ -579,6 +583,7 @@ CREATE TABLE IF NOT EXISTS `merchant_recharge_order` (
   UNIQUE KEY `uk_recharge_voucher` (`voucher_no`),
   KEY `idx_recharge_merchant_status` (`merchant_id`, `status`),
   CONSTRAINT fk_recharge_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
+  CONSTRAINT fk_recharge_ledger_entry FOREIGN KEY (`ledger_entry_id`) REFERENCES `merchant_account_ledger` (`id`),
   CONSTRAINT `chk_recharge_amount` CHECK (`amount` > 0.00)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商家充值单';
 
@@ -620,7 +625,7 @@ CREATE TABLE IF NOT EXISTS `merchant_settlement_item` (
   `order_id` BIGINT UNSIGNED NOT NULL COMMENT '订单ID',
   `order_sn` VARCHAR(64) NOT NULL COMMENT '订单号',
   `goods_type` TINYINT NOT NULL DEFAULT 1 COMMENT '商品类型快照：1-实物,2-卡密,3-定制服务',
-  `payment_event_id` BIGINT NULL COMMENT '支付事件ID',
+  `payment_event_id` BIGINT UNSIGNED NULL COMMENT '支付事件ID',
   `refund_id` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '退款ID；非退款明细为0',
   `refund_no` VARCHAR(64) NULL COMMENT '退款单号；非退款明细为空',
   `billable_base` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '计费基数',
@@ -633,7 +638,8 @@ CREATE TABLE IF NOT EXISTS `merchant_settlement_item` (
   UNIQUE KEY `uk_settlement_item` (`batch_id`, `item_type`, `order_id`, `refund_id`),
   KEY `idx_settlement_item_order` (`order_sn`),
   CONSTRAINT fk_settlement_item_batch FOREIGN KEY (`batch_id`) REFERENCES `merchant_settlement_batch` (`id`),
-  CONSTRAINT fk_settlement_item_order FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`)
+  CONSTRAINT fk_settlement_item_order FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
+  CONSTRAINT fk_settlement_item_event FOREIGN KEY (`payment_event_id`) REFERENCES `payment_event` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算明细';
 
 -- 25. 收款状态审计（T35）：停收/恢复/策略确认留痕；系统自动动作 operator_id 为空
@@ -680,7 +686,7 @@ CREATE TABLE IF NOT EXISTS `reconciliation_difference` (
   `channel` VARCHAR(32) NULL COMMENT '渠道',
   `diff_type` VARCHAR(48) NOT NULL COMMENT 'CHANNEL_WITHOUT_EVENT/EVENT_WITHOUT_STATEMENT/AMOUNT_MISMATCH/ORDER_MISMATCH/ORDER_MISSING/FEE_LEDGER_MISSING/DUPLICATE_PAYMENT/SETTLEMENT_ITEM_MISMATCH/RECHARGE_AMOUNT_MISMATCH',
   `biz_type` VARCHAR(24) NOT NULL COMMENT 'ORDER/EVENT/STATEMENT/SETTLEMENT/RECHARGE',
-  `biz_id` BIGINT NULL COMMENT '关联业务主键',
+  `biz_id` BIGINT UNSIGNED NULL COMMENT '关联业务主键',
   `order_sn` VARCHAR(64) NULL COMMENT '订单号',
   `channel_trade_no` VARCHAR(128) NULL COMMENT '渠道流水号',
   `expected_amount` DECIMAL(12,2) NULL COMMENT '平台应有金额',
@@ -804,8 +810,11 @@ CREATE TABLE IF NOT EXISTS `merchant_fee_policy` (
   `operator_id` BIGINT NULL COMMENT '操作人',
   `approval_mode` VARCHAR(24) NULL COMMENT '复核模式：SAME_OPERATOR/DUAL_APPROVAL；由 FinanceApprovalGuard 统一判定',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '政策行最近变更时间，用于发现生效区间被事后改动',
   PRIMARY KEY (`id`),
   KEY `idx_fee_policy_merchant_effective` (`merchant_id`, `effective_from`, `effective_to`),
+  CONSTRAINT `chk_fee_policy_rate` CHECK ((`rate_type` = 'NORMAL' AND `rate_bps` BETWEEN 100 AND 1000)
+      OR (`rate_type` = 'PROMOTION' AND `rate_bps` = 0)),
   CONSTRAINT fk_fee_policy_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='技术服务费率政策';
 
@@ -857,6 +866,7 @@ CREATE TABLE IF NOT EXISTS `platform_collection_settlement` (
   KEY `idx_platform_settlement_trade` (`platform_trade_no`),
   CONSTRAINT `chk_platform_settlement_amounts` CHECK (`gross_amount` >= 0.00 AND `platform_retain_amount` >= 0.00
       AND `merchant_payable_amount` >= 0.00 AND `settled_amount` >= 0.00 AND `refunded_amount` >= 0.00
+      AND `refunded_amount` <= `merchant_payable_amount`
       AND `merchant_payable_amount` + `platform_retain_amount` = `gross_amount`),
   CONSTRAINT fk_platform_settlement_order FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
   CONSTRAINT fk_platform_settlement_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
