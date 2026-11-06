@@ -6,7 +6,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { buildOrderQuery, mergeOrderPage, readOrderPage, orderStatusLabel } from '../shop-admin-vue/src/utils/orderList.mjs'
+import { buildOrderQuery, mergeOrderPage, readOrderPage, orderStatusLabel, isInvalidOrderCursorError } from '../shop-admin-vue/src/utils/orderList.mjs'
 
 test('查询参数保留不透明游标并只带非空筛选', () => {
   assert.deepEqual(buildOrderQuery({ status: 'PAID', cursor: '1700000000000_42', pageSize: 20 }),
@@ -34,6 +34,13 @@ test('缺失分页元数据不伪造尾页，非法结构按空页处理', () =>
   assert.deepEqual(readOrderPage(null), { orders: [], total: 0, hasMore: false, nextCursor: '' })
   assert.equal(orderStatusLabel('PAID'), '待发货')
   assert.equal(orderStatusLabel('UNKNOWN'), 'UNKNOWN')
+})
+
+test('仅服务端400游标错误视为失效游标，其它失败不得回第一页', () => {
+  assert.equal(isInvalidOrderCursorError({ response: { status: 400, data: { message: '分页游标不正确' } } }), true)
+  assert.equal(isInvalidOrderCursorError({ response: { status: 400, data: { message: '状态参数不正确' } } }), false)
+  assert.equal(isInvalidOrderCursorError({ response: { status: 500, data: { message: '分页游标不正确' } } }), false)
+  assert.equal(isInvalidOrderCursorError(new Error('网络错误')), false)
 })
 
 test('T28 卡密详情迟到响应不得覆盖新订单弹窗', () => {

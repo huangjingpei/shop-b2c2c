@@ -1,7 +1,7 @@
 <!--
 文件：Orders.vue
 用途：平台订单监察列表和三方交易信息展示。
-维护注意：统计取服务端统一状态口径，金额字符串不转Number；佣金是预计值，FINISHED不证明资金到账。角色标签不代替后端权限；列表保留订单快照而非财务流水。
+维护注意：统计取服务端统一状态口径，金额字符串不转Number；佣金是预计值，FINISHED不证明资金到账。角色标签不代替后端权限；列表保留订单快照而非财务流水。加载更多遇服务端400“分页游标不正确”时清空游标回第一页，避免反复重试失效游标；刷新按钮必须显式调用 loadOrders()，不能把点击事件当成 more=true。
 -->
 <template>
   <div class="orders-page">
@@ -10,7 +10,7 @@
         <h2>全平台交易订单与代付监察大盘</h2>
         <p>查看订单关联角色、金额快照与分账记录状态；真实资金结果待账本接入核对</p>
       </div>
-      <el-button type="primary" plain @click="loadOrders">刷新订单流水</el-button>
+      <el-button type="primary" plain @click="loadOrders()">刷新订单流水</el-button>
     </div>
 
     <!-- 顶部聚合统计指标卡片 -->
@@ -161,7 +161,7 @@ import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 import { statisticsView, STATISTICS_NOTICE, sharingRecordLabel } from '../../utils/orderStatistics.mjs'
-import { ORDER_STATUS_OPTIONS, buildOrderQuery, mergeOrderPage } from '../../utils/orderList.mjs'
+import { ORDER_STATUS_OPTIONS, buildOrderQuery, mergeOrderPage, isInvalidOrderCursorError } from '../../utils/orderList.mjs'
 
 const loading = ref(false)
 const orders = ref([])
@@ -204,7 +204,14 @@ const loadOrders = async (more = false) => {
     peerPayCount.value = merged.orders.filter(o => Number(o.peerPayType) > 0).length
   } catch (error) {
     if (sequence === loadSequence) {
-      ElMessage.error(error.response?.data?.message || '订单列表加载失败')
+      if (more && isInvalidOrderCursorError(error)) {
+        // 游标可能因数据变动或服务端升级失效：丢弃游标回第一页，避免每次点击都报同一错误
+        nextCursor.value = ''
+        ElMessage.warning('分页游标已失效，已回到第一页')
+        loadOrders(false)
+      } else {
+        ElMessage.error(error.response?.data?.message || '订单列表加载失败')
+      }
     }
   } finally {
     if (sequence === loadSequence) loading.value = false

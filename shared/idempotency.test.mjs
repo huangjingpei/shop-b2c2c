@@ -40,4 +40,23 @@ for (const [name, module] of [['admin', admin], ['storefront', storefront]]) {
     submit.prepare({ sku: 1 }).headers['Idempotency-Key'] = 'tampered'
     assert.equal(submit.prepare({ sku: 1 }).headers['Idempotency-Key'], 'private-key')
   })
+  test(`${name}: 优先使用 crypto.randomUUID`, () => {
+    const key = module.createIdempotencyKey({
+      randomUUID: () => 'fixed-uuid',
+      getRandomValues: () => { throw new Error('不应走降级分支') }
+    })
+    assert.equal(key, 'fixed-uuid')
+  })
+  test(`${name}: 非安全上下文无randomUUID时用getRandomValues生成UUIDv4`, () => {
+    const key = module.createIdempotencyKey({
+      getRandomValues(bytes) {
+        for (let i = 0; i < bytes.length; i++) bytes[i] = i
+        return bytes
+      }
+    })
+    assert.equal(key, '00010203-0405-4607-8809-0a0b0c0d0e0f')
+  })
+  test(`${name}: 没有安全随机源时明确报错，不退化为Math.random`, () => {
+    assert.throws(() => module.createIdempotencyKey({}), /安全随机源/)
+  })
 }

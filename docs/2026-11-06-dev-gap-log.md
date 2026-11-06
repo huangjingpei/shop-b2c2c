@@ -485,12 +485,25 @@
 - 建议归属：G34 用例补强；分步执行三次扫描并在每次后回读 `funds_received`/`reconcile_attempts`，断言前两次仍为 `1`、第三次转 `MANUAL_REVIEW` 且为 `NULL`。
 - 影响面：测试覆盖偏弱，不影响当前实现正确性判断。
 
-## G49 旧格式游标在管理端“加载更多”会持续 400 直到刷新（已登记，不改代码）
+## G49 旧格式游标在管理端“加载更多”会持续 400 直到刷新（前端已回第一页·待验证）
 
 - 发现位置：[OrderCursor.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/common/OrderCursor.java)；[admin/Orders.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/admin/Orders.vue)；[merchant/Orders.vue](file:///e:/shop-b2b2c/shop-admin-vue/src/views/merchant/Orders.vue)。
 - 现象：2026-11-07 把游标从“毫秒时间戳 + id”改为“ISO 完整精度时间 + id”。部署前已打开并已翻页的浏览器仍持有旧格式 `nextCursor`，点“加载更多”会因 `decode` 返回 400；前端未在失败时清空 `nextCursor`，同一旧游标会被反复提交，直到刷新页面或重新选择筛选条件才恢复。
-- 未改原因：属于跨版本瞬时体验问题，不产生错单/错账；旧格式只存在于部署瞬间的内存状态，不做后端兼容会引入双格式解析与长期维护成本。
-- 建议归属：前端分页体验优化；请求返回 400 时清空游标并提示“分页已过期，请刷新后重试”，或首屏请求时丢弃本地缓存游标。若希望兼容，需在后端短暂接受旧格式并在文档标注下线时间。
 - 影响面：单次发布期间已打开的管理端订单列表需刷新一次；不影响新请求与数据正确性。
+- 本轮处理（2026-11-07）：不引入后端双格式兼容，保持仍返回 400；只做前端体验修复。`orderList.mjs` 新增 `isInvalidOrderCursorError`，仅识别 HTTP 400 且消息含“游标”的失败；admin/merchant 的“加载更多”命中时清空 `nextCursor` 并自动重载第一页，首屏失败仍按普通错误提示。回归用例在 `shared/orderList.test.mjs`，前端生产构建与用例由用户执行。同时修正两处“刷新”按钮 `@click="loadOrders"` 把点击事件当成 `more=true` 的问题（无更多时刷新无响应、有更多时变成追加），改为显式 `loadOrders()`。
 
+## G50 BusinessException 单参构造默认 500，用户输入/认证拒绝被计为服务端故障（已评估，未改代码）
 
+- 发现位置：[BusinessException.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/common/BusinessException.java)；[GlobalExceptionHandler.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/common/GlobalExceptionHandler.java)。
+- 现象：单参构造把 `code` 固定为 `500`，`statusOf` 会映射成 HTTP 500。当前 57 处单参调用覆盖下单联系人/数量/库存校验、登录密码错误、商家越权、订单/SKU/店铺不存在、店铺编码或账号重复等；这些本是 400/401/403/404/409 语义，却统一按 5xx 返回，监控与按状态分支的前端拦截器会把正常业务拒绝当成系统故障。
+- 未改原因：这 57 处并非同一语义，简单把默认值改为 400 会把认证失败、越权、不存在、冲突一起降级为参数错误；逐点补码会同时影响既有接口契约、前端状态分支与后端用例断言，属于独立契约整改，不能夹在本轮分页/对账收尾里静默改。
+- 建议方案：①先明确映射表（输入校验 400、未登录 401、越权 403、不存在 404、重复/并发冲突 409）；②单参构造保留 500 以暴露遗漏，逐点改显式码并删除单参构造或改为需显式枚举；③补契约用例断言 HTTP 状态与 body.code 一致；④前端拦截器只在 401 清会话，其余按消息展示。
+- 影响面：仅错误响应语义与监控口径；不改变成功链路。涉及登录、下单、商家管理等多入口，改动需单独立卡并与前端同批验证。
+
+## G51 非安全上下文缺失 crypto.randomUUID，建单在发请求前就失败（已实现·待人工验证）
+
+- 发现位置：[storefront idempotency.mjs](file:///e:/shop-b2b2c/shop-storefront-vue/src/utils/idempotency.mjs)；[admin idempotency.mjs](file:///e:/shop-b2b2c/shop-admin-vue/src/utils/idempotency.mjs)；[ProductDetail.vue](file:///e:/shop-b2b2c/shop-storefront-vue/src/views/ProductDetail.vue)。
+- 现象：通过 `http://192.168.3.148:3002`（局域网 IP 的 http 页面）访问商品详情，点击“创建订单”弹出“下单失败”；浏览器网络面板中**没有** `/api/v1/public/orders/checkout` 请求，控制台也无异常。根因：`crypto.randomUUID` 只在安全上下文（HTTPS/localhost）可用，非安全上下文中为 `undefined`，`checkoutSubmission.prepare()` 抛 `TypeError` 并被 `catch` 吞掉，只显示通用兜底文案。该问题与 CORS 403 无关，代理修好后仍然存在。
+- 修复：两端 `idempotency.mjs` 新增 `createIdempotencyKey`，优先 `crypto.randomUUID`，缺失时用同为 CSPRNG 的 `crypto.getRandomValues` 组装 UUIDv4；两者都不可用时明确报错，禁止 `Math.random` 降级。
+- 验证（2026-11-07，浏览器实测）：修复前点击后无 checkout 请求；修复后同一页面点击“创建订单”已发出 `POST /api/v1/public/orders/checkout`，页面显示“订单已创建，等待付款”，控制台无报错。用例已补 `shared/idempotency.test.mjs`（randomUUID 优先、getRandomValues 降级生成 UUIDv4、无安全随机源报错）。
+- 状态：已随本轮修复提交·待人工验证；前端用例与生产构建由用户执行。验证产生了一笔 `debug@example.com` 的测试订单。

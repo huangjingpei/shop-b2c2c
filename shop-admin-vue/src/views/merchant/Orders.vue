@@ -4,6 +4,7 @@
 维护注意：推单重试须保留幂等键，成功才重置；人工履约仅对类型3且PAID展示，类型2缺卡不能用人工交付替代；按钮可见性不替代服务端租户/状态验证。列表不再含海报正文；点击经本店接口读取，关闭/卸载使旧请求失效，修改规则同步工具单元测试。
 T28：卡密详情请求带序号，切换订单或关闭弹窗后迟到的旧响应不得覆盖当前弹窗内容。
 T33：新增店长/超管“退款”入口，调用 /merchant/refunds/orders/{orderSn} 并强制 Idempotency-Key；可退余额按 payAmount-refundedAmount 展示，但最终以服务端额度与服务费快照校验为准，“处理中”不等于已退款。
+T24 补充：加载更多遇服务端400“分页游标不正确”时清空游标回第一页，避免反复重试失效游标；刷新按钮必须显式调用 loadOrders()，不能把点击事件当成 more=true。
 -->
 <template>
   <div class="merchant-orders">
@@ -13,7 +14,7 @@ T33：新增店长/超管“退款”入口，调用 /merchant/refunds/orders/{o
         <p>实物物流发货、线上服务录入交付凭证、一键代客推单与三方穿透对账</p>
       </div>
       <div style="display: flex; gap: 10px;">
-        <el-button type="primary" plain @click="loadOrders">刷新订单列表</el-button>
+        <el-button type="primary" plain @click="loadOrders()">刷新订单列表</el-button>
         <!-- ★ 代客推单核心按钮 -->
         <el-button type="danger" icon="Share" @click="openPushPayDialog">
           ★ 代客推单 (生成代付账单)
@@ -406,7 +407,7 @@ import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 import { canPreviewPoster, createStoredPosterPreview } from '../../utils/storedPoster.mjs'
-import { ORDER_STATUS_OPTIONS, buildOrderQuery, mergeOrderPage } from '../../utils/orderList.mjs'
+import { ORDER_STATUS_OPTIONS, buildOrderQuery, mergeOrderPage, isInvalidOrderCursorError } from '../../utils/orderList.mjs'
 
 const loading = ref(false)
 const orders = ref([])
@@ -539,7 +540,14 @@ const loadOrders = async (more = false) => {
     nextCursor.value = merged.nextCursor
   } catch (error) {
     if (sequence === loadSequence) {
-      ElMessage.error(error.response?.data?.message || '订单列表加载失败')
+      if (more && isInvalidOrderCursorError(error)) {
+        // 游标可能因数据变动或服务端升级失效：丢弃游标回第一页，避免每次点击都报同一错误
+        nextCursor.value = ''
+        ElMessage.warning('分页游标已失效，已回到第一页')
+        loadOrders(false)
+      } else {
+        ElMessage.error(error.response?.data?.message || '订单列表加载失败')
+      }
     }
   } finally {
     if (sequence === loadSequence) loading.value = false
