@@ -20,6 +20,7 @@ import com.shop.b2b2c.entity.TradeRefund;
 import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.PaymentEventMapper;
 import com.shop.b2b2c.mapper.ProductSkuMapper;
+import com.shop.b2b2c.mapper.ProductVirtualCardMapper;
 import com.shop.b2b2c.mapper.TradeOrderItemMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
 import com.shop.b2b2c.mapper.TradeRefundMapper;
@@ -55,12 +56,13 @@ class RefundServiceTest {
     private final TradeRefundMapper refundMapper = mock(TradeRefundMapper.class);
     private final ProductSkuMapper skuMapper = mock(ProductSkuMapper.class);
     private final PaymentEventMapper eventMapper = mock(PaymentEventMapper.class);
+    private final ProductVirtualCardMapper cardMapper = mock(ProductVirtualCardMapper.class);
     private final com.shop.b2b2c.service.MerchantAccountService accountService =
             mock(com.shop.b2b2c.service.MerchantAccountService.class);
 
     private RefundTransactionService transactionService() {
         return new RefundTransactionService(orderMapper, itemMapper, refundMapper, skuMapper, eventMapper,
-                accountService);
+                cardMapper, accountService);
     }
 
     @Test
@@ -169,6 +171,40 @@ class RefundServiceTest {
         transactionService().finalizeSuccess(7L, "WX-RF-1");
 
         verify(refundMapper, never()).markOrderRefundedIfFullyRefunded(anyLong());
+        verify(skuMapper, never()).addStock(anyLong(), anyLong(), org.mockito.ArgumentMatchers.anyInt());
+        verify(cardMapper, never()).voidSoldCardsByOrderSn(any(), any());
+    }
+
+    @Test
+    void fullRefundOfVirtualCardVoidsSoldCardsAndSkipsRestock() {
+        TradeOrder order = paidOrder();
+        order.setGoodsType(2);
+        TradeRefund refund = orderRefund(7L);
+        when(refundMapper.selectById(7L)).thenReturn(refund);
+        when(refundMapper.markSuccess(eq(7L), any())).thenReturn(1);
+        when(orderMapper.selectById(11L)).thenReturn(order);
+        when(refundMapper.markOrderRefundedIfFullyRefunded(11L)).thenReturn(1);
+
+        transactionService().finalizeSuccess(7L, "WX-RF-1");
+
+        verify(cardMapper).voidSoldCardsByOrderSn("SN-R1", MERCHANT_ID);
+        verify(skuMapper, never()).addStock(anyLong(), anyLong(), org.mockito.ArgumentMatchers.anyInt());
+        verify(itemMapper, never()).findByOrderId(anyLong());
+    }
+
+    @Test
+    void partialRefundOfVirtualCardDoesNotVoidCards() {
+        TradeOrder order = paidOrder();
+        order.setGoodsType(2);
+        TradeRefund refund = orderRefund(7L);
+        when(refundMapper.selectById(7L)).thenReturn(refund);
+        when(refundMapper.markSuccess(eq(7L), any())).thenReturn(1);
+        when(orderMapper.selectById(11L)).thenReturn(order);
+        when(refundMapper.markOrderRefundedIfFullyRefunded(11L)).thenReturn(0);
+
+        transactionService().finalizeSuccess(7L, "WX-RF-1");
+
+        verify(cardMapper, never()).voidSoldCardsByOrderSn(any(), any());
         verify(skuMapper, never()).addStock(anyLong(), anyLong(), org.mockito.ArgumentMatchers.anyInt());
     }
 

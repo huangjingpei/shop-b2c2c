@@ -1,11 +1,12 @@
 /*
  * 文件：MerchantOnboardingServiceTest.java
- * 用途：T39 入驻申请、实名材料密文/脱敏、审核状态机与审核通过开店的契约用例。
+ * 用途：T39 入驻申请、实名材料密文/脱敏、审核状态机与审核通过开店的契约用例；含 T40 开店 0% 推广费率口径。
  * 维护注意：
  *  1. 使用 Mockito 隔离，不启动 Spring、不连接数据库；加密使用真实 CardCipherService 默认密钥。
  *  2. 证件号只允许密文落库、脱敏出参；若改为明文存储或返回，本用例必须失败。
  *  3. 审核通过才建店/建账号；驳回、补件、撤回不得产生店铺或账号副作用。
- *  4. 并发行锁、真实 MySQL 唯一性与三方实名核验仍由用户手动验证。
+ *  4. 0% 费率只允许 PROMOTION 且必须带推广原因；放宽该条件时本用例必须失败。
+ *  5. 并发行锁、真实 MySQL 唯一性与三方实名核验仍由用户手动验证。
  */
 package com.shop.b2b2c;
 
@@ -170,6 +171,43 @@ class MerchantOnboardingServiceTest {
 
         assertEquals(400, ex.getCode());
         verify(storeMapper, never()).save(any());
+    }
+
+    @Test
+    void zeroRateWithoutPromotionReasonIsRejectedBeforeStoreCreation() {
+        MerchantOnboardingApplication application = submittedApplication(5L);
+        when(applicationMapper.lockById(5L)).thenReturn(application);
+        MerchantOnboardingService.Provisioning provisioning = provisioning();
+        provisioning.setRateBps(0);
+        provisioning.setPromotionReason("  ");
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.approve(5L, provisioning, "0费率缺原因", 7L));
+
+        assertEquals(400, ex.getCode());
+        assertTrue(ex.getMessage().contains("推广原因"));
+        verify(storeMapper, never()).save(any());
+    }
+
+    @Test
+    void zeroRateWithPromotionReasonCreatesPromotionPolicy() {
+        MerchantOnboardingApplication application = submittedApplication(6L);
+        when(applicationMapper.lockById(6L)).thenReturn(application);
+        when(storeMapper.findByStoreCode("STORE-001")).thenReturn(Optional.empty());
+        when(userMapper.findByUsername("merchant001")).thenReturn(Optional.empty());
+        when(storeMapper.save(any())).thenAnswer(invocation -> {
+            MerchantStore store = invocation.getArgument(0);
+            store.setId(100L);
+            return store;
+        });
+        MerchantOnboardingService.Provisioning provisioning = provisioning();
+        provisioning.setRateBps(0);
+        provisioning.setPromotionReason("新店首年推广");
+
+        service.approve(6L, provisioning, "推广期免佣", 7L);
+
+        assertEquals(MerchantOnboardingService.STATUS_APPROVED, application.getStatus());
+        verify(feePolicyService).createInitialPolicy(eq(100L), eq(0), eq("新店首年推广"), any(), eq(7L));
     }
 
     private MerchantOnboardingService.ApplicationForm individualForm() {

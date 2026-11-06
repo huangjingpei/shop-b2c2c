@@ -1,6 +1,6 @@
 /*
  * 文件：RefundTransactionService.java
- * 用途：T33 退款数据库事务层：退款额度/服务费预占、退款记录落库、成功确认、失败释放与全额退款库存回退。
+ * 用途：T33 退款数据库事务层：退款额度/服务费预占、退款记录落库、成功确认、失败释放与全额退款库存回退 / 卡密作废。
  * 维护注意：
  *  1. 本类只做本地事务，不调用外部渠道；渠道调用必须在事务外由 RefundService 执行，避免长事务占用订单行锁。
  *  2. 预占、成功、失败全部使用条件 UPDATE；先查后改的并发不安全写法禁止出现在本类。
@@ -8,6 +8,8 @@
  *  4. source=DUPLICATE_PAYMENT 只落退款记录，不占用商品退款额度、不冲正服务费、不回退库存。
  *  5. 退款记录是资金证据，失败也保留，不提供删除。
  *  6. T34：退款成功迁移后接服务费账本红字/冲减欠费；本类不重建退款状态机与额度预占逻辑。
+ *  7. T40 默认口径：goods_type=2 的虚拟卡密订单全额退款成功后作废该订单已售卡密（status 1→2），
+ *     且不恢复 SKU 库存；卡密可能已交付，恢复库存会造成“库存数大于可用卡密数”。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -20,6 +22,7 @@ import com.shop.b2b2c.entity.TradeOrderItem;
 import com.shop.b2b2c.entity.TradeRefund;
 import com.shop.b2b2c.mapper.PaymentEventMapper;
 import com.shop.b2b2c.mapper.ProductSkuMapper;
+import com.shop.b2b2c.mapper.ProductVirtualCardMapper;
 import com.shop.b2b2c.mapper.TradeOrderItemMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
 import com.shop.b2b2c.mapper.TradeRefundMapper;
@@ -55,6 +58,7 @@ public class RefundTransactionService {
     private final TradeRefundMapper tradeRefundMapper;
     private final ProductSkuMapper productSkuMapper;
     private final PaymentEventMapper paymentEventMapper;
+    private final ProductVirtualCardMapper productVirtualCardMapper;
     private final com.shop.b2b2c.service.MerchantAccountService merchantAccountService;
 
     /**
@@ -184,6 +188,12 @@ public class RefundTransactionService {
             return;
         }
         // 只有成功迁移为 REFUNDED 的这一次调用回退库存，避免重复同步重复加库存。
+        TradeOrder refundedOrder = order != null ? order : tradeOrderMapper.selectById(refund.getOrderId());
+        if (refundedOrder != null && Integer.valueOf(2).equals(refundedOrder.getGoodsType())) {
+            // T40：虚拟卡密全额退款即作废已售卡密；卡密可能已交付，不回退 SKU 库存。
+            productVirtualCardMapper.voidSoldCardsByOrderSn(refund.getOrderSn(), refund.getMerchantId());
+            return;
+        }
         List<TradeOrderItem> items = tradeOrderItemMapper.findByOrderId(refund.getOrderId());
         for (TradeOrderItem item : items) {
             if (item.getQuantity() != null && item.getQuantity() > 0) {

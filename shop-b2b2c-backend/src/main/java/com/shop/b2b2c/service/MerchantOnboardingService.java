@@ -8,7 +8,7 @@
  * 3. 阶段一为人工审核，verificationMethod 固定 MANUAL，verificationSource 仅记录 MANUAL_REVIEW；
  *    未接第三方核验时不得标注为第三方实名，审核角色当前沿用平台超管（待用户确认）。
  * 4. 审核通过才创建店铺与店长账号；驳回/撤回不得产生店铺、账号或收款账户副作用。
- * 5. 默认费率沿用既有 3.00% 默认值，具体默认数值仍待用户确认；费率政策表与快照在 T39 第三段接入。
+ * 5. 默认费率沿用既有 3.00% 默认值，具体默认数值仍待用户确认；开店允许直接设 0%，但必须走 PROMOTION 并填写推广原因。
  * 6. 审核人、原因、前后状态与材料摘要写入 merchant_onboarding_audit；审计只追加不修改。
  */
 package com.shop.b2b2c.service;
@@ -404,9 +404,16 @@ public class MerchantOnboardingService {
                 && (provisioning.getMerchantType() < 1 || provisioning.getMerchantType() > 3)) {
             throw new BusinessException(400, "商户类型不合法");
         }
-        if (provisioning.getRateBps() != null
-                && (provisioning.getRateBps() < 100 || provisioning.getRateBps() > 1000)) {
-            throw new BusinessException(400, "开店费率须在 100–1000 基点（1%–10%）");
+        if (provisioning.getRateBps() != null) {
+            int rateBps = provisioning.getRateBps();
+            if (rateBps == 0) {
+                // T40 默认口径：允许开店直接设 0%，但必须为 PROMOTION 且写明原因。
+                if (provisioning.getPromotionReason() == null || provisioning.getPromotionReason().isBlank()) {
+                    throw new BusinessException(400, "0% 推广费率必须填写推广原因");
+                }
+            } else if (rateBps < 100 || rateBps > 1000) {
+                throw new BusinessException(400, "开店费率须为 0%（PROMOTION，需原因）或 100–1000 基点（1%–10%）");
+            }
         }
     }
 
