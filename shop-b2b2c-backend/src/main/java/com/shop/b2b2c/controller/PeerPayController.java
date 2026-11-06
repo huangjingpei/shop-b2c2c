@@ -6,6 +6,7 @@
  *  2. 取消必须提交 X-Reservation-Token。分享 token 仅定位账单，不能替代预占所有者凭证。
  *  3. T10：Idempotency-Key 只作为尝试键；恢复预占必须回传服务端上次签发的 X-Reservation-Token，最多重发 3 次。
  *  4. T36：建单、预占、海报限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。
+ *  5. T26：建单幂等事务只落库返回 token；posterBase64 在 execute 返回后由 attachPoster 事务外补齐，失败不影响建单。
  */
 package com.shop.b2b2c.controller;
 
@@ -48,6 +49,8 @@ public class PeerPayController {
         }
         costLimiter.checkOrderCreation(request != null ? ipResolver.resolve(request) : null, req.getBuyerContact());
         Map<String, Object> res = idempotency.execute("buyer:guest", key, req, () -> peerPayService.createBuyerPeerPay(req));
+        // T26：海报渲染在事务提交之后进行，失败只置 null，不回滚订单。
+        peerPayService.attachPoster(res);
         return R.ok("求助代付发起成功", res);
     }
 

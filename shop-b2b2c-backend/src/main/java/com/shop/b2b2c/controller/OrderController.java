@@ -1,7 +1,7 @@
 /*
  * 文件：OrderController.java
  * 用途：待付款建单、免登录查单、商家发货、平台订单及统一状态统计入口；建单代付编码复用PeerStatus。
- * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入，退款及已结算指标不可用。T24：商家/平台订单列表改为 created_at+id keyset 分页（不透明 cursor，非法参数 400），返回 page.total/hasMore/nextCursor，禁止 OFFSET 与静默截断。Q13-A（2026-11-06 口径澄清）：实物订单发货对店长与员工开放；推单/改价、资金操作、卡密明文与虚拟履约仍仅店长。T36：建单/查单限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。
+ * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入，退款及已结算指标不可用。T24：商家/平台订单列表改为 created_at+id keyset 分页（不透明 cursor，非法参数 400），返回 page.total/hasMore/nextCursor，禁止 OFFSET 与静默截断。T26：推单海报在幂等事务提交后由 attachPoster 生成，不在建单事务内光栅化。Q13-A（2026-11-06 口径澄清）：实物订单发货对店长与员工开放；推单/改价、资金操作、卡密明文与虚拟履约仍仅店长。T36：建单/查单限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。
  */
 package com.shop.b2b2c.controller;
 
@@ -426,6 +426,8 @@ public class OrderController {
         }
         Map<String, Object> res = idempotency.execute("push:" + merchantId + ":" + SecurityUtils.getCurrentUserId(), key, req,
                 () -> peerPayService.createPushPayOrder(req, merchantId));
+        // T26：推单海报在幂等事务提交后按需生成，失败不影响已落库订单。
+        peerPayService.attachPoster(res);
         return R.ok("代客推单生成成功", res);
     }
 

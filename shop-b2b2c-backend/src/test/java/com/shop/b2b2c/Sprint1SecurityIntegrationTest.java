@@ -6,6 +6,7 @@
 package com.shop.b2b2c;
 
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.PosterUtils;
 import com.shop.b2b2c.common.SecurityUtils;
 import com.shop.b2b2c.controller.OrderController;
 import com.shop.b2b2c.controller.ProductController;
@@ -3638,6 +3639,45 @@ class Sprint1SecurityIntegrationTest {
         assertNull(queriedBySn.getPosterUrl(), "findByOrderSn must project out posterUrl");
         TradeOrder queriedByContact = orders.findByOrderSnAndBuyerContact(queried.getOrderSn(), "13812345678").orElseThrow();
         assertNull(queriedByContact.getPosterUrl(), "findByOrderSnAndBuyerContact must project out posterUrl");
+    }
+
+    @Test
+    void t26PosterRenderingIsDeferredAndRetryableWithoutAffectingCommit() throws Exception {
+        var buyer = new PeerPayDTOs.BuyerCreateRequest();
+        buyer.setProductId(1L);
+        buyer.setSkuId(1L);
+        buyer.setQuantity(1);
+        buyer.setBuyerContact("13812345678");
+
+        // 1. 建单事务只落库：服务层不渲染海报，订单与明细已提交
+        Map<String, Object> created = payments.createBuyerPeerPay(buyer);
+        String token = (String) created.get("peerPayToken");
+        assertFalse(created.containsKey("posterBase64"));
+        assertNull(orders.findStoredPosterByToken(token));
+
+        TradeOrder committed = orders.findByPeerPayToken(token).orElseThrow();
+        assertEquals("UNPAID", committed.getOrderStatus());
+        assertEquals(1, items.findByOrderSn((String) created.get("orderSn")).size());
+
+        // 2. 补海报失败：只把字段置 null，订单不回滚、仍可重试
+        try (var poster = mockStatic(PosterUtils.class)) {
+            poster.when(() -> PosterUtils.generatePeerPayPoster(anyString(), anyString(), anyString(),
+                    any(), anyString(), anyString())).thenReturn(null);
+            Map<String, Object> attached = payments.attachPoster(created);
+            assertTrue(attached.containsKey("posterBase64"));
+            assertNull(attached.get("posterBase64"));
+        }
+        assertEquals("UNPAID", orders.findByPeerPayToken(token).orElseThrow().getOrderStatus());
+        assertNull(orders.findStoredPosterByToken(token));
+
+        // 3. 重试成功：生成并单字段落库，不影响已提交订单
+        try (var poster = mockStatic(PosterUtils.class)) {
+            poster.when(() -> PosterUtils.generatePeerPayPoster(anyString(), anyString(), anyString(),
+                    any(), anyString(), anyString())).thenReturn("data:image/png;base64,dGlueQ==");
+            assertEquals("data:image/png;base64,dGlueQ==", payments.attachPoster(created).get("posterBase64"));
+        }
+        assertEquals("data:image/png;base64,dGlueQ==", orders.findStoredPosterByToken(token));
+        assertEquals("UNPAID", orders.findByPeerPayToken(token).orElseThrow().getOrderStatus());
     }
 
     @Test

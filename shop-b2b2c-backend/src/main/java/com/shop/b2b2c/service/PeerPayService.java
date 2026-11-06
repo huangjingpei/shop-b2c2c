@@ -6,6 +6,8 @@
  *  2. 落账入参必须携带渠道实收金额/币种/商户号，禁止由实现从订单应付金额反填 (T06)。
  *  3. T10/Q17：ownerToken 只能由服务端生成并仅随预占响应返回；客户端幂等键不得恢复/取消预占；同一预占最多重发 3 次。
  *  4. 修改取消签名或 ownerToken 语义时须同步调用方、前端 (T29) 和回归测试。
+ *  5. T26：建单事务只负责落库并返回 token，不得在事务内做海报光栅化；海报由 attachPoster 在事务提交后按需生成，
+ *     生成失败不得回滚订单，调用方可改用 /poster/{token} 重试。
  */
 package com.shop.b2b2c.service;
 
@@ -82,4 +84,11 @@ public interface PeerPayService {
      * 重新生成代付海报 (Base64)
      */
     String regeneratePoster(String token);
+
+    /**
+     * T26：在业务事务提交后为建单响应补齐 posterBase64。
+     * 已存在则直接复用；缺失时按需生成并落库；生成失败只记录日志并置 null，不影响建单结果。
+     * 调用方必须在 idempotency.execute 返回之后调用，禁止放进事务回调。
+     */
+    Map<String, Object> attachPoster(Map<String, Object> creationResult);
 }

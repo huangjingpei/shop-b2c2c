@@ -2,6 +2,7 @@
  * 文件：PeerPayServiceImpl.java
  * 用途：代付交易与库存预占的事务实现，协调订单、SKU、卡密及人工服务履约；代付编码统一复用PeerStatus。
  * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。支付截止严格从下单时刻起算 15 分钟，预占成功只回写订单原始截止时间，不得重置为“当下 +15 分钟”；取消预占只回到意向态，不抹掉该截止时间。卡密缺货必须回滚。公开代付详情不能返回卡密或服务凭证；当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
+ * T26：createBuyerPeerPay/createPushPayOrder 的事务内禁止渲染海报（PNG 光栅化耗时且放大锁等待）；海报由 attachPoster 在事务提交后按需生成并单字段回写，失败不回滚订单。
  */
 package com.shop.b2b2c.service.impl;
 
@@ -136,13 +137,8 @@ public class PeerPayServiceImpl implements PeerPayService {
         item.setSubtotal(totalAmount);
         itemMapper.save(item);
 
-        // 生成 9:16 微信裂变防封海报并单字段回写，避免大实体写回竞争
+        // T26：海报不在此事务内渲染，由控制器在事务提交后调用 attachPoster 按需生成，避免 PNG 光栅化拉长建单事务。
         String cashierUrl = storefrontUrl + "/peer-pay/" + peerPayToken;
-        String goodsTypeName = product.getGoodsType() == 3 ? "定制服务" : product.getGoodsType() == 2 ? "自动卡密" : "实物商品";
-        String posterBase64 = PosterUtils.generatePeerPayPoster(
-                cashierUrl, store.getStoreName(), product.getTitle(), totalAmount, order.getPeerMessage(), goodsTypeName
-        );
-        orderMapper.updatePosterUrl(order.getId(), posterBase64);
 
         String wechatShareText = String.format("【%s】\n🎁 好友求助代付：%s\n💰 代付金额：￥%s\n👉 微信直接点开付款：%s\n（免注册免登录，微信内直接打开即可完成支付）",
                 order.getPeerMessage(), product.getTitle(), totalAmount.toPlainString(), cashierUrl);
@@ -151,7 +147,6 @@ public class PeerPayServiceImpl implements PeerPayService {
         result.put("orderSn", orderSn);
         result.put("peerPayToken", peerPayToken);
         result.put("cashierUrl", cashierUrl);
-        result.put("posterBase64", posterBase64);
         result.put("peerMessage", order.getPeerMessage());
         result.put("payAmount", totalAmount);
         result.put("queryToken", queryToken);
@@ -241,12 +236,8 @@ public class PeerPayServiceImpl implements PeerPayService {
         item.setSubtotal(totalAmount);
         itemMapper.save(item);
 
+        // T26：推单同样只落库，海报在事务提交后由 attachPoster 按需生成。
         String cashierUrl = storefrontUrl + "/peer-pay/" + peerPayToken;
-        String goodsTypeName = product.getGoodsType() == 3 ? "定制服务" : product.getGoodsType() == 2 ? "自动卡密" : "实物商品";
-        String posterBase64 = PosterUtils.generatePeerPayPoster(
-                cashierUrl, store.getStoreName(), product.getTitle(), totalAmount, order.getPeerMessage(), goodsTypeName
-        );
-        orderMapper.updatePosterUrl(order.getId(), posterBase64);
 
         String wechatShareText = String.format("【%s · 专属定制账单】\n尊贵的客户您好，这是为您定制的专属订单，请查收：\n📦 商品：%s\n💰 协议专享价：￥%s\n👉 微信点开直接付款：%s\n（微信内打开直接支付，无需加购选规格）",
                 store.getStoreName(), product.getTitle(), totalAmount.toPlainString(), cashierUrl);
@@ -255,7 +246,6 @@ public class PeerPayServiceImpl implements PeerPayService {
         result.put("orderSn", orderSn);
         result.put("peerPayToken", peerPayToken);
         result.put("cashierUrl", cashierUrl);
-        result.put("posterBase64", posterBase64);
         result.put("queryToken", queryToken);
         result.put("buyerContact", order.getBuyerContact());
         result.put("unitPrice", unitPrice);
@@ -580,6 +570,32 @@ public class PeerPayServiceImpl implements PeerPayService {
         return adConfigMapper.findFirstByAdLocationAndIsEnabledOrderBySortOrderDesc("PAYER_SUCCESS", 1)
                 .or(() -> adConfigMapper.findFirstByAdLocationAndIsEnabledOrderBySortOrderDesc("PAYER_SUCCESS_CONVERSION", 1))
                 .orElse(null);
+    }
+
+    /**
+     * T26：建单事务提交后的海报补齐入口。已生成则复用；缺失则按需渲染并单字段落库；
+     * 渲染异常/失败只降级为 null，绝不反向影响已提交的订单与库存。
+     */
+    @Override
+    public Map<String, Object> attachPoster(Map<String, Object> creationResult) {
+        if (creationResult == null) return null;
+        Object existing = creationResult.get("posterBase64");
+        if (existing instanceof String poster && !poster.isBlank()) {
+            return creationResult;
+        }
+        Object tokenValue = creationResult.get("peerPayToken");
+        if (tokenValue == null || tokenValue.toString().isBlank()) {
+            return creationResult;
+        }
+        String token = tokenValue.toString();
+        try {
+            creationResult.put("posterBase64", regeneratePoster(token));
+        } catch (RuntimeException e) {
+            // 建单已成功：海报失败不抛出，保留字段并允许 /poster/{token} 重试。
+            log.warn("代付海报生成失败，建单已提交，可稍后重试 token={}: {}", token, e.getMessage());
+            creationResult.put("posterBase64", null);
+        }
+        return creationResult;
     }
 
     @Override
