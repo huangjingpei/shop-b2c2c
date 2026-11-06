@@ -3,6 +3,7 @@
 用途：代付账单详情、倒计时、分享海报及结果展示。
 维护注意：本页不接收或展示领取凭证、卡密及服务交付内容；真实付款未开放，禁止恢复随机付款人Mock调用。将来取消预占须保存ownerToken并显式授权；本地倒计时不是库存锁或支付状态权威来源。
 T28：账单与海报请求使用序号，token 切换时立即清空旧海报并作废旧响应；失败态可重试；复制走 @shared/clipboard.mjs，失败只提示手动复制。
+T29：点击代付前调用 pre-lock 预占库存，ownerToken 存 sessionStorage（与 Idempotency-Key 尝试键分离），刷新恢复时回传 X-Reservation-Token；离开/超时/切换 token 调 cancel-lock 释放。上线顺序：后端 T10（8874b6a）必须先于本页发布，禁止前端先发，否则刷新恢复会被误判为“已被其他付款人预占中”。
 -->
 <template>
   <div class="min-h-screen bg-[#F5F5F7] text-slate-800 antialiased pb-12">
@@ -158,20 +159,49 @@ T28：账单与海报请求使用序号，token 切换时立即清空旧海报�
 
           <!-- 状态 C: 待付款 / 立即支付操作区 (美团亮黄大圆角按钮) -->
           <div v-else class="space-y-3 pt-1">
-            
-            <!-- 主按钮：美团经典亮黄 (#FFD101) 立即替TA付款 (全圆角胶囊型) -->
+
+            <!-- T29：预占成功后的库存保留提示（支付通道尚未开放） -->
+            <div v-if="reservation" class="rounded-xl bg-emerald-50 border border-emerald-100 px-3 py-2.5 text-left">
+              <p class="text-xs font-bold text-emerald-700">库存已为你保留 {{ countdownMinutes }}:{{ countdownSeconds }}</p>
+              <p class="text-[11px] text-emerald-600 mt-1 leading-snug">支付通道暂未开放；离开页面或倒计时结束会自动释放库存，不会扣款。</p>
+            </div>
+
+            <!-- T29：预占失败明确提示，并提供刷新账单路径 -->
+            <div v-if="reserveError" role="alert" class="rounded-xl bg-rose-50 border border-rose-100 px-3 py-2.5 text-left">
+              <p class="text-xs font-semibold text-rose-700">{{ reserveError }}</p>
+              <button
+                type="button"
+                @click="refreshBill"
+                class="mt-2 px-3 py-1.5 rounded-lg bg-white border border-rose-200 text-rose-700 text-[11px] font-bold hover:bg-rose-100 transition"
+              >
+                刷新账单后重试
+              </button>
+            </div>
+
+            <!-- 主按钮：美团经典亮黄 (#FFD101)；已预占时仅提示支付未开放 -->
             <button 
-              @click="quickPay" 
-              :disabled="locking || paying"
+              @click="reservation ? notifyPaymentUnavailable() : startReservation()" 
+              :disabled="reserving"
               class="w-full py-3.5 rounded-full bg-[#FFD101] hover:bg-[#FFC500] active:scale-[0.99] text-slate-900 font-bold text-base shadow-sm transition flex items-center justify-center space-x-1.5 disabled:opacity-50"
             >
-              <span v-if="locking || paying" class="flex items-center space-x-2">
+              <span v-if="reserving" class="flex items-center space-x-2">
                 <div class="w-4 h-4 border-2 border-slate-900 border-t-transparent rounded-full animate-spin"></div>
-                <span>{{ locking ? '正在抢占锁定库存...' : '正在拉起微信支付...' }}</span>
+                <span>正在抢占锁定库存...</span>
               </span>
+              <span v-else-if="reservation">确认付款（暂未开放）</span>
               <span v-else>
-                支付暂未开放（待付 ¥{{ Number(detail.payAmount).toFixed(2) }}）
+                立即代付（先预占库存，待付 ¥{{ Number(detail.payAmount).toFixed(2) }}）
               </span>
+            </button>
+
+            <!-- T29：主动释放预占，避免占用商家库存 -->
+            <button
+              v-if="reservation"
+              type="button"
+              @click="cancelReservation"
+              class="w-full py-2.5 rounded-full bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 text-xs font-semibold transition"
+            >
+              释放库存并退出付款
             </button>
 
             <!-- 次级按钮：发给微信好友 (生成专属口令与分享卡片) -->
@@ -333,11 +363,28 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 import { copyText } from '@shared/clipboard.mjs'
+import {
+  readOwnerToken,
+  saveOwnerToken,
+  clearOwnerToken,
+  ensureAttemptKey,
+  clearAttemptKey,
+  buildPreLockHeaders,
+  buildCancelHeaders,
+  reservationFailureView
+} from '../utils/peerPayReservation.mjs'
 
 const route = useRoute()
 const router = useRouter()
 
-const handleGoBack = () => {
+const handleGoBack = async () => {
+  // T29：离开收银台前主动取消预占，避免占用商家库存。
+  const token = currentShareToken()
+  const ownerToken = reservation.value?.ownerToken || readOwnerToken(token)
+  if (token && ownerToken) {
+    await releaseReservationFor(token, ownerToken)
+    reservation.value = null
+  }
   if (window.history.length > 1) {
     router.back()
   } else {
@@ -350,8 +397,10 @@ const showWechatGuide = ref(false)
 const hideProductInfo = ref(false)
 
 const loading = ref(true)
-const locking = ref(false)
-const paying = ref(false)
+// T29：预占状态。ownerToken 只保存在 sessionStorage，尝试幂等键与 ownerToken 分离。
+const reserving = ref(false)
+const reservation = ref(null)
+const reserveError = ref('')
 const errorMsg = ref('')
 const detail = ref(null)
 const selectedChannel = ref('WECHAT')
@@ -400,6 +449,8 @@ const formatSpec = (specStr) => {
   }
 }
 
+const currentShareToken = () => route.params.token || detail.value?.token
+
 const startCountdownTimer = (seconds) => {
   if (timer) clearInterval(timer)
   lockCountdown.value = Math.max(0, seconds)
@@ -408,7 +459,15 @@ const startCountdownTimer = (seconds) => {
       lockCountdown.value--
     } else {
       clearInterval(timer)
-      loadDetail() // 超时刷新
+      timer = null
+      // T29：倒计时结束服务端已过期，本地立即丢弃 ownerToken/尝试键，避免后续误带过期凭据。
+      const token = currentShareToken()
+      if (token) {
+        clearOwnerToken(token)
+        clearAttemptKey(token)
+      }
+      reservation.value = null
+      loadDetail()
     }
   }, 1000)
 }
@@ -464,6 +523,8 @@ const loadDetail = async (currentToken = route.params.token) => {
   const sequence = ++detailSequence
   if (timer) clearInterval(timer)
   resetPoster()
+  reservation.value = null
+  reserveError.value = ''
   loading.value = true
   errorMsg.value = ''
   detail.value = null
@@ -502,12 +563,79 @@ const loadAdBanner = async () => {
   } catch (ignored) {}
 }
 
-// 核心一键支付：自动抢占原子预占并调起支付结算
-const quickPay = async () => {
+// T29：取消/释放预占。带 X-Reservation-Token 头，403/404 视为已释放，不阻断本地清理。
+const releaseReservationFor = async (token, ownerToken) => {
+  if (!token || !ownerToken) return
+  try {
+    await axios.post(`/api/v1/peer-pay/cancel-lock/${token}`, null, { headers: buildCancelHeaders(ownerToken) })
+  } catch (e) {
+    // 预占可能已到期或被服务端释放，忽略错误但继续清理本地凭据。
+  } finally {
+    clearOwnerToken(token)
+    clearAttemptKey(token)
+  }
+}
+
+const notifyPaymentUnavailable = () => {
   alert('支付通道暂未开放，当前账单不能付款，尚未扣款或交付商品。')
 }
 
-watch(() => route.params.token, (newToken) => {
+const refreshBill = () => {
+  reserveError.value = ''
+  loadDetail()
+}
+
+const startReservation = async () => {
+  const token = currentShareToken()
+  if (!token || reserving.value) return
+  reserving.value = true
+  reserveError.value = ''
+  try {
+    const ownerToken = readOwnerToken(token)
+    const attemptKey = ensureAttemptKey(token)
+    // 契约：尝试幂等键始终发送；仅在刷新恢复时才带 X-Reservation-Token（ownerToken）。
+    const res = await axios.post(`/api/v1/peer-pay/pre-lock/${token}`, null, {
+      headers: buildPreLockHeaders({ ownerToken, attemptKey })
+    })
+    if (res.data?.code !== 200 || !res.data?.data) {
+      throw { response: { status: res.data?.code, data: res.data } }
+    }
+    const data = res.data.data
+    saveOwnerToken(token, data.ownerToken)
+    // 预占成功后本次尝试已完成；下一次付款尝试重新生成键，避免跨尝试复用。
+    clearAttemptKey(token)
+    reservation.value = { ownerToken: data.ownerToken, lockSeconds: data.lockSeconds ?? 0, expireTime: data.expireTime }
+    lockCountdown.value = Math.max(0, Number(data.lockSeconds) || 0)
+    if (detail.value) detail.value.peerStatus = data.peerStatus || 'RESERVED_LOCK'
+    startCountdownTimer(lockCountdown.value)
+  } catch (err) {
+    const view = reservationFailureView(err)
+    reserveError.value = view.title + '：' + view.detail
+  } finally {
+    reserving.value = false
+  }
+}
+
+const cancelReservation = async () => {
+  const token = currentShareToken()
+  const ownerToken = reservation.value?.ownerToken || readOwnerToken(token)
+  await releaseReservationFor(token, ownerToken)
+  reservation.value = null
+  lockCountdown.value = 0
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+  if (detail.value) detail.value.peerStatus = 'INIT'
+  alert('已释放库存预占')
+}
+
+watch(() => route.params.token, (newToken, oldToken) => {
+  // T29：切换分享 token 前释放旧预占，凭据按 token 隔离。
+  if (oldToken && oldToken !== newToken) {
+    const ownerToken = readOwnerToken(oldToken)
+    if (ownerToken) releaseReservationFor(oldToken, ownerToken)
+  }
   if (newToken) {
     loadDetail(newToken)
     loadAdBanner()
@@ -516,6 +644,10 @@ watch(() => route.params.token, (newToken) => {
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  // T29：页面卸载（含浏览器返回）时释放当前预占。
+  const token = currentShareToken()
+  const ownerToken = reservation.value?.ownerToken || readOwnerToken(token)
+  if (token && ownerToken) releaseReservationFor(token, ownerToken)
   // T28：卸载后丢弃未完成的详情/海报响应
   detailSequence++
   posterSequence++

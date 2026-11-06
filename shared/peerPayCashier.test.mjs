@@ -36,3 +36,17 @@ test('失败态提供重试且卸载时作废未完成请求', () => {
   assert.ok(unmounted.includes('detailSequence++') && unmounted.includes('posterSequence++'))
   assert.equal(source.includes('快速支付暂未开放') || source.includes('支付暂未开放'), true)
 })
+
+test('T29 付款前预占、保存 ownerToken、离开/超时释放', () => {
+  assert.ok(source.includes('peerPayReservation.mjs'), '必须复用预占凭据工具')
+  assert.ok(source.includes('buildPreLockHeaders({ ownerToken, attemptKey })'), 'pre-lock 必须带尝试键并在恢复时带 ownerToken')
+  assert.ok(source.includes('saveOwnerToken(token, data.ownerToken)'), '成功后必须持久化服务端 ownerToken')
+  assert.ok(source.includes('ensureAttemptKey(token)'), '尝试键与 ownerToken 分离生成')
+  assert.ok(source.includes('buildCancelHeaders(ownerToken)'), '取消必须显式提交所有权凭证')
+  assert.ok(source.includes('reservation.value?.ownerToken || readOwnerToken(token)'), '刷新后从 sessionStorage 恢复 ownerToken')
+  const unmounted = source.slice(source.indexOf('onUnmounted('))
+  assert.ok(unmounted.includes('releaseReservationFor('), '卸载时必须释放预占')
+  const timer = source.slice(source.indexOf('const startCountdownTimer'))
+  assert.ok(timer.includes('clearOwnerToken(token)') && timer.includes('clearAttemptKey(token)'), '倒计时结束必须清理本地凭据')
+  assert.ok(source.includes('刷新账单后重试'), '预占失败必须提供刷新路径')
+})
