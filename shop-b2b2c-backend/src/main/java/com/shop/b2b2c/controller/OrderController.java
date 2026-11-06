@@ -55,6 +55,7 @@ public class OrderController {
     private final com.shop.b2b2c.service.OrderIdempotencyService idempotency;
     private final com.shop.b2b2c.service.CardCipherService cardCipher;
     private final com.shop.b2b2c.service.TradeCostLimiter costLimiter;
+    private final com.shop.b2b2c.service.ServiceFeeSnapshotService feeSnapshotService;
 
     @Data
     public static class CheckoutDTO {
@@ -140,6 +141,8 @@ public class OrderController {
         order.setCommissionRate(commissionRate);
         order.setCommissionAmount(commissionAmount);
         order.setMerchantSettleAmount(merchantSettleAmount);
+        // T34：固化订单级服务费快照，后续费率调整不回溯本单。
+        feeSnapshotService.apply(order, store, totalAmount);
         // T32：阶段一商家直收；渠道只接受 WECHAT/ALIPAY，不接受旧 A/B/C 或 MOCK。
         String payChannel = PayChannel.normalize(
                 dto.getPaymentChannel() == null || dto.getPaymentChannel().isBlank()

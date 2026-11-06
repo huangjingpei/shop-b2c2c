@@ -55,9 +55,12 @@ class RefundServiceTest {
     private final TradeRefundMapper refundMapper = mock(TradeRefundMapper.class);
     private final ProductSkuMapper skuMapper = mock(ProductSkuMapper.class);
     private final PaymentEventMapper eventMapper = mock(PaymentEventMapper.class);
+    private final com.shop.b2b2c.service.MerchantAccountService accountService =
+            mock(com.shop.b2b2c.service.MerchantAccountService.class);
 
     private RefundTransactionService transactionService() {
-        return new RefundTransactionService(orderMapper, itemMapper, refundMapper, skuMapper, eventMapper);
+        return new RefundTransactionService(orderMapper, itemMapper, refundMapper, skuMapper, eventMapper,
+                accountService);
     }
 
     @Test

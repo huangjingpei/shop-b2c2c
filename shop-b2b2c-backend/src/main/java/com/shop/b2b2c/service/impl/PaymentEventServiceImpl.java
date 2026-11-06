@@ -9,6 +9,7 @@
  *  4. 实收金额/币种必须来自渠道事件，禁止从订单 payAmount 反填；缺失或不等即拒绝，不得交付资产。
  *  5. 已支付订单收到不同流水号时必须落 DUPLICATE_PAYMENT 事件，不得静默返回；退款动作由后续补偿/退款任务处理。
  *  6. 不新建第二套支付事件表，不恢复公开 Mock/未验签到账入口。
+ *  7. T34：首次支付成功时在同一事务内扣减/挂账服务费；重放不重复扣费，扣费失败不得让事件停在 SUCCESS。
  */
 package com.shop.b2b2c.service.impl;
 
@@ -53,6 +54,7 @@ public class PaymentEventServiceImpl implements PaymentEventService {
     private final InventoryReservationMapper reservationMapper;
     private final ProductVirtualCardMapper cardMapper;
     private final com.shop.b2b2c.service.CardCipherService cardCipher;
+    private final com.shop.b2b2c.service.MerchantAccountService merchantAccountService;
     private final PlatformTransactionManager transactionManager;
 
     @Override
@@ -270,6 +272,10 @@ public class PaymentEventServiceImpl implements PaymentEventService {
         }
 
         order = orderMapper.save(order);
+        // T34：首次到账才扣费；账本幂等键兜底，重放不会重复扣费。
+        if (!alreadyPaid) {
+            merchantAccountService.chargeOrderFee(order, pe.getId());
+        }
         eventRecorder.recordEventStatus(pe.getId(), STATUS_SUCCESS, null);
 
         log.info("【支付事件履约完成】渠道={}, 流水号={}, 订单号={}, 状态={}", channel, payTradeNo, orderSn, order.getOrderStatus());

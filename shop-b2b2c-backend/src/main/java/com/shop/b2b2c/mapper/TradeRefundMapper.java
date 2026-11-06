@@ -103,4 +103,15 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
             + "AND (SELECT COALESCE(SUM(r.refund_amount), 0) FROM trade_refund r "
             + "WHERE r.order_id = o.id AND r.source = 'ORDER' AND r.status = 'SUCCESS') >= o.pay_amount")
     int markOrderRefundedIfFullyRefunded(@Param("orderId") Long orderId);
+
+    /**
+     * T34：按账期读取已成功的订单退款明细，用于生成结算冲正行。
+     */
+    @org.apache.ibatis.annotations.Select("SELECT * FROM trade_refund WHERE merchant_id = #{merchantId} "
+            + "AND source = 'ORDER' AND status = 'SUCCESS' "
+            + "AND updated_at >= #{from} AND updated_at < #{to} "
+            + "AND fee_refund_amount > 0 ORDER BY id")
+    java.util.List<TradeRefund> findSuccessfulOrderRefundsByPeriod(@Param("merchantId") Long merchantId,
+                                                                    @Param("from") java.time.LocalDateTime from,
+                                                                    @Param("to") java.time.LocalDateTime to);
 }

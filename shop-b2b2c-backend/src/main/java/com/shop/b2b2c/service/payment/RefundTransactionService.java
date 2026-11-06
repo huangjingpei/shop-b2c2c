@@ -7,6 +7,7 @@
  *  3. 商品退款额度 refunded_amount/fee_refunded_amount 含 PROCESSING 预占；只有成功记录累计达到实付才置订单 REFUNDED 并回退库存。
  *  4. source=DUPLICATE_PAYMENT 只落退款记录，不占用商品退款额度、不冲正服务费、不回退库存。
  *  5. 退款记录是资金证据，失败也保留，不提供删除。
+ *  6. T34：退款成功迁移后接服务费账本红字/冲减欠费；本类不重建退款状态机与额度预占逻辑。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -54,6 +55,7 @@ public class RefundTransactionService {
     private final TradeRefundMapper tradeRefundMapper;
     private final ProductSkuMapper productSkuMapper;
     private final PaymentEventMapper paymentEventMapper;
+    private final com.shop.b2b2c.service.MerchantAccountService merchantAccountService;
 
     /**
      * 订单商品退款：加订单行锁、校验额度、按快照比例预占服务费并落 PROCESSING 退款记录。
@@ -172,6 +174,11 @@ public class RefundTransactionService {
         }
         if (!SOURCE_ORDER.equals(refund.getSource())) {
             return;
+        }
+        // T34：先按已成功退款额冲正服务费账本，再判断是否整单退款；部分退款也必须冲正。
+        TradeOrder order = tradeOrderMapper.selectById(refund.getOrderId());
+        if (order != null) {
+            merchantAccountService.reverseOrderFee(order, refund);
         }
         if (tradeRefundMapper.markOrderRefundedIfFullyRefunded(refund.getOrderId()) != 1) {
             return;

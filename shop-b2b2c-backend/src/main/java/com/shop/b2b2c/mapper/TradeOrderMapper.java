@@ -210,4 +210,15 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
     List<OrderStatisticsAggregate> aggregateOrderStatistics(@Param("merchantId") Long merchantId,
                                                             @Param("from") LocalDateTime from,
                                                             @Param("to") LocalDateTime to);
+
+    /**
+     * T34：结算生成时按账期读取已支付订单。只用于结算明细生成，不用于列表/统计接口。
+     */
+    @Select("SELECT * FROM trade_order WHERE merchant_id = #{merchantId} "
+            + "AND created_at >= #{from} AND created_at < #{to} "
+            + "AND order_status IN ('PAID','SHIPPED','COMPLETED','REFUNDED') "
+            + "ORDER BY created_at, id")
+    List<TradeOrder> findFeeBearingByMerchantAndPeriod(@Param("merchantId") Long merchantId,
+                                                       @Param("from") LocalDateTime from,
+                                                       @Param("to") LocalDateTime to);
 }

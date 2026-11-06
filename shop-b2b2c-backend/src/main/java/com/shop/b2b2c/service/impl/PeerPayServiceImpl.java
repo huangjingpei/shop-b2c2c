@@ -42,6 +42,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     private final ProductVirtualCardMapper cardMapper;
     private final PlatformAdConfigMapper adConfigMapper;
     private final com.shop.b2b2c.service.PaymentEventService paymentEventService;
+    private final com.shop.b2b2c.service.ServiceFeeSnapshotService feeSnapshotService;
 
     @Value("${app.frontend.storefront-url:http://localhost:3002}")
     private String storefrontUrl;
@@ -106,6 +107,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setCommissionRate(commissionRate);
         order.setCommissionAmount(commissionAmount);
         order.setMerchantSettleAmount(merchantSettleAmount);
+        feeSnapshotService.apply(order, store, totalAmount);
         order.setOrderStatus("UNPAID");
         order.setSharingStatus("PENDING");
         // T32：阶段一固定商家直收，真实渠道与 A/B/C 收款模式解耦；旧 payment_channel 仅保留迁移值。
@@ -214,6 +216,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setCommissionRate(commissionRate);
         order.setCommissionAmount(commissionAmount);
         order.setMerchantSettleAmount(merchantSettleAmount);
+        feeSnapshotService.apply(order, store, totalAmount);
         order.setOrderStatus("UNPAID");
         order.setSharingStatus("PENDING");
         // T32：阶段一固定商家直收，真实渠道与 A/B/C 收款模式解耦；旧 payment_channel 仅保留迁移值。

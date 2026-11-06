@@ -1,6 +1,6 @@
 # 文件：application.yml
 # 用途：Spring Boot数据源、会话、SQL初始化、前台地址和认证/CORS边界配置。
-# 维护注意：升级至令牌级授权快照后旧登录需重新登录；生产必须注入SPRING_DATASOURCE_USERNAME/PASSWORD且不得回退root，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一结构入口，演示账号/商品仅由db/demo-seed.sql在显式开关下加载，生产profile禁用SQL初始化；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；新库靠schema.sql，存量库靠db/migrations/Vxxx脚本（app.schema-migration）且失败阻断启动；不得开启记录卡密/领取凭证的SQL参数日志。
+# 维护注意：升级至令牌级授权快照后旧登录需重新登录；生产必须注入SPRING_DATASOURCE_USERNAME/PASSWORD且不得回退root，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一结构入口，演示账号/商品仅由db/demo-seed.sql在显式开关下加载，生产profile禁用SQL初始化；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；新库靠schema.sql，存量库靠db/migrations/Vxxx脚本（app.schema-migration）且失败阻断启动；不得开启记录卡密/领取凭证的SQL参数日志。shop.settlement.fee-tax-rate 是服务费价税分离税率，默认0.06，不得把税额默认0；monthly-cron 只生成结算草稿，确认仍须人工。
 server:
   port: ${SERVER_PORT:8080}
   servlet:
@@ -125,6 +125,14 @@ springdoc:
     path: /v3/api-docs
   swagger-ui:
     path: /swagger-ui.html
+
+# T34 服务费账本与结算
+shop:
+  settlement:
+    # 服务费价税分离税率；未显式配置时按0.06计算，不允许默认0税额
+    fee-tax-rate: ${SETTLEMENT_FEE_TAX_RATE:0.06}
+    # 月度结算草稿生成任务，仅生成DRAFT，不自动确认
+    monthly-cron: ${SETTLEMENT_MONTHLY_CRON:0 20 2 1 * ?}
 
 # R27/T27：幂等轻量映射保留 30 天（Q18-B），清理受最大轮次与时间预算约束
 idempotency:

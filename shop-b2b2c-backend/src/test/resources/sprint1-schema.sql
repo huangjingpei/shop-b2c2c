@@ -152,7 +152,22 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `merchant_settle_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '商户应收净货款',
   `refunded_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T33 已退款商品金额（含处理中预占）',
   `fee_refunded_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T33 已冲正/预占技术服务费（含处理中预占）',
-  `fee_status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'T33 服务费状态 PENDING/PARTIAL_REVERSED/REVERSED',
+  `fee_status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'T33/T34 服务费状态 PENDING/ACCRUED/ARREARS/PARTIAL_REVERSED/REVERSED',
+  `goods_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 计费基数：商品成交额',
+  `merchant_discount_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 商家优惠金额',
+  `platform_discount_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 平台优惠金额',
+  `shipping_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 运费',
+  `order_tax_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 订单税额',
+  `fee_policy_id` BIGINT NULL COMMENT 'T34 费率政策版本ID',
+  `fee_rate_bps` INT NOT NULL DEFAULT 0 COMMENT 'T34 订单级费率快照（万分比）',
+  `fee_rate_type` VARCHAR(24) NOT NULL DEFAULT 'NORMAL' COMMENT 'T34 NORMAL/PROMOTION',
+  `fee_base_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 计费基数',
+  `fee_standard_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 标准服务费',
+  `fee_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 应收服务费',
+  `fee_waived_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 减免金额',
+  `fee_net_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 不含税服务费',
+  `fee_tax_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 服务费税额',
+  `fee_tax_rate` DECIMAL(7,4) NOT NULL DEFAULT 0.0000 COMMENT 'T34 服务费税率快照',
   `order_status` VARCHAR(32) NOT NULL DEFAULT 'UNPAID' COMMENT 'UNPAID, PAID, SHIPPED, COMPLETED, REFUNDED, CLOSED',
   `sharing_status` VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING, PROCESSING, FINISHED, FAILED',
   `payment_channel` VARCHAR(32) DEFAULT 'WECHAT' COMMENT 'WECHAT, ALIPAY; T32 起只写真实渠道',
@@ -380,4 +395,107 @@ CREATE TABLE IF NOT EXISTS payment_event (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT uk_channel_trade_no UNIQUE (channel, pay_trade_no)
+);
+
+-- 20. 商家服务费账户（T34，H2 隔离测试夹具）
+CREATE TABLE IF NOT EXISTS merchant_account (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT NOT NULL,
+  balance_available DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  balance_frozen DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  arrears DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  credit_limit DECIMAL(12,2) NOT NULL DEFAULT 500.00,
+  grace_days INT NULL,
+  arrears_due_at DATETIME NULL,
+  currency VARCHAR(16) NOT NULL DEFAULT 'CNY',
+  version INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_account_merchant UNIQUE (merchant_id)
+);
+
+-- 21. 服务费账本（T34）
+CREATE TABLE IF NOT EXISTS merchant_account_ledger (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT NOT NULL,
+  entry_type VARCHAR(32) NOT NULL,
+  direction VARCHAR(8) NOT NULL,
+  amount DECIMAL(12,2) NOT NULL,
+  balance_after DECIMAL(12,2) NOT NULL,
+  arrears_after DECIMAL(12,2) NOT NULL,
+  biz_type VARCHAR(24) NOT NULL,
+  biz_id BIGINT NULL,
+  order_sn VARCHAR(64) NULL,
+  refund_no VARCHAR(64) NULL,
+  idempotency_key VARCHAR(128) NOT NULL,
+  remark VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_ledger_idempotency UNIQUE (idempotency_key)
+);
+
+-- 22. 商家充值单（T34）
+CREATE TABLE IF NOT EXISTS merchant_recharge_order (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  recharge_no VARCHAR(64) NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  amount DECIMAL(12,2) NOT NULL,
+  confirmed_amount DECIMAL(12,2) NULL,
+  voucher_no VARCHAR(128) NOT NULL,
+  voucher_proof_url VARCHAR(512) NULL,
+  payer_name VARCHAR(128) NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  ledger_entry_id BIGINT NULL,
+  confirmed_by BIGINT NULL,
+  confirmed_at DATETIME NULL,
+  reject_reason VARCHAR(255) NULL,
+  version INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_recharge_no UNIQUE (recharge_no),
+  CONSTRAINT uk_recharge_voucher UNIQUE (voucher_no)
+);
+
+-- 23. 结算批次（T34）
+CREATE TABLE IF NOT EXISTS merchant_settlement_batch (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  batch_no VARCHAR(64) NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  period_start DATE NOT NULL,
+  period_end DATE NOT NULL,
+  settlement_type VARCHAR(24) NOT NULL DEFAULT 'SERVICE_FEE',
+  gross_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  refund_base_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  fee_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  adjustment_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  net_fee_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  paid_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  arrears_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  status VARCHAR(24) NOT NULL DEFAULT 'DRAFT',
+  confirmed_by BIGINT NULL,
+  confirmed_at DATETIME NULL,
+  version INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_settlement_period UNIQUE (merchant_id, period_start, period_end, settlement_type)
+);
+
+-- 24. 结算明细（T34）
+CREATE TABLE IF NOT EXISTS merchant_settlement_item (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  batch_id BIGINT NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  item_type VARCHAR(24) NOT NULL,
+  order_id BIGINT NOT NULL,
+  order_sn VARCHAR(64) NOT NULL,
+  goods_type TINYINT NOT NULL DEFAULT 1,
+  payment_event_id BIGINT NULL,
+  refund_id BIGINT NOT NULL DEFAULT 0,
+  refund_no VARCHAR(64) NULL,
+  billable_base DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  fee_rate_bps INT NOT NULL DEFAULT 0,
+  fee_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  fee_refunded_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  net_fee DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_settlement_item UNIQUE (batch_id, item_type, order_id, refund_id)
 );

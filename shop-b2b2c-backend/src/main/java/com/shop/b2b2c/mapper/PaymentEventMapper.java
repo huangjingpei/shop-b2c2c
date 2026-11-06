@@ -51,4 +51,11 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
             + "AND o.order_status NOT IN ('PAID', 'COMPLETED', 'SHIPPED') "
             + "ORDER BY e.id LIMIT #{limit}")
     List<PaymentEvent> findSuccessfulWithoutPaidOrder(@Param("limit") int limit);
+
+    /**
+     * T34：结算明细回填支付事件ID；同一订单理论上只取最早的一条 SUCCESS 付款事件。
+     */
+    @Select("SELECT * FROM payment_event WHERE order_sn = #{orderSn} AND event_status = 'SUCCESS' "
+            + "ORDER BY id LIMIT 1")
+    PaymentEvent findFirstSuccessByOrderSn(@Param("orderSn") String orderSn);
 }
