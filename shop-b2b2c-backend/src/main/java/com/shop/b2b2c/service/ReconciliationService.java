@@ -60,6 +60,9 @@ public class ReconciliationService {
     public static final String DUPLICATE_PAYMENT = "DUPLICATE_PAYMENT";
     public static final String SETTLEMENT_ITEM_MISMATCH = "SETTLEMENT_ITEM_MISMATCH";
 
+    /** 财务基线：同一差异自动重试上限；达到上限仍不一致必须转人工，不得无限重试。 */
+    public static final int MAX_RETRY_COUNT = 3;
+
     /**
      * 导入渠道流水。重复 (channel, channelTradeNo) 跳过；不做金额自动纠正。
      */
@@ -235,15 +238,18 @@ public class ReconciliationService {
 
     /**
      * 重试差异：仅做只读复核；能从现有证据确认一致时置 RESOLVED，否则保持 RETRY 等待人工。
+     * 重试次数达到 {@link #MAX_RETRY_COUNT} 仍不一致时转 MANUAL，后续重试直接拒绝，只能人工关闭。
      */
     @Transactional
     public ReconciliationDifference retry(Long id, Long operatorId) {
         ReconciliationDifference difference = require(id);
-        difference.setRetryCount((difference.getRetryCount() == null ? 0 : difference.getRetryCount()) + 1);
-        difference.setStatus("RETRY");
+        if ("MANUAL".equals(difference.getStatus())) {
+            throw new BusinessException(409, "该差异已超过重试上限转人工，请人工处理");
+        }
+        int retryCount = (difference.getRetryCount() == null ? 0 : difference.getRetryCount()) + 1;
+        difference.setRetryCount(retryCount);
         difference.setHandledBy(operatorId);
         difference.setHandledAt(LocalDateTime.now());
-        difference.setHandleNote("已发起复核");
         boolean resolved = false;
         if (CHANNEL_WITHOUT_EVENT.equals(difference.getDiffType()) && difference.getChannel() != null
                 && difference.getChannelTradeNo() != null) {
@@ -264,6 +270,12 @@ public class ReconciliationService {
         if (resolved) {
             difference.setStatus("RESOLVED");
             difference.setHandleNote("复核一致，自动关闭");
+        } else if (retryCount >= MAX_RETRY_COUNT) {
+            difference.setStatus("MANUAL");
+            difference.setHandleNote("重试" + retryCount + "次仍未一致，已转人工处理");
+        } else {
+            difference.setStatus("RETRY");
+            difference.setHandleNote("已发起复核（第" + retryCount + "/" + MAX_RETRY_COUNT + "次）");
         }
         differenceMapper.updateById(difference);
         return difference;

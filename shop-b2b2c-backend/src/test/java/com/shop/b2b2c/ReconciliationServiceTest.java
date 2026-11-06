@@ -210,6 +210,41 @@ class ReconciliationServiceTest {
     }
 
     @Test
+    void retryEscalatesToManualAfterMaxAttempts() {
+        ReconciliationDifference difference = new ReconciliationDifference();
+        difference.setId(9L);
+        difference.setDiffType(ReconciliationService.FEE_LEDGER_MISSING);
+        difference.setOrderSn("SN-X7");
+        difference.setStatus("RETRY");
+        difference.setRetryCount(ReconciliationService.MAX_RETRY_COUNT - 1);
+        when(differenceMapper.selectById(9L)).thenReturn(difference);
+        when(ledgerMapper.findByIdempotencyKey("ORDER_FEE:SN-X7")).thenReturn(Optional.empty());
+
+        ReconciliationDifference result = service().retry(9L, 3L);
+
+        assertEquals("MANUAL", result.getStatus());
+        assertEquals(ReconciliationService.MAX_RETRY_COUNT, result.getRetryCount());
+        assertTrue(result.getHandleNote().contains("转人工"));
+        assertEquals(3L, result.getHandledBy());
+        assertNotNull(result.getHandledAt());
+        verify(differenceMapper).updateById(difference);
+    }
+
+    @Test
+    void retryOnManualDifferenceIsRejected() {
+        ReconciliationDifference difference = new ReconciliationDifference();
+        difference.setId(10L);
+        difference.setStatus("MANUAL");
+        difference.setRetryCount(ReconciliationService.MAX_RETRY_COUNT);
+        when(differenceMapper.selectById(10L)).thenReturn(difference);
+
+        BusinessException ex = assertThrows(BusinessException.class, () -> service().retry(10L, 3L));
+
+        assertEquals(409, ex.getCode());
+        verify(differenceMapper, never()).updateById(any(ReconciliationDifference.class));
+    }
+
+    @Test
     void resolveRequiresNoteAndRecordsOperator() {
         ReconciliationDifference difference = new ReconciliationDifference();
         difference.setId(8L);
