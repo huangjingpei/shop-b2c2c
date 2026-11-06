@@ -7,7 +7,8 @@
  *  2. 唯一键冲突只在业务事务之外回查处理（同单幂等重放、跨单归属拒绝）；禁止在主事务内捕获唯一键异常，
  *     以免参与主事务的 @Transactional 方法把事务标记为 rollback-only 并抛 UnexpectedRollbackException (G34)。
  *  3. 占位提交与主事务之间进程崩溃可能残留 PROCESSING 事件；正常异常路径由 recordFailureAudit 在事务回滚后收敛，
- *     残留需由后续对账/补偿任务处理，不得把 PROCESSING 当作已履约。
+ *     残留由 PaymentEventReconcileService 在超过阈值后回查渠道并补履约或转 FULFILLMENT_FAILED (G34)，
+ *     不得把 PROCESSING 当作已履约，也不得在补偿路径直接交付资产。
  *  4. 重放短路必须回查订单真实状态与卡密交付结果；事件 SUCCESS 但订单 UNPAID 时以同一事件重新驱动。
  *  5. 实收金额/币种必须来自渠道事件，禁止从订单 payAmount 反填；缺失或不等即拒绝，不得交付资产。
  *  6. 已支付订单收到不同流水号时必须落 DUPLICATE_PAYMENT 事件，不得静默返回；退款动作由后续补偿/退款任务处理。

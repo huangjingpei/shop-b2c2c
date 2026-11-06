@@ -1,7 +1,9 @@
 /*
  * 文件：PaymentEventMapper.java
- * 用途：支付到账事件数据访问，支撑支付流水唯一排重、补偿扫描与核对查询 (R13/T05)。
- * 维护注意：补偿查询只读取事件 SUCCESS 但订单未支付/未交付的记录；不得把缺失订单纳入自动补履约，避免无限重试。
+ * 用途：支付到账事件数据访问，支撑支付流水唯一排重、补偿扫描与核对查询 (R13/T05/G34)。
+ * 维护注意：补偿查询只读取事件 SUCCESS 但订单未支付/未交付，以及超过阈值仍 PROCESSING 的记录；
+ * 不得把缺失订单纳入自动补履约，避免无限重试；已 PAID/COMPLETED/SHIPPED 的订单不得再次进入两条补偿查询，
+ * 避免与主事务正常履约重复处理。
  */
 package com.shop.b2b2c.mapper;
 
@@ -51,6 +53,18 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
             + "AND o.order_status NOT IN ('PAID', 'COMPLETED', 'SHIPPED') "
             + "ORDER BY e.id LIMIT #{limit}")
     List<PaymentEvent> findSuccessfulWithoutPaidOrder(@Param("limit") int limit);
+
+    /**
+     * G34 陈旧 PROCESSING 补偿扫描：占位事务已提交，但业务事务崩溃或未收敛，事件长期停留在 PROCESSING。
+     * 只选取超过截止时间的时间点仍 PROCESSING、且关联订单尚未 PAID/COMPLETED/SHIPPED 的记录；
+     * INNER JOIN 排除订单缺失的历史脏数据，已履约订单不进入本查询，避免重复交付。
+     */
+    @Select("SELECT e.* FROM payment_event e INNER JOIN trade_order o ON o.order_sn = e.order_sn "
+            + "WHERE e.event_status = 'PROCESSING' AND e.created_at <= #{cutoff} "
+            + "AND o.order_status NOT IN ('PAID', 'COMPLETED', 'SHIPPED') "
+            + "ORDER BY e.id LIMIT #{limit}")
+    List<PaymentEvent> findStaleProcessingEvents(@Param("cutoff") java.time.LocalDateTime cutoff,
+                                                @Param("limit") int limit);
 
     /**
      * T34：结算明细回填支付事件ID；同一订单理论上只取最早的一条 SUCCESS 付款事件。

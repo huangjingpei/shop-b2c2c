@@ -1,14 +1,14 @@
 /*
  * 文件：ReservationExpiryJobTest.java
- * 用途：测试到期库存预占与超时未支付订单的游标扫描、毒记录异常隔离、防饿死机制及支付事件补偿扫描 (R11, R12, T05)。
+ * 用途：测试到期库存预占与超时未支付订单的游标扫描、毒记录异常隔离、防饿死机制及支付事件合并补偿扫描 (R11, R12, T05/G34)。
  */
 package com.shop.b2b2c;
 
 import com.shop.b2b2c.config.ReservationExpiryJob;
 import com.shop.b2b2c.mapper.InventoryReservationMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
-import com.shop.b2b2c.service.PaymentEventService;
 import com.shop.b2b2c.service.PeerPayService;
+import com.shop.b2b2c.service.payment.PaymentEventReconcileService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -16,6 +16,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -36,13 +37,13 @@ class ReservationExpiryJobTest {
     private PeerPayService service;
 
     @Mock
-    private PaymentEventService paymentEventService;
+    private PaymentEventReconcileService paymentEventReconcileService;
 
     private ReservationExpiryJob job;
 
     @BeforeEach
     void setUp() {
-        job = new ReservationExpiryJob(reservations, orders, service, paymentEventService);
+        job = new ReservationExpiryJob(reservations, orders, service, paymentEventReconcileService);
     }
 
     @Test
@@ -104,12 +105,13 @@ class ReservationExpiryJobTest {
     }
 
     @Test
-    @DisplayName("T05: 每轮补偿扫描调用支付事件服务并限制批量，异常不阻断主扫描")
+    @DisplayName("T05/G34: 每轮只调用一次合并补偿扫描并限制批量，异常不阻断主扫描")
     void paymentReconcileScanIsBoundedAndErrorIsolated() {
-        when(paymentEventService.reconcileSuccessfulWithoutFulfillment(50)).thenReturn(3);
+        when(paymentEventReconcileService.reconcile(eq(50), any(Duration.class))).thenReturn(3);
         assertEquals(3, job.reconcilePaymentEvents());
 
-        when(paymentEventService.reconcileSuccessfulWithoutFulfillment(50))
+        reset(paymentEventReconcileService);
+        when(paymentEventReconcileService.reconcile(eq(50), any(Duration.class)))
                 .thenThrow(new IllegalStateException("补偿队列暂时不可用"));
         assertEquals(0, job.reconcilePaymentEvents());
     }

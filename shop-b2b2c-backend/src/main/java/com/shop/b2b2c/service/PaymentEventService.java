@@ -2,6 +2,7 @@
  * 文件：PaymentEventService.java
  * 用途：支付到账事件持久化、资金核对与本地履约解耦服务 (R13)。
  * 维护注意：事件状态与订单履约必须在同一业务事务内提交；重放不得只凭事件 SUCCESS 短路，须回查订单真实状态；禁止恢复公开 Mock/未验签到账入口。
+ * G34：陈旧 PROCESSING 事件的渠道回查与补履约编排在 PaymentEventReconcileService，本接口只提供幂等履约入口。
  */
 package com.shop.b2b2c.service;
 

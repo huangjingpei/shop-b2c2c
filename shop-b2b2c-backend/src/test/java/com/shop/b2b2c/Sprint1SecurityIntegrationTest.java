@@ -28,6 +28,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -100,6 +101,8 @@ class Sprint1SecurityIntegrationTest {
     @Autowired com.shop.b2b2c.controller.MerchantController merchantController;
     @Autowired com.shop.b2b2c.service.PaymentEventService paymentEventService;
     @Autowired com.shop.b2b2c.mapper.PaymentEventMapper paymentEvents;
+    @Autowired com.shop.b2b2c.service.payment.PaymentEventReconcileService paymentEventReconcile;
+    @MockBean com.shop.b2b2c.service.payment.PaymentGatewayService paymentGateway;
 
     @BeforeEach
     void fixtures() {
@@ -1849,6 +1852,96 @@ class Sprint1SecurityIntegrationTest {
         assertEquals("COMPLETED", orders.selectById(order.getId()).getOrderStatus());
         assertEquals("SUCCESS", paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_T05_COMPENSATE").getEventStatus());
         assertEquals(0, skus.selectById(1).getStockQuantity());
+    }
+
+    @Test
+    @DisplayName("G34: 超过阈值的 PROCESSING 事件经渠道确认成功后补履约，同一轮不二次发卡")
+    void g34StaleProcessingEventFulfilledAfterChannelConfirmation() {
+        TradeOrder order = unpaid("g34-stale", 1);
+        insertProcessingEvent(order, "TX_G34_STALE", LocalDateTime.now().minusMinutes(10));
+        when(paymentGateway.queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn())))
+                .thenReturn(channelQuerySuccess(order.getOrderSn(), "TX_G34_STALE", "g34-payer"));
+
+        int processed = paymentEventReconcile.reconcile(10, Duration.ofMinutes(5));
+
+        assertTrue(processed >= 1);
+        assertEquals("COMPLETED", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals("SUCCESS", paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_STALE").getEventStatus());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        verify(cards, times(1)).claimCard(anyLong(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("G34: 渠道无法确认支付成功的陈旧 PROCESSING 落 FULFILLMENT_FAILED，不交付资产")
+    void g34StaleProcessingWithoutChannelConfirmationBecomesFailed() {
+        TradeOrder order = unpaid("g34-nopay", 1);
+        insertProcessingEvent(order, "TX_G34_NOPAY", LocalDateTime.now().minusMinutes(10));
+        when(paymentGateway.queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn())))
+                .thenReturn(com.shop.b2b2c.dto.PaymentChannelDTOs.ChannelQueryResult.builder()
+                        .channel("WECHAT").orderSn(order.getOrderSn()).payTradeNo("TX_G34_NOPAY")
+                        .tradeState("NOTPAY").currency("CNY").build());
+
+        paymentEventReconcile.reconcile(10, Duration.ofMinutes(5));
+
+        assertEquals("FULFILLMENT_FAILED",
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_NOPAY").getEventStatus());
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        verify(cards, never()).claimCard(anyLong(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("G34: 未达到阈值的 PROCESSING 事件不进入补偿扫描")
+    void g34FreshProcessingEventBelowThresholdIsNotScanned() {
+        TradeOrder order = unpaid("g34-fresh", 1);
+        insertProcessingEvent(order, "TX_G34_FRESH", LocalDateTime.now());
+
+        int processed = paymentEventReconcile.reconcile(10, Duration.ofMinutes(5));
+
+        assertEquals(0, processed);
+        assertEquals("PROCESSING",
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_FRESH").getEventStatus());
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        verify(paymentGateway, never()).queryChannelPayment(any(), any(), any());
+    }
+
+    @Test
+    @DisplayName("G34: 主事务已正常完成履约的订单，其残留 PROCESSING 不被误处理")
+    void g34ProcessingEventOnFulfilledOrderIsNotTouched() {
+        TradeOrder order = unpaid("g34-done", 1);
+        assertEquals("COMPLETED", pay("g34-done").getOrderStatus());
+        insertProcessingEvent(order, "TX_G34_ORPHAN", LocalDateTime.now().minusMinutes(10));
+
+        int processed = paymentEventReconcile.reconcile(10, Duration.ofMinutes(5));
+
+        assertEquals(0, processed);
+        assertEquals("PROCESSING",
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_ORPHAN").getEventStatus());
+        verify(paymentGateway, never()).queryChannelPayment(any(), any(), any());
+    }
+
+    private com.shop.b2b2c.entity.PaymentEvent insertProcessingEvent(TradeOrder order, String tradeNo,
+                                                                     LocalDateTime createdAt) {
+        var event = new com.shop.b2b2c.entity.PaymentEvent();
+        event.setChannel("WECHAT");
+        event.setPayTradeNo(tradeNo);
+        event.setOrderSn(order.getOrderSn());
+        event.setMerchantId(order.getMerchantId());
+        event.setPayAmount(order.getPayAmount());
+        event.setCurrency("CNY");
+        event.setPayerId("g34-payer");
+        event.setEventStatus("PROCESSING");
+        event.setCreatedAt(createdAt);
+        event.setUpdatedAt(createdAt);
+        paymentEvents.insert(event);
+        return event;
+    }
+
+    private com.shop.b2b2c.dto.PaymentChannelDTOs.ChannelQueryResult channelQuerySuccess(
+            String orderSn, String tradeNo, String payerId) {
+        return com.shop.b2b2c.dto.PaymentChannelDTOs.ChannelQueryResult.builder()
+                .channel("WECHAT").orderSn(orderSn).payTradeNo(tradeNo).tradeState("SUCCESS")
+                .channelMerchantId("mch-g34").payAmount(new java.math.BigDecimal("10.00"))
+                .currency("CNY").payerId(payerId).rawPayload("{}").build();
     }
 
     @Test

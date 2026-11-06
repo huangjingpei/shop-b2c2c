@@ -6,6 +6,8 @@
  *  2. 阶段一只允许 CollectionMode.MERCHANT_DIRECT；PLATFORM_COLLECT 明确拒绝，不做隐式降级。
  *  3. 发起支付只读取商家已登记的渠道账户（merchant_payment_account），不在本类写入或伪造账户。
  *  4. 关单只关闭渠道侧交易，本地订单仍由 15 分钟截止任务关闭，避免提前改动订单生命周期语义。
+ *  5. G34：queryChannelPayment 只按事件渠道查询渠道事实并核验商户，不触发本地履约；
+ *     补偿扫描必须先确认 SUCCESS 且流水号与本地事件一致，再复用 PaymentEventService 的幂等履约路径。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -68,12 +70,7 @@ public class PaymentGatewayService {
         }
         String channel = PayChannel.normalize(order.getPayChannel());
         MerchantPaymentAccount account = requireAccount(order, channel);
-        PaymentChannelDTOs.PaymentCreateCommand command = commandOf(order, account);
-        PaymentChannelDTOs.ChannelQueryResult result =
-                paymentChannelRegistry.require(channel).queryPayment(command);
-        if (result == null) {
-            throw new BusinessException(502, "渠道查单未返回结果");
-        }
+        PaymentChannelDTOs.ChannelQueryResult result = queryChannel(channel, order, account);
         if (result.isSuccess() && "UNPAID".equals(order.getOrderStatus())) {
             requireSameMerchant(result.getChannelMerchantId(), account);
             PaymentChannelDTOs.ChannelCallback callback = PaymentChannelDTOs.ChannelCallback.builder()
@@ -98,6 +95,36 @@ public class PaymentGatewayService {
                     .payerId(result.getPayerId())
                     .rawPayload(result.getRawPayload())
                     .build();
+        }
+        return result;
+    }
+
+    /**
+     * G34 补偿扫描专用：按支付事件记录的渠道查询渠道事实，只返回查单结果，不触发本地履约。
+     * 调用方须自行确认 SUCCESS 与流水号一致，再交给 PaymentEventService 走占位/行锁/CAS 的幂等履约。
+     */
+    public PaymentChannelDTOs.ChannelQueryResult queryChannelPayment(Long merchantId, String channel,
+                                                                     String orderSn) {
+        TradeOrder order = tradeOrderMapper.findByOrderSn(orderSn)
+                .orElseThrow(() -> new BusinessException(404, "订单不存在"));
+        if (merchantId != null) {
+            requireMerchantOwns(order, merchantId);
+        }
+        String normalized = PayChannel.normalize(channel);
+        MerchantPaymentAccount account = requireAccount(order, normalized);
+        PaymentChannelDTOs.ChannelQueryResult result = queryChannel(normalized, order, account);
+        if (result.isSuccess()) {
+            requireSameMerchant(result.getChannelMerchantId(), account);
+        }
+        return result;
+    }
+
+    private PaymentChannelDTOs.ChannelQueryResult queryChannel(String channel, TradeOrder order,
+                                                               MerchantPaymentAccount account) {
+        PaymentChannelDTOs.ChannelQueryResult result =
+                paymentChannelRegistry.require(channel).queryPayment(commandOf(order, account));
+        if (result == null) {
+            throw new BusinessException(502, "渠道查单未返回结果");
         }
         return result;
     }

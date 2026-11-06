@@ -5,7 +5,8 @@
  *  1. 事件初始占位由 PaymentEventServiceImpl.claimEvent 在业务事务之外的独立事务完成；本类不提供初始写入，
  *     避免参与主事务的方法抛出唯一键异常而把主事务标记为 rollback-only (G34)。
  *  2. recordEventStatus 使用默认传播，加入调用方事务；外层回滚时事件不会残留 SUCCESS。
- *  3. 只有业务事务失败后的补偿审计 recordFailureAudit 使用独立事务，保证失败态可见；它只应在事务完成回滚后调用。
+ *  3. 只有业务事务失败后的补偿审计 recordFailureAudit 使用独立事务，保证失败态可见；它只应在事务完成回滚后
+ *     或 PaymentEventReconcileService 的无外层事务补偿扫描中调用。
  *  4. 失败审计不得把其他订单的事件改写，也不得把已完成支付的事件降级；重复冲突由调用方跳过审计。
  *  5. 事件状态与订单状态必须保持一致，禁止在业务事务内另开事件表或第二套状态机。
  */

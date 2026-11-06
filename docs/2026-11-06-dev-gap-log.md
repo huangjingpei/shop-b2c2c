@@ -297,7 +297,7 @@
 - 验证：代理未运行 mvn/编译/测试/构建，也未连库；状态为**已实现·待人工验证**，复跑入口
   `mvn -f shop-b2b2c-backend/pom.xml test`。
 
-## G34 并发支付事件占位与 rollback-only（已实现·待人工验证）
+## G34 并发支付事件占位、rollback-only 与 PROCESSING 残留补偿（已实现·待人工验证）
 
 - 数据来源：用户复跑后 `Sprint1SecurityIntegrationTest.concurrentNotificationsFulfillExactlyOnce:1985 → race:3880`
   抛 `UnexpectedRollbackException: Transaction rolled back because it has been marked as rollback-only`。
@@ -309,12 +309,29 @@
     冲突只在独立事务完成后回查：同单 → 幂等重放，跨单 → 400 归属冲突；主事务内不再捕获唯一键异常。
   - `recordInitialEvent` 已删除；`recordEventStatus` 仍随主事务提交 SUCCESS，失败审计仍走 `recordFailureAudit` 独立事务。
   - `DUPLICATE_PAYMENT` 判定改为“本次新建事件且订单实际渠道+流水号不同”，避免占位线程被并发重放线程抢先履约时误判第二笔资金。
+  - PROCESSING 残留窗口（本次补齐，不再留到后续）：新增 `PaymentEventReconcileService`，在
+    `ReservationExpiryJob.reconcilePaymentEvents()` 的**同一轮**内先处理“超过阈值仍 PROCESSING”的事件，再执行既有
+    `reconcileSuccessfulWithoutFulfillment`，不新增第二个调度任务，两条查询均排除已 PAID/COMPLETED/SHIPPED 的订单，
+    避免互相干扰或重复履约。陈旧 PROCESSING 先按事件渠道调用 `PaymentGatewayService.queryChannelPayment` 回查渠道事实；
+    只有渠道 `SUCCESS` 且渠道流水号与本地事件一致时，才交给 `PaymentEventService.processPaymentEvent` 补履约，
+    复用既有占位/订单行锁/CAS/卡密认领幂等路径，不允许第二次交付。渠道无法确认、流水号/金额不一致或补履约异常时，
+    通过 `PaymentEventRecorder.recordFailureAudit` 写 `FULFILLMENT_FAILED`（保留“SUCCESS 不降级”保护）并以 ERROR 日志告警。
+- 配置项：
+  - `payment.reconcile.processing-threshold-minutes`（环境变量 `PAYMENT_RECONCILE_PROCESSING_THRESHOLD_MINUTES`，
+    默认 **5 分钟**）：超过该阈值仍 PROCESSING 才进入渠道回查。
+  - 扫描频率沿用 `inventory.expiry-delay-ms`（默认 **30000ms / 30 秒**）：补偿与预占到期、超时关单共用同一调度轮次。
 - 语义保持：同单重放幂等成功、跨单流水号盗用仍拒绝、订单已支付后的第二笔资金仍落 `DUPLICATE_PAYMENT`、
   金额/币种/迟到款/履约失败仍落对应失败态且不把 SUCCESS 降级。
 - 用例：`concurrentNotificationsFulfillExactlyOnce` 增断言“并发同单只落 1 条事件且最终 SUCCESS”，
-  `race()` 任一线程抛 `UnexpectedRollbackException` 即失败；跨单冲突沿用既有用例。
-- 残余风险：①占位提交与主事务之间进程崩溃会残留 `PROCESSING` 事件，当前对账扫描只覆盖“SUCCESS 但订单未支付”；
-  ②MySQL REPEATABLE READ 下主事务首条普通读会建立快照，若交付明细在行锁后被普通读读取，极端交错时可能读到旧明细，
-  需在真实 MySQL 并发用例复核（H2 为 READ COMMITTED，本轮未运行）。
-- 验证：代理未运行 mvn/编译/测试/构建，也未连库；状态为**已实现·待人工验证**，复跑入口
-  `mvn -f shop-b2b2c-backend/pom.xml test`。
+  `race()` 任一线程抛 `UnexpectedRollbackException` 即失败；跨单冲突沿用既有用例。新增 4 条 G34 用例：
+  `g34StaleProcessingEventFulfilledAfterChannelConfirmation`（陈旧 PROCESSING 经渠道确认后补履约且只发一次卡）、
+  `g34StaleProcessingWithoutChannelConfirmationBecomesFailed`（渠道未确认落 `FULFILLMENT_FAILED` 且不交付）、
+  `g34FreshProcessingEventBelowThresholdIsNotScanned`（未到阈值不扫描）、
+  `g34ProcessingEventOnFulfilledOrderIsNotTouched`（主事务已正常履约的订单不被误处理）。
+- 残余风险：
+  - ①补偿依赖渠道查单可用性：单次查单失败（含渠道临时不可用）即落 `FULFILLMENT_FAILED` 并告警，不会自动重试，
+    需要人工或对账按告警重新驱动；这是按“补不了即失败并告警”的口径刻意设计，不是静默丢弃。
+  - ②**真实 MySQL REPEATABLE READ 下并发用例仍未验证**：主事务首条普通读会建立快照，若交付明细在行锁后被普通读读取，
+    极端交错时可能读到旧明细；H2 为 READ COMMITTED，不代表生产行为。该条保留为“未验证”，不得记为已验证。
+- 验证：代理未运行 mvn/编译/测试/构建，也未连库；上述结论为静态核对的**已实现·待人工验证**，复跑入口
+  `mvn -f shop-b2b2c-backend/pom.xml test`；H2 通过不替代真实 MySQL 与渠道联调。
