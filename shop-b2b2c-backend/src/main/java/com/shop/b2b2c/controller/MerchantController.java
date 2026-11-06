@@ -12,12 +12,15 @@ import com.shop.b2b2c.common.ManagementGuards;
 import com.shop.b2b2c.common.ServiceFeeStatus;
 import java.util.Set;
 import com.shop.b2b2c.common.SecurityUtils;
+import com.shop.b2b2c.entity.MerchantFeeAudit;
+import com.shop.b2b2c.entity.MerchantFeePolicy;
 import com.shop.b2b2c.entity.MerchantOnboardingApplication;
 import com.shop.b2b2c.entity.MerchantPaymentAccount;
 import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import com.shop.b2b2c.mapper.SysUserMapper;
+import com.shop.b2b2c.service.MerchantFeePolicyService;
 import com.shop.b2b2c.service.MerchantOnboardingService;
 import com.shop.b2b2c.service.MerchantSettlementAccountService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -42,6 +45,7 @@ public class MerchantController {
     private final SysUserMapper userMapper;
     private final MerchantOnboardingService onboardingService;
     private final MerchantSettlementAccountService settlementAccountService;
+    private final MerchantFeePolicyService feePolicyService;
 
     // ==========================================
     // 平台超级管理员视角 API (/api/v1/admin/merchants)
@@ -68,6 +72,7 @@ public class MerchantController {
         private String adminPassword;
         private String licenseNo;
         private String legalPerson;
+        private String promotionReason;
         private String bankAccountName;
         private String bankAccountNumber;
         private String bankName;
@@ -131,6 +136,7 @@ public class MerchantController {
         provisioning.setAdminPassword(dto.getAdminPassword());
         provisioning.setRateBps(dto.getCommissionRate() == null ? 300
                 : dto.getCommissionRate().multiply(new BigDecimal("100")).intValue());
+        provisioning.setPromotionReason(dto.getPromotionReason());
         onboardingService.approve(application.getId(), provisioning, "超管应急开通，保留完整审核留痕", operatorId);
 
         MerchantStore store = storeMapper.findById(application.getMerchantId())
@@ -162,14 +168,77 @@ public class MerchantController {
         return R.ok("状态更新成功", null);
     }
 
-    @Operation(summary = "【超管】调整店铺平台抽成比率")
+    @Operation(summary = "【超管】调整店铺技术服务费率（兼容旧佣金接口；降费即时/调高次日生效）")
     @PutMapping("/api/v1/admin/merchants/{id}/commission")
     @Transactional(rollbackFor = Exception.class)
-    public R<Void> updateCommission(@PathVariable Long id, @RequestParam BigDecimal rate) {
+    public R<Void> updateCommission(@PathVariable Long id, @RequestParam BigDecimal rate,
+                                    @RequestParam(required = false) String reason,
+                                    @RequestParam(required = false) Long confirmedBy) {
         ManagementGuards.percent(rate);
+        int bps = requirePolicyBps(rate);
         requireStore(id);
-        storeMapper.updateCommissionOnly(id, rate);
-        return R.ok("费率调整成功", null);
+        MerchantFeePolicyService.AdjustForm form = new MerchantFeePolicyService.AdjustForm();
+        form.setRateType(bps == 0 ? MerchantFeePolicyService.RATE_PROMOTION : MerchantFeePolicyService.RATE_NORMAL);
+        form.setRateBps(bps);
+        form.setReason(reason == null || reason.isBlank() ? "超管通过佣金接口调整费率" : reason);
+        form.setPromotionReason(bps == 0
+                ? (reason == null || reason.isBlank() ? "超管通过佣金接口设为推广费率" : reason) : null);
+        form.setConfirmedBy(confirmedBy);
+        feePolicyService.adjust(id, form, SecurityUtils.getCurrentUserId());
+        return R.ok("费率调整成功，降费即时生效、调高次日00:00生效", null);
+    }
+
+    @Data
+    public static class FeePolicyDTO {
+        private String rateType; // NORMAL/PROMOTION
+        private Integer rateBps;
+        private String promotionReason;
+        private String reason;
+        private Long confirmedBy;
+    }
+
+    @Operation(summary = "【超管】当前生效费率政策")
+    @GetMapping("/api/v1/admin/merchants/{id}/fee-policy")
+    public R<MerchantFeePolicy> currentFeePolicy(@PathVariable Long id) {
+        requireStore(id);
+        return R.ok(feePolicyService.getEffectivePolicy(id));
+    }
+
+    @Operation(summary = "【超管】费率政策历史（含次日待生效）")
+    @GetMapping("/api/v1/admin/merchants/{id}/fee-policies")
+    public R<List<MerchantFeePolicy>> feePolicyHistory(@PathVariable Long id) {
+        requireStore(id);
+        return R.ok(feePolicyService.list(id));
+    }
+
+    @Operation(summary = "【超管】费率调整审计")
+    @GetMapping("/api/v1/admin/merchants/{id}/fee-audits")
+    public R<List<MerchantFeeAudit>> feeAudits(@PathVariable Long id) {
+        requireStore(id);
+        return R.ok(feePolicyService.audits(id));
+    }
+
+    @Operation(summary = "【超管】调整店铺费率政策（记录原因/操作人/前后值）")
+    @PutMapping("/api/v1/admin/merchants/{id}/fee-policy")
+    @Transactional(rollbackFor = Exception.class)
+    public R<MerchantFeePolicy> adjustFeePolicy(@PathVariable Long id, @RequestBody FeePolicyDTO dto) {
+        if (dto == null) throw new BusinessException(400, "费率政策参数不能为空");
+        requireStore(id);
+        MerchantFeePolicyService.AdjustForm form = new MerchantFeePolicyService.AdjustForm();
+        form.setRateType(dto.getRateType());
+        form.setRateBps(dto.getRateBps());
+        form.setPromotionReason(dto.getPromotionReason());
+        form.setReason(dto.getReason());
+        form.setConfirmedBy(dto.getConfirmedBy());
+        return R.ok(feePolicyService.adjust(id, form, SecurityUtils.getCurrentUserId()));
+    }
+
+    private int requirePolicyBps(BigDecimal rate) {
+        int bps = rate.multiply(new BigDecimal("100")).setScale(0, java.math.RoundingMode.HALF_UP).intValue();
+        if (bps != 0 && (bps < 100 || bps > 1000)) {
+            throw new BusinessException(400, "费率必须为 0%（推广期）或 1%~10%");
+        }
+        return bps;
     }
 
     @Data

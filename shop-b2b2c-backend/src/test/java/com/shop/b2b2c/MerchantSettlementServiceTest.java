@@ -16,7 +16,6 @@ import com.shop.b2b2c.entity.MerchantCollectionStatusAudit;
 import com.shop.b2b2c.entity.MerchantRechargeOrder;
 import com.shop.b2b2c.entity.MerchantSettlementBatch;
 import com.shop.b2b2c.entity.MerchantSettlementItem;
-import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.entity.TradeOrder;
 import com.shop.b2b2c.entity.TradeRefund;
 import com.shop.b2b2c.mapper.MerchantAccountLedgerMapper;
@@ -81,10 +80,8 @@ class MerchantSettlementServiceTest {
     void snapshotUsesThreePercentAndSplitsTax() {
         TradeOrder order = new TradeOrder();
         order.setPayAmount(new BigDecimal("100.00"));
-        MerchantStore store = new MerchantStore();
-        store.setCommissionRate(new BigDecimal("3.00"));
 
-        snapshotService.apply(order, store, new BigDecimal("100.00"));
+        snapshotService.apply(order, feePolicy(300), new BigDecimal("100.00"));
 
         assertEquals(0, new BigDecimal("3.00").compareTo(order.getFeeAmount()));
         assertEquals(300, order.getFeeRateBps());
@@ -99,10 +96,8 @@ class MerchantSettlementServiceTest {
     void promotionZeroRateKeepsWaivedRecord() {
         TradeOrder order = new TradeOrder();
         order.setPayAmount(new BigDecimal("100.00"));
-        MerchantStore store = new MerchantStore();
-        store.setCommissionRate(BigDecimal.ZERO);
 
-        snapshotService.apply(order, store, new BigDecimal("100.00"));
+        snapshotService.apply(order, feePolicy(0), new BigDecimal("100.00"));
 
         assertEquals("PROMOTION", order.getFeeRateType());
         assertEquals(new BigDecimal("0.00"), order.getFeeAmount());
@@ -116,12 +111,18 @@ class MerchantSettlementServiceTest {
     void snapshotRejectsRateOutsideConfirmedRange() {
         TradeOrder order = new TradeOrder();
         order.setPayAmount(new BigDecimal("100.00"));
-        MerchantStore store = new MerchantStore();
-        store.setCommissionRate(new BigDecimal("11.00"));
 
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> snapshotService.apply(order, store, new BigDecimal("100.00")));
+                () -> snapshotService.apply(order, feePolicy(1100), new BigDecimal("100.00")));
         assertTrue(ex.getMessage().contains("1%~10%"));
+    }
+
+    private com.shop.b2b2c.entity.MerchantFeePolicy feePolicy(int rateBps) {
+        com.shop.b2b2c.entity.MerchantFeePolicy policy = new com.shop.b2b2c.entity.MerchantFeePolicy();
+        policy.setId(9L);
+        policy.setRateBps(rateBps);
+        policy.setRateType(rateBps == 0 ? "PROMOTION" : "NORMAL");
+        return policy;
     }
 
     @Test

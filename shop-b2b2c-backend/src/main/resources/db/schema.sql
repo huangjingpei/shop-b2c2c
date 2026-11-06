@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS `merchant_store` (
   `id_card_number` VARCHAR(32) NOT NULL COMMENT '经营者身份证号码 (脱敏)',
   `contact_phone` VARCHAR(32) NOT NULL COMMENT '联系手机号',
   `status` TINYINT NOT NULL DEFAULT 1 COMMENT '店铺状态: 0-待审, 1-正常营业, 2-打烊, 3-已封禁',
-  `commission_rate` DECIMAL(5,2) NOT NULL DEFAULT 3.00 COMMENT '平台抽成比例(%)',
+  `commission_rate` DECIMAL(5,2) NOT NULL DEFAULT 3.00 COMMENT '平台抽成比例(%)；T39 起仅作展示镜像，计费唯一来源为 merchant_fee_policy',
   `monthly_fee` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '月度技术服务费(元/月，前期=0)',
   `fee_free_until` DATETIME NULL COMMENT '免费期截止日期',
   `fee_status` VARCHAR(32) NOT NULL DEFAULT 'NORMAL' COMMENT '服务费配置标记: NORMAL, TRIAL, OVERDUE, EXEMPTED, ARREARS; 不代表自动扣费或停服',
@@ -188,7 +188,7 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `platform_discount_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 平台优惠金额',
   `shipping_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 运费，不计入服务费基数',
   `order_tax_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 订单税额（价税分离）',
-  `fee_policy_id` BIGINT NULL COMMENT 'T34 费率政策版本ID；T39 政策表落地前为空，费率来源为 merchant_store.commission_rate',
+  `fee_policy_id` BIGINT NULL COMMENT 'T34 订单级费率快照来源的政策ID；T39 起写 merchant_fee_policy.id，历史订单可为空',
   `fee_rate_bps` INT NOT NULL DEFAULT 0 COMMENT 'T34 订单级费率快照，万分比；300 表示 3%',
   `fee_rate_type` VARCHAR(24) NOT NULL DEFAULT 'NORMAL' COMMENT 'T34 费率类型 NORMAL/PROMOTION；PROMOTION 表示推广期 0 费率',
   `fee_base_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T34 服务费计费基数=商品成交额-商家优惠',
@@ -769,3 +769,41 @@ CREATE TABLE IF NOT EXISTS `merchant_settlement_account_audit` (
   KEY `idx_settlement_audit_account` (`account_id`, `created_at`),
   CONSTRAINT fk_settlement_audit_account FOREIGN KEY (`account_id`) REFERENCES `merchant_settlement_account` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='收款账户审核审计';
+
+-- 32. 技术服务费率政策（T39）：1%~10% 正常费率 + 0% 独立推广状态；同商户同一时刻仅一套生效政策
+CREATE TABLE IF NOT EXISTS `merchant_fee_policy` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `rate_type` VARCHAR(16) NOT NULL COMMENT 'NORMAL-1%~10% / PROMOTION-0%',
+  `rate_bps` INT NOT NULL COMMENT '整数基点：NORMAL 100–1000；PROMOTION 固定 0',
+  `promotion_reason` VARCHAR(512) NULL COMMENT '推广期 0 费率的业务原因',
+  `effective_from` DATETIME NOT NULL COMMENT '生效时间；降费即时、调高为次日 00:00',
+  `effective_to` DATETIME NULL COMMENT '失效时间；NULL 表示当前有效',
+  `source` VARCHAR(24) NOT NULL COMMENT 'ONBOARDING/ADMIN_ADJUST/PROMOTION/MIGRATION',
+  `reason` VARCHAR(512) NULL COMMENT '调价原因',
+  `confirmed_by` BIGINT NULL COMMENT '调价确认人',
+  `operator_id` BIGINT NULL COMMENT '操作人',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fee_policy_merchant_effective` (`merchant_id`, `effective_from`, `effective_to`),
+  CONSTRAINT fk_fee_policy_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='技术服务费率政策';
+
+-- 33. 费率政策审计（T39）：记录前后值、原因、操作人/确认人与生效时间
+CREATE TABLE IF NOT EXISTS `merchant_fee_audit` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `policy_id` BIGINT UNSIGNED NOT NULL,
+  `from_rate_type` VARCHAR(16) NULL,
+  `from_rate_bps` INT NULL,
+  `to_rate_type` VARCHAR(16) NOT NULL,
+  `to_rate_bps` INT NOT NULL,
+  `reason` VARCHAR(512) NULL,
+  `operator_id` BIGINT NULL,
+  `confirmed_by` BIGINT NULL,
+  `effective_from` DATETIME NOT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_fee_audit_merchant` (`merchant_id`, `created_at`),
+  CONSTRAINT fk_fee_audit_policy FOREIGN KEY (`policy_id`) REFERENCES `merchant_fee_policy` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='费率政策审计';

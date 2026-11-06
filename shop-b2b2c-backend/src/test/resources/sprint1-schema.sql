@@ -640,3 +640,35 @@ CREATE TABLE IF NOT EXISTS merchant_settlement_account_audit (
   reason VARCHAR(512) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+-- 32. 技术服务费率政策（T39）
+CREATE TABLE IF NOT EXISTS merchant_fee_policy (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT NOT NULL,
+  rate_type VARCHAR(16) NOT NULL,
+  rate_bps INT NOT NULL,
+  promotion_reason VARCHAR(512) NULL,
+  effective_from TIMESTAMP NOT NULL,
+  effective_to TIMESTAMP NULL,
+  source VARCHAR(24) NOT NULL,
+  reason VARCHAR(512) NULL,
+  confirmed_by BIGINT NULL,
+  operator_id BIGINT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 33. 费率政策审计（T39）
+CREATE TABLE IF NOT EXISTS merchant_fee_audit (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT NOT NULL,
+  policy_id BIGINT NOT NULL,
+  from_rate_type VARCHAR(16) NULL,
+  from_rate_bps INT NULL,
+  to_rate_type VARCHAR(16) NOT NULL,
+  to_rate_bps INT NOT NULL,
+  reason VARCHAR(512) NULL,
+  operator_id BIGINT NULL,
+  confirmed_by BIGINT NULL,
+  effective_from TIMESTAMP NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

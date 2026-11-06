@@ -19,6 +19,7 @@ import com.shop.b2b2c.mapper.MerchantOnboardingAuditMapper;
 import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import com.shop.b2b2c.mapper.SysUserMapper;
 import com.shop.b2b2c.service.CardCipherService;
+import com.shop.b2b2c.service.MerchantFeePolicyService;
 import com.shop.b2b2c.service.MerchantOnboardingService;
 import org.junit.jupiter.api.Test;
 
@@ -44,8 +45,9 @@ class MerchantOnboardingServiceTest {
     private final MerchantStoreMapper storeMapper = mock(MerchantStoreMapper.class);
     private final SysUserMapper userMapper = mock(SysUserMapper.class);
     private final CardCipherService cipherService = new CardCipherService();
+    private final MerchantFeePolicyService feePolicyService = mock(MerchantFeePolicyService.class);
     private final MerchantOnboardingService service = new MerchantOnboardingService(
-            applicationMapper, auditMapper, storeMapper, userMapper, cipherService);
+            applicationMapper, auditMapper, storeMapper, userMapper, cipherService, feePolicyService);
 
     @Test
     void individualApplicationStoresCipherAndFingerprintNotPlaintext() {
@@ -125,6 +127,7 @@ class MerchantOnboardingServiceTest {
         assertEquals("MANUAL_REVIEW", application.getVerificationSource());
         verify(storeMapper).save(any(MerchantStore.class));
         verify(userMapper).save(any(SysUser.class));
+        verify(feePolicyService).createInitialPolicy(eq(99L), eq(300), any(), any(), eq(7L));
         verify(applicationMapper).updateById(application);
     }
 

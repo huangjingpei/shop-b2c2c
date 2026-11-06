@@ -68,6 +68,7 @@ public class MerchantOnboardingService {
     private final MerchantStoreMapper storeMapper;
     private final SysUserMapper userMapper;
     private final CardCipherService cipherService;
+    private final MerchantFeePolicyService feePolicyService;
 
     @Data
     public static class ApplicationForm {
@@ -89,6 +90,7 @@ public class MerchantOnboardingService {
         private String adminUsername;
         private String adminPassword;
         private Integer rateBps;
+        private String promotionReason;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -189,6 +191,10 @@ public class MerchantOnboardingService {
         user.setRoleCode("MERCHANT_ADMIN");
         user.setIsActive(true);
         userMapper.save(user);
+
+        // T39：开店即建立初始费率政策，作为后续订单快照的唯一费率来源；merchant_store.commission_rate 仅同步展示镜像。
+        feePolicyService.createInitialPolicy(store.getId(), provisioning.getRateBps(),
+                provisioning.getPromotionReason(), "入驻审核通过初始费率", reviewerId);
 
         String fromStatus = application.getStatus();
         application.setMerchantId(store.getId());
@@ -389,6 +395,7 @@ public class MerchantOnboardingService {
         ManagementGuards.text(provisioning.getStoreName(), 128, true);
         ManagementGuards.text(provisioning.getAdminUsername(), 64, true);
         ManagementGuards.text(provisioning.getAdminPassword(), 72, true);
+        ManagementGuards.text(provisioning.getPromotionReason(), 512, false);
         if (provisioning.getAdminPassword().length() < 8
                 || provisioning.getAdminPassword().getBytes(StandardCharsets.UTF_8).length > 72) {
             throw new BusinessException(400, "密码须至少8字符且UTF-8编码不超过72字节");

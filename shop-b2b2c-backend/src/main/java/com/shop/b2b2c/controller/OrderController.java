@@ -26,7 +26,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -56,6 +55,7 @@ public class OrderController {
     private final com.shop.b2b2c.service.CardCipherService cardCipher;
     private final com.shop.b2b2c.service.TradeCostLimiter costLimiter;
     private final com.shop.b2b2c.service.ServiceFeeSnapshotService feeSnapshotService;
+    private final com.shop.b2b2c.service.MerchantFeePolicyService feePolicyService;
     private final com.shop.b2b2c.service.MerchantAccountService merchantAccountService;
 
     @Data
@@ -125,13 +125,9 @@ public class OrderController {
         String orderSn = "ORD" + UUID.randomUUID().toString().replace("-", "");
         String queryToken = UUID.randomUUID().toString().replace("-", "");
 
-        // 计算金额与抽佣
+        // 计算金额；费率一律取当前生效政策，不再读取 merchant_store.commission_rate。
         BigDecimal totalAmount = sku.getPrice().multiply(new BigDecimal(dto.getQuantity()));
         TradeGuards.requireMoney(totalAmount);
-        BigDecimal commissionRate = store.getCommissionRate();
-        BigDecimal commissionAmount = totalAmount.multiply(commissionRate)
-                .divide(new BigDecimal(100), 2, RoundingMode.HALF_UP);
-        BigDecimal merchantSettleAmount = totalAmount.subtract(commissionAmount);
 
         // 创建订单主表
         TradeOrder order = new TradeOrder();
@@ -141,11 +137,8 @@ public class OrderController {
         order.setGoodsType(product.getGoodsType());
         order.setTotalAmount(totalAmount);
         order.setPayAmount(totalAmount); // 实付
-        order.setCommissionRate(commissionRate);
-        order.setCommissionAmount(commissionAmount);
-        order.setMerchantSettleAmount(merchantSettleAmount);
-        // T34：固化订单级服务费快照，后续费率调整不回溯本单。
-        feeSnapshotService.apply(order, store, totalAmount);
+        // T34/T39：固化订单级服务费快照与费率政策版本，后续费率调整不回溯本单。
+        feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(store.getId()), totalAmount);
         // T32：阶段一商家直收；渠道只接受 WECHAT/ALIPAY，不接受旧 A/B/C 或 MOCK。
         String payChannel = PayChannel.normalize(
                 dto.getPaymentChannel() == null || dto.getPaymentChannel().isBlank()

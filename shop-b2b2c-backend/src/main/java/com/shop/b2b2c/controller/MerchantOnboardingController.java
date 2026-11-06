@@ -42,6 +42,7 @@ public class MerchantOnboardingController {
         private String adminUsername;
         private String adminPassword;
         private Integer rateBps;
+        private String promotionReason;
     }
 
     @Operation(summary = "【超管】入驻申请列表（证件脱敏）")
@@ -131,6 +132,7 @@ public class MerchantOnboardingController {
         provisioning.setAdminUsername(dto.getAdminUsername());
         provisioning.setAdminPassword(dto.getAdminPassword());
         provisioning.setRateBps(dto.getRateBps());
+        provisioning.setPromotionReason(dto.getPromotionReason());
         return provisioning;
     }
 }

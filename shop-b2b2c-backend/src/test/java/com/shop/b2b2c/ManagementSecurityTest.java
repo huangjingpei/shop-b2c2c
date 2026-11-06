@@ -9,6 +9,7 @@ import com.shop.b2b2c.common.*;
 import com.shop.b2b2c.controller.MerchantController;
 import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.mapper.*;
+import com.shop.b2b2c.service.MerchantFeePolicyService;
 import com.shop.b2b2c.service.MerchantOnboardingService;
 import com.shop.b2b2c.service.MerchantSettlementAccountService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,28 +24,33 @@ import static org.mockito.Mockito.*;
 class ManagementSecurityTest {
     @ParameterizedTest
     @NullSource
-    @ValueSource(strings={"-0.01", "100.01", "1.001"})
+    @ValueSource(strings={"-0.01", "10.01", "100.01", "1.001", "0.50"})
     void invalidCommissionDoesNotReachPersistence(String value) {
         var store = mock(MerchantStoreMapper.class);
         var account = mock(MerchantPaymentAccountMapper.class);
         var user = mock(SysUserMapper.class);
+        var feePolicy = mock(MerchantFeePolicyService.class);
         var controller = new MerchantController(store, account, user,
-                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class));
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy);
         assertThrows(BusinessException.class, () -> controller.updateCommission(1L, value == null ? null : new BigDecimal(value)));
-        verifyNoInteractions(store, account, user);
+        verifyNoInteractions(store, account, user, feePolicy);
     }
 
     @ParameterizedTest
-    @ValueSource(strings={"0", "100", "3.50"})
-    void commissionBoundariesPersist(String value) {
+    @ValueSource(strings={"0", "1", "10", "3.50"})
+    void commissionBoundariesPersistThroughPolicyOnly(String value) {
         var store = mock(MerchantStoreMapper.class);
+        var feePolicy = mock(MerchantFeePolicyService.class);
         var entity = new MerchantStore();
         when(store.findById(1L)).thenReturn(java.util.Optional.of(entity));
         new MerchantController(store, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
-                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class))
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy)
                 .updateCommission(1L, new BigDecimal(value));
-        verify(store).updateCommissionOnly(1L, new BigDecimal(value));
+        verify(feePolicy).adjust(eq(1L), argThat(form -> form.getRateBps() != null
+                && new BigDecimal(form.getRateBps()).compareTo(new BigDecimal(value).multiply(new BigDecimal("100"))) == 0),
+                any());
         verify(store, never()).save(any());
+        verify(store, never()).updateCommissionOnly(anyLong(), any());
         assertEquals(new BigDecimal("3.00"), entity.getCommissionRate(), "读取快照不应被修改或回写");
     }
 
@@ -72,7 +78,7 @@ class ManagementSecurityTest {
     void invalidConfigurationsNeverReadOrWriteTheStore() {
         var stores = mock(MerchantStoreMapper.class);
         var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
-                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class));
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class));
         var fee = new MerchantController.ServiceFeeConfigDTO(); fee.setMonthlyFee(new BigDecimal("-1"));
         assertThrows(BusinessException.class, () -> controller.updateServiceFee(1L, fee));
         fee.setMonthlyFee(BigDecimal.ZERO); fee.setFeeStatus("invented");
@@ -91,7 +97,7 @@ class ManagementSecurityTest {
         var stores = mock(MerchantStoreMapper.class);
         var users = mock(SysUserMapper.class);
         var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), users,
-                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class));
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class));
         var dto = new MerchantController.CreateMerchantDTO();
         dto.setStoreCode("test"); dto.setStoreName("test"); dto.setOwnerName("owner");
         dto.setIdCardNumber("identity"); dto.setContactPhone("phone"); dto.setAdminUsername("admin");
@@ -116,23 +122,32 @@ class ManagementSecurityTest {
     }
 
     @Test
-    void validMerchantCreationHashesExplicitPasswordAndPreservesDefaults() {
+    void validMerchantCreationGoesThroughOnboardingAndKeepsExplicitPassword() {
         var stores = mock(MerchantStoreMapper.class);
-        var users = mock(SysUserMapper.class);
-        when(stores.save(any())).thenAnswer(invocation -> {
-            MerchantStore store = invocation.getArgument(0); store.setId(5L); return store;
-        });
-        var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), users,
-                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class));
+        var onboarding = mock(MerchantOnboardingService.class);
+        var application = new com.shop.b2b2c.entity.MerchantOnboardingApplication();
+        application.setId(1L); application.setMerchantId(5L);
+        when(onboarding.create(any(), any())).thenReturn(application);
+        when(onboarding.submit(any(), any())).thenReturn(application);
+        when(onboarding.approve(any(), any(), any(), any())).thenReturn(application);
+        var provisioned = new MerchantStore();
+        provisioned.setId(5L); provisioned.setCommissionRate(new BigDecimal("3.00"));
+        when(stores.findById(5L)).thenReturn(java.util.Optional.of(provisioned));
+        var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
+                onboarding, mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class));
         var dto = new MerchantController.CreateMerchantDTO();
         dto.setStoreCode("test"); dto.setStoreName("test"); dto.setOwnerName("owner");
         dto.setIdCardNumber("identity"); dto.setContactPhone("phone"); dto.setAdminUsername("admin");
         dto.setAdminPassword("explicit-password");
-        var result = controller.createMerchant(dto).getData();
-        assertEquals(new BigDecimal("3.00"), result.getCommissionRate());
-        var capture = org.mockito.ArgumentCaptor.forClass(com.shop.b2b2c.entity.SysUser.class);
-        verify(users).save(capture.capture());
-        assertTrue(cn.dev33.satoken.secure.BCrypt.checkpw("explicit-password", capture.getValue().getPassword()));
-        assertEquals(5L, capture.getValue().getMerchantId());
+        try (var security = mockStatic(SecurityUtils.class)) {
+            security.when(SecurityUtils::getCurrentUserId).thenReturn(7L);
+            var result = controller.createMerchant(dto).getData();
+            assertEquals(new BigDecimal("3.00"), result.getCommissionRate());
+        }
+        // 建店与建账号副作用已移入入驻审核，这里只验证明文密码与默认费率被原样带入开店参数。
+        var capture = org.mockito.ArgumentCaptor.forClass(MerchantOnboardingService.Provisioning.class);
+        verify(onboarding).approve(eq(1L), capture.capture(), any(), eq(7L));
+        assertEquals("explicit-password", capture.getValue().getAdminPassword());
+        assertEquals(300, capture.getValue().getRateBps());
     }
 }

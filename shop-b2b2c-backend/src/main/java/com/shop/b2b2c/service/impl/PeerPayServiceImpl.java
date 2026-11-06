@@ -23,7 +23,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
@@ -43,6 +42,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     private final PlatformAdConfigMapper adConfigMapper;
     private final com.shop.b2b2c.service.PaymentEventService paymentEventService;
     private final com.shop.b2b2c.service.ServiceFeeSnapshotService feeSnapshotService;
+    private final com.shop.b2b2c.service.MerchantFeePolicyService feePolicyService;
     private final com.shop.b2b2c.service.MerchantAccountService merchantAccountService;
 
     @Value("${app.frontend.storefront-url:http://localhost:3002}")
@@ -95,9 +95,6 @@ public class PeerPayServiceImpl implements PeerPayService {
 
         BigDecimal totalAmount = sku.getPrice().multiply(new BigDecimal(req.getQuantity()));
         TradeGuards.requireMoney(totalAmount);
-        BigDecimal commissionRate = store.getCommissionRate() != null ? store.getCommissionRate() : new BigDecimal("3.00");
-        BigDecimal commissionAmount = totalAmount.multiply(commissionRate).divide(new BigDecimal(100), 2, RoundingMode.HALF_UP);
-        BigDecimal merchantSettleAmount = totalAmount.subtract(commissionAmount);
 
         // 创建订单主表 (peer_status = 'INIT', 标记两段式意向生成)
         TradeOrder order = new TradeOrder();
@@ -107,10 +104,8 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setGoodsType(product.getGoodsType());
         order.setTotalAmount(totalAmount);
         order.setPayAmount(totalAmount);
-        order.setCommissionRate(commissionRate);
-        order.setCommissionAmount(commissionAmount);
-        order.setMerchantSettleAmount(merchantSettleAmount);
-        feeSnapshotService.apply(order, store, totalAmount);
+        // T34/T39：快照费率唯一取自当前生效政策，不回溯、不再读 merchant_store.commission_rate。
+        feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(store.getId()), totalAmount);
         order.setOrderStatus("UNPAID");
         order.setSharingStatus("PENDING");
         // T32：阶段一固定商家直收，真实渠道与 A/B/C 收款模式解耦；旧 payment_channel 仅保留迁移值。
@@ -202,9 +197,6 @@ public class PeerPayServiceImpl implements PeerPayService {
         BigDecimal totalAmount = unitPrice.multiply(new BigDecimal(req.getQuantity()));
 
         TradeGuards.requireMoney(totalAmount);
-        BigDecimal commissionRate = store.getCommissionRate() != null ? store.getCommissionRate() : new BigDecimal("3.00");
-        BigDecimal commissionAmount = totalAmount.multiply(commissionRate).divide(new BigDecimal(100), 2, RoundingMode.HALF_UP);
-        BigDecimal merchantSettleAmount = totalAmount.subtract(commissionAmount);
 
         String orderSn = "ORD" + UUID.randomUUID().toString().replace("-", "");
         String queryToken = UUID.randomUUID().toString().replace("-", "");
@@ -218,10 +210,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setGoodsType(product.getGoodsType());
         order.setTotalAmount(totalAmount);
         order.setPayAmount(totalAmount);
-        order.setCommissionRate(commissionRate);
-        order.setCommissionAmount(commissionAmount);
-        order.setMerchantSettleAmount(merchantSettleAmount);
-        feeSnapshotService.apply(order, store, totalAmount);
+        feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(merchantId), totalAmount);
         order.setOrderStatus("UNPAID");
         order.setSharingStatus("PENDING");
         // T32：阶段一固定商家直收，真实渠道与 A/B/C 收款模式解耦；旧 payment_channel 仅保留迁移值。
