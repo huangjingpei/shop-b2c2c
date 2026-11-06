@@ -407,10 +407,10 @@ class Sprint1SecurityIntegrationTest {
         assertTrue(products.listPublicProducts(null, 999L, null, null).getData().isEmpty());
         jdbc.update("UPDATE product SET sort_order=-1 WHERE id=3");
         mvc.perform(get("/api/v1/public/products").param("merchantId", "1"))
-                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data[0].id").value(3))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data[0].id").value("3"))
                 .andExpect(jsonPath("$.data[0].minPrice").value(12.30))
                 .andExpect(jsonPath("$.data[0].storeName").value("store1"))
-                .andExpect(jsonPath("$.data[0].totalStock").value(0))
+                .andExpect(jsonPath("$.data[0].totalStock").value("0"))
                 .andExpect(jsonPath("$.data[0].subTitle").isEmpty())
                 .andExpect(jsonPath("$.data[0].serviceDesc").doesNotExist())
                 .andExpect(jsonPath("$.data[0].ownerName").doesNotExist());
@@ -607,7 +607,7 @@ class Sprint1SecurityIntegrationTest {
                 .contentType("application/json").content(json.writeValueAsString(body))).andExpect(status().isBadRequest());
         mvc.perform(post("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token)
                 .header("Idempotency-Key", "stock-http-key-1234").contentType("application/json").content(json.writeValueAsString(body)))
-                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.actorId").value(200))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.actorId").value("200"))
                 .andExpect(jsonPath("$.data.beforeStock").value(1)).andExpect(jsonPath("$.data.afterStock").value(3))
                 .andExpect(jsonPath("$.data.requestKey").doesNotExist());
         mvc.perform(get("/api/v1/merchant/inventory-adjustments").header("Authorization", "Bearer " + token))
@@ -810,7 +810,7 @@ class Sprint1SecurityIntegrationTest {
         authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
         mvc.perform(post("/api/v1/merchant/cards/1/void").header("Authorization", "Bearer " + token).contentType("application/json")
                 .content("{\"reason\":\"expired-fixture\",\"actorId\":999}"))
-                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.actorId").value(200))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.actorId").value("200"))
                 .andExpect(jsonPath("$.data.beforeStock").value(1)).andExpect(jsonPath("$.data.afterStock").value(0))
                 .andExpect(jsonPath("$.data.cardContent").doesNotExist());
         mvc.perform(get("/api/v1/merchant/cards/1/void-record").header("Authorization", "Bearer " + token))
@@ -957,11 +957,11 @@ class Sprint1SecurityIntegrationTest {
         authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
         String response = mvc.perform(post("/api/v1/merchant/cards/import").header("Authorization", "Bearer " + token)
                 .contentType("application/json").content("{\"productId\":1,\"skuId\":1,\"actorId\":999,\"cardContents\":[\"batch-private-fixture\"]}"))
-                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.batchId").isNumber())
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.batchId").isString())
                 .andReturn().getResponse().getContentAsString();
         long batch = json.readTree(response).path("data").path("batchId").asLong();
         mvc.perform(get("/api/v1/merchant/card-import-batches").header("Authorization", "Bearer " + token))
-                .andExpect(header().string("Cache-Control", "no-store")).andExpect(jsonPath("$.data.items[0].actorId").value(200))
+                .andExpect(header().string("Cache-Control", "no-store")).andExpect(jsonPath("$.data.items[0].actorId").value("200"))
                 .andExpect(jsonPath("$.data.items[0].importedCount").value(1));
         String members = mvc.perform(get("/api/v1/merchant/card-import-batches/" + batch + "/cards").header("Authorization", "Bearer " + token))
                 .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.items.length()").value(1))
@@ -1285,7 +1285,7 @@ class Sprint1SecurityIntegrationTest {
         jdbc.update("UPDATE sys_user SET merchant_id=2 WHERE id=200");
         String fresh = loginToken();
         mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + fresh))
-                .andExpect(jsonPath("$.data.merchantId").value(2));
+                .andExpect(jsonPath("$.data.merchantId").value("2"));
         mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + old))
                 .andExpect(jsonPath("$.code").value(401));
         mvc.perform(get("/api/v1/auth/me").header("Authorization", "Bearer " + fresh))
@@ -2360,7 +2360,7 @@ class Sprint1SecurityIntegrationTest {
                 post("/api/v1/public/orders/quick-search").contentType("application/json").content("{\"orderSn\":\"ORD-privacy\",\"contact\":\"buyer@example.com\",\"queryToken\":\"query-privacy\"}"))) {
             mvc.perform(request).andExpect(status().isOk())
                     .andExpect(jsonPath("$.code").value(200))
-                    .andExpect(jsonPath("$.data.store.id").value(1))
+                    .andExpect(jsonPath("$.data.store.id").value("1"))
                     .andExpect(jsonPath("$.data.store.storeName").value("store1"))
                     .andExpect(jsonPath("$.data.store.ownerName").doesNotExist())
                     .andExpect(jsonPath("$.data.store.idCardNumber").doesNotExist())

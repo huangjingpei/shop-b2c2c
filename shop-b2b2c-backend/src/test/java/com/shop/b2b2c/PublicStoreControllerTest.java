@@ -30,11 +30,16 @@ class PublicStoreControllerTest {
         store.setOwnerName("private-owner"); store.setIdCardNumber("private-id");
         store.setCustomPayQrcode("private-payment");
         when(stores.findById(7L)).thenReturn(Optional.of(store));
-        MockMvcBuilders.standaloneSetup(new PublicStoreController(stores)).build()
+        var builder = new org.springframework.http.converter.json.Jackson2ObjectMapperBuilder();
+        new com.shop.b2b2c.config.JacksonConfig().longAsStringCustomizer().customize(builder);
+        var mapper = builder.build();
+        MockMvcBuilders.standaloneSetup(new PublicStoreController(stores))
+            .setMessageConverters(new org.springframework.http.converter.json.MappingJackson2HttpMessageConverter(mapper))
+            .build()
             .perform(get("/api/v1/public/stores/7"))
             .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
             .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.length()").value(6))
-            .andExpect(jsonPath("$.data.id").value(7)).andExpect(jsonPath("$.data.storeName").value("空店"))
+            .andExpect(jsonPath("$.data.id").value("7")).andExpect(jsonPath("$.data.storeName").value("空店"))
             .andExpect(jsonPath("$.data.notice").value("真实公告"))
             .andExpect(jsonPath("$.data.contactPhone").value("public-contact"))
             .andExpect(jsonPath("$.data.ownerName").doesNotExist())

@@ -32,6 +32,11 @@ test('按商品编号取SKU，未知编号返回空', () => {
   assert.deepEqual(skusForMerchantProduct(rows, 999), [])
   assert.deepEqual(skusForMerchantProduct(null, 1), [])
 })
+test('T37 大整数商品编号按字符串匹配，不因Number失真', () => {
+  const large = [{ product: { id: '9007199254740993' }, skus: [{ id: '9007199254740995' }] }]
+  assert.deepEqual(skusForMerchantProduct(large, '9007199254740993').map(s => s.id), ['9007199254740995'])
+  assert.deepEqual(skusForMerchantProduct(large, '9007199254740992'), [])
+})
 
 test('商品列表页只展示goodsType=2的虚拟商品', () => {
   assert.deepEqual(merchantProductRows(rows).filter(p => p.goodsType === 2).map(p => p.id), [2])
