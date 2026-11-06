@@ -24,7 +24,8 @@ import static org.mockito.Mockito.*;
 class ServiceFeeConfigTest {
     private MerchantController controller(MerchantStoreMapper stores) {
         return new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
-                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class));
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class),
+                new com.shop.b2b2c.service.MerchantStoreGuard(stores));
     }
 
     @ParameterizedTest

@@ -26,7 +26,8 @@ import static org.mockito.Mockito.*;
 class MerchantStoreUpdateTest {
     private MerchantController controller(MerchantStoreMapper stores) {
         return new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
-                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class));
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class),
+                new com.shop.b2b2c.service.MerchantStoreGuard(stores));
     }
 
     @Test
@@ -64,7 +65,8 @@ class MerchantStoreUpdateTest {
     @Test
     void profileUsesSessionTenantIgnoresInjectedFieldsAndDoesNotSwallowAuthorizationFailure() {
         var stores = mock(MerchantStoreMapper.class); var c = controller(stores);
-        when(stores.findById(1L)).thenReturn(Optional.of(new MerchantStore()));
+        var existing = new MerchantStore(); existing.setStatus(1);
+        when(stores.findById(1L)).thenReturn(Optional.of(existing));
         var body = new MerchantStore(); body.setId(2L); body.setStatus(1); body.setCommissionRate(BigDecimal.ZERO);
         body.setNotice("allowed notice"); body.setLogoUrl("");
         try (var security = mockStatic(SecurityUtils.class)) {
@@ -95,7 +97,8 @@ class MerchantStoreUpdateTest {
         var feePolicy = mock(MerchantFeePolicyService.class);
         when(stores.findById(1L)).thenReturn(Optional.of(new MerchantStore()));
         var c = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
-                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy);
+                mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy,
+                new com.shop.b2b2c.service.MerchantStoreGuard(stores));
         assertEquals(200, c.updateStatus(1L, 1).getCode());
         try (var security = mockStatic(SecurityUtils.class)) {
             // G31 起调价操作人取自服务端会话；本用例聚焦定向更新，显式注入登录ID。

@@ -1608,20 +1608,41 @@ class Sprint1SecurityIntegrationTest {
         cn.dev33.satoken.stp.StpUtil.logout(200L);
         jdbc.update("DELETE FROM sys_user WHERE id=200");
 
-        // 3. 商家登录修改自己店铺的展示公告与电话
+        // 3. O4 开通闸门：封禁(3)等非营业状态下商家写接口一律 409，公告/电话绝不能被部分写入
         authUser("MERCHANT_ADMIN", 1L);
         String merchantToken = loginToken();
         mvc.perform(put("/api/v1/merchant/profile")
                         .header("Authorization", "Bearer " + merchantToken)
                         .contentType("application/json")
                         .content("{\"notice\":\"new notice\",\"contactPhone\":\"13900001111\"}"))
+                .andExpect(status().is(409));
+        var banned = stores.findById(1L).orElseThrow();
+        assertEquals("old notice", banned.getNotice(), "O4: 非营业状态拒绝写资料，原有公告不得被改动");
+        assertEquals(3, banned.getStatus(), "O4: 拒绝路径不得触碰店铺状态");
+
+        // 4. 超管解封恢复营业 (status=1) 后，商家可正常更新展示公告与电话
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("SUPERADMIN", null);
+        String reopenToken = loginToken();
+        mvc.perform(put("/api/v1/admin/merchants/1/status?status=1")
+                        .header("Authorization", "Bearer " + reopenToken))
+                .andExpect(status().isOk());
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_ADMIN", 1L);
+        String reopenedToken = loginToken();
+        mvc.perform(put("/api/v1/merchant/profile")
+                        .header("Authorization", "Bearer " + reopenedToken)
+                        .contentType("application/json")
+                        .content("{\"notice\":\"new notice\",\"contactPhone\":\"13900001111\"}"))
                 .andExpect(status().isOk());
 
-        // 4. 验证：公告与电话被成功更新，但超管设置的封禁状态 (3) 和待生效费率政策 (500bps) 绝未被冲刷回滚！
+        // 5. 验证：公告与电话被成功更新，但营业状态 (1) 和待生效费率政策 (500bps) 绝未被冲刷回滚！
         var store = stores.findById(1L).orElseThrow();
         assertEquals("new notice", store.getNotice());
         assertEquals("13900001111", store.getContactPhone());
-        assertEquals(3, store.getStatus(), "R09: 商家资料更新绝不能覆盖超管设置的封禁状态");
+        assertEquals(1, store.getStatus(), "R09: 商家资料更新绝不能覆盖平台设置的店铺状态");
         assertEquals(500, jdbc.queryForObject("SELECT rate_bps FROM merchant_fee_policy WHERE merchant_id=1 "
                 + "ORDER BY effective_from DESC, id DESC LIMIT 1", Integer.class).intValue(),
                 "R09: 商家资料更新绝不能覆盖超管设置的平台抽成政策");

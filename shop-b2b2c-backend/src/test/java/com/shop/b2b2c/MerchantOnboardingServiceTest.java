@@ -1,7 +1,8 @@
 /*
  * 文件：MerchantOnboardingServiceTest.java
  * 用途：T39 入驻申请、实名材料密文/脱敏、审核状态机与审核通过开店的契约用例；含 T40 开店 0% 推广费率口径；
- *      O1 覆盖初审/复审双人复核、原因码字典（T32）、补件重提计数（T08）、OPENED 状态兼容（T29/T35）。
+ *      O1 覆盖初审/复审双人复核、原因码字典（T32）、补件重提计数（T08）、OPENED 状态兼容（T29/T35）；
+ *      O4 覆盖建店待开通(status=0)、未签协议开通 409（T17）、开通幂等与审计、签齐自动开通；D3 覆盖逾期撤回。
  * 维护注意：
  *  1. 使用 Mockito 隔离，不启动 Spring、不连接数据库；加密使用真实 CardCipherService 默认密钥。
  *  2. 证件号只允许密文落库、脱敏出参；若改为明文存储或返回，本用例必须失败。
@@ -54,14 +55,16 @@ class MerchantOnboardingServiceTest {
     private final SysUserMapper userMapper = mock(SysUserMapper.class);
     private final CardCipherService cipherService = new CardCipherService();
     private final MerchantFeePolicyService feePolicyService = mock(MerchantFeePolicyService.class);
+    private final com.shop.b2b2c.service.MerchantAgreementService agreementService =
+            mock(com.shop.b2b2c.service.MerchantAgreementService.class);
     /** 开发形态：双人复核关闭，单次 APPROVE 直接通过。 */
     private final MerchantOnboardingService service = new MerchantOnboardingService(
             applicationMapper, auditMapper, storeMapper, userMapper, cipherService, feePolicyService,
-            new FinanceApprovalGuard(false, userMapper));
+            new FinanceApprovalGuard(false, userMapper), agreementService);
     /** 生产形态：双人复核开启，初审只推进阶段，终审必须换不同超管。 */
     private final MerchantOnboardingService dualService = new MerchantOnboardingService(
             applicationMapper, auditMapper, storeMapper, userMapper, cipherService, feePolicyService,
-            new FinanceApprovalGuard(true, userMapper));
+            new FinanceApprovalGuard(true, userMapper), agreementService);
 
     @Test
     void individualApplicationStoresCipherAndFingerprintNotPlaintext() {
@@ -518,6 +521,142 @@ class MerchantOnboardingServiceTest {
         assertTrue(source.contains("'APPROVED','OPENED'")
                         && source.contains("countActiveByFingerprint"),
                 "主体防重查询必须把 OPENED 计入进行中申请");
+    }
+
+    // ---------- O4：开通闸门（T17/T35） ----------
+
+    @Test
+    void approveCreatesStoreInPendingStatusUntilOpened() {
+        // O4：审核通过只代表资质合格，店铺必须先落 status=0 待开通，签齐协议或超管 open 后才营业。
+        MerchantOnboardingApplication application = submittedApplication(41L);
+        when(applicationMapper.lockById(41L)).thenReturn(application);
+
+        service.approve(41L, provisioning(), null, 9L);
+
+        assertEquals(0, storeCaptor().getStatus());
+        assertEquals(MerchantOnboardingService.STATUS_APPROVED, application.getStatus());
+    }
+
+    @Test
+    void openRequiresApprovedStatusAndAllConsents() {
+        // T17：未审核通过不得开通。
+        MerchantOnboardingApplication draft = submittedApplication(42L);
+        draft.setStatus(MerchantOnboardingService.STATUS_DRAFT);
+        when(applicationMapper.lockById(42L)).thenReturn(draft);
+        assertEquals(409, org.junit.jupiter.api.Assertions.assertThrows(BusinessException.class,
+                () -> service.open(42L, 9L, null)).getCode());
+        org.mockito.Mockito.verifyNoInteractions(agreementService);
+
+        // T17：APPROVED 但协议未签齐同样 409，且不触碰店铺。
+        MerchantOnboardingApplication approved = approvedApplication(42L, 99L);
+        approved.setAgreementRequired(true);
+        when(applicationMapper.lockById(42L)).thenReturn(approved);
+        when(agreementService.hasAllRequiredConsents(42L)).thenReturn(false);
+        assertEquals(409, org.junit.jupiter.api.Assertions.assertThrows(BusinessException.class,
+                () -> service.open(42L, 9L, null)).getCode());
+        verify(storeMapper, never()).openIfPending(any());
+        verify(auditMapper, never()).insert(any());
+    }
+
+    @Test
+    void openSetsStoreOpenAndApplicationOpenedIdempotently() {
+        MerchantOnboardingApplication approved = approvedApplication(43L, 99L);
+        approved.setAgreementRequired(true);
+        when(applicationMapper.lockById(43L)).thenReturn(approved);
+        when(agreementService.hasAllRequiredConsents(43L)).thenReturn(true);
+        MerchantStore store = new MerchantStore();
+        store.setId(99L);
+        store.setStatus(0);
+        when(storeMapper.findById(99L)).thenReturn(Optional.of(store));
+        when(storeMapper.openIfPending(99L)).thenReturn(1);
+
+        MerchantOnboardingApplication opened = service.open(43L, 9L, null);
+
+        assertEquals(MerchantOnboardingService.STATUS_OPENED, opened.getStatus());
+        assertNotNull(opened.getOpenedAt());
+        verify(storeMapper).openIfPending(99L);
+        org.mockito.ArgumentCaptor<MerchantOnboardingAudit> audit =
+                org.mockito.ArgumentCaptor.forClass(MerchantOnboardingAudit.class);
+        verify(auditMapper).insert(audit.capture());
+        assertEquals(MerchantOnboardingService.ACTION_OPEN, audit.getValue().getAction());
+        assertEquals(MerchantOnboardingService.STATUS_APPROVED, audit.getValue().getFromStatus());
+        assertEquals(MerchantOnboardingService.STATUS_OPENED, audit.getValue().getToStatus());
+        assertEquals(9L, audit.getValue().getOperatorId().longValue());
+
+        // 幂等：重复开通直接返回，不再 CAS 店铺、不再写审计。
+        MerchantOnboardingApplication again = service.open(43L, 9L, null);
+        assertEquals(MerchantOnboardingService.STATUS_OPENED, again.getStatus());
+        verify(storeMapper, org.mockito.Mockito.times(1)).openIfPending(any());
+        verify(auditMapper, org.mockito.Mockito.times(1)).insert(any());
+    }
+
+    @Test
+    void openIfConsentsCompleteIgnoresNonApprovedAndOpensApprovedAsSystem() {
+        // 签署发生在提交前（DRAFT/SUBMITTED）时不得提前开通。
+        MerchantOnboardingApplication draft = submittedApplication(44L);
+        draft.setStatus(MerchantOnboardingService.STATUS_DRAFT);
+        when(applicationMapper.lockById(44L)).thenReturn(draft);
+        service.openIfConsentsComplete(44L);
+        verify(storeMapper, never()).openIfPending(any());
+        verify(auditMapper, never()).insert(any());
+
+        // APPROVED 且协议齐全：系统自动开通，审计操作人为空。
+        org.mockito.Mockito.reset(applicationMapper, auditMapper, storeMapper);
+        MerchantOnboardingApplication approved = approvedApplication(44L, 99L);
+        approved.setAgreementRequired(true);
+        when(applicationMapper.lockById(44L)).thenReturn(approved);
+        when(agreementService.hasAllRequiredConsents(44L)).thenReturn(true);
+        MerchantStore store = new MerchantStore();
+        store.setId(99L);
+        store.setStatus(0);
+        when(storeMapper.findById(99L)).thenReturn(Optional.of(store));
+        when(storeMapper.openIfPending(99L)).thenReturn(1);
+
+        service.openIfConsentsComplete(44L);
+
+        assertEquals(MerchantOnboardingService.STATUS_OPENED, approved.getStatus());
+        org.mockito.ArgumentCaptor<MerchantOnboardingAudit> audit =
+                org.mockito.ArgumentCaptor.forClass(MerchantOnboardingAudit.class);
+        verify(auditMapper).insert(audit.capture());
+        assertEquals(MerchantOnboardingService.ACTION_OPEN, audit.getValue().getAction());
+        org.junit.jupiter.api.Assertions.assertNull(audit.getValue().getOperatorId());
+    }
+
+    // ---------- D3：逾期撤回 ----------
+
+    @Test
+    void expireStaleApplicationWithdrawsApprovedWithSystemAudit() {
+        MerchantOnboardingApplication approved = approvedApplication(45L, 99L);
+        when(applicationMapper.lockById(45L)).thenReturn(approved);
+
+        assertTrue(service.expireStaleApplication(45L));
+
+        assertEquals(MerchantOnboardingService.STATUS_WITHDRAWN, approved.getStatus());
+        org.mockito.ArgumentCaptor<MerchantOnboardingAudit> audit =
+                org.mockito.ArgumentCaptor.forClass(MerchantOnboardingAudit.class);
+        verify(auditMapper).insert(audit.capture());
+        assertEquals(MerchantOnboardingService.ACTION_EXPIRE, audit.getValue().getAction());
+        assertEquals(MerchantOnboardingService.STATUS_WITHDRAWN, audit.getValue().getToStatus());
+        org.junit.jupiter.api.Assertions.assertNull(audit.getValue().getOperatorId());
+    }
+
+    @Test
+    void expireStaleApplicationSkipsTerminalAndInFlightStatuses() {
+        for (String status : new String[]{
+                MerchantOnboardingService.STATUS_DRAFT,
+                MerchantOnboardingService.STATUS_SUBMITTED,
+                MerchantOnboardingService.STATUS_OPENED,
+                MerchantOnboardingService.STATUS_WITHDRAWN}) {
+            org.mockito.Mockito.reset(applicationMapper, auditMapper);
+            MerchantOnboardingApplication application = approvedApplication(46L, 99L);
+            application.setStatus(status);
+            when(applicationMapper.lockById(46L)).thenReturn(application);
+
+            org.junit.jupiter.api.Assertions.assertFalse(service.expireStaleApplication(46L));
+
+            verify(applicationMapper, never()).updateById(any());
+            verify(auditMapper, never()).insert(any());
+        }
     }
 
     private MerchantStore storeCaptor() {

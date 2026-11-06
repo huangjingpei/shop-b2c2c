@@ -27,6 +27,10 @@ public interface MerchantStoreMapper extends BaseMapper<MerchantStore> {
     int updateStatusOnly(@org.apache.ibatis.annotations.Param("id") Long id,
                          @org.apache.ibatis.annotations.Param("status") Integer status);
 
+    /** O4 开通闸门 CAS：仅待开通(0)可置营业(1)，返回 0 表示已被并发开通或状态已变化，调用方必须重读判定。 */
+    @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET status = 1 WHERE id = #{id} AND status = 0")
+    int openIfPending(@org.apache.ibatis.annotations.Param("id") Long id);
+
     @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET commission_rate = #{rate} WHERE id = #{id}")
     int updateCommissionOnly(@org.apache.ibatis.annotations.Param("id") Long id,
                              @org.apache.ibatis.annotations.Param("rate") java.math.BigDecimal rate);

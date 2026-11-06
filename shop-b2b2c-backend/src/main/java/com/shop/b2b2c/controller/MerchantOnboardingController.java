@@ -8,6 +8,8 @@
  * 4. 申请创建与材料修改不允许直接设置 merchantId 或 APPROVED 状态，开店只能由审核通过触发。
  * 5. 证件附件只能经本控制器超管鉴权下载（inline），不得暴露私有目录路径；审核通过响应中的 initialPassword 只出现一次，前端不得留存。
  * 6. O3 协议同意记录只读查询（append-only 证据链）：返回签署人、版本、哈希、IP/UA 与签署时间，不提供修改/删除入口。
+ * 7. O4 open 兜底开通：仅 APPROVED 且协议签齐可开通（否则 409），重复开通幂等返回；
+ *    双人复核开启时 confirmedBy 必填且必须与操作人不同（缺参 428、同人 403，校验走 FinanceApprovalGuard）。
  */
 package com.shop.b2b2c.controller;
 
@@ -181,6 +183,15 @@ public class MerchantOnboardingController {
     public R<Map<String, Object>> withdraw(@PathVariable Long id) {
         MerchantOnboardingApplication application = onboardingService.withdraw(id, SecurityUtils.getCurrentUserId());
         return R.ok(onboardingService.maskedView(application));
+    }
+
+    @Operation(summary = "【超管】开通店铺（O4 兜底；协议签齐后开通，双人复核开启时须带复核人）")
+    @PostMapping("/api/v1/admin/merchant-onboarding/applications/{id}/open")
+    public R<Map<String, Object>> open(@PathVariable Long id,
+                                       @RequestParam(required = false) Long confirmedBy) {
+        MerchantOnboardingApplication application =
+                onboardingService.open(id, SecurityUtils.getCurrentUserId(), confirmedBy);
+        return R.ok("店铺已开通", onboardingService.maskedView(application));
     }
 
     private MerchantOnboardingService.Provisioning toProvisioning(ReviewDTO dto) {

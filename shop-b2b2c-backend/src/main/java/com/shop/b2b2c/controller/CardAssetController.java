@@ -15,11 +15,15 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/merchant/cards")
 public class CardAssetController {
     private final CardAssetService assets;
+    /** O4 商家写接口营业状态闸门。 */
+    private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
     public record VoidRequest(String reason) {}
     @PostMapping("/{id}/void")
     public R<CardVoidRecord> voidCard(@PathVariable Long id, @RequestBody VoidRequest request) {
         StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
-        return R.ok("卡密已作废", assets.voidCard(SecurityUtils.requireCurrentMerchantId(), SecurityUtils.getCurrentUserId(), id, request.reason()));
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        storeGuard.requireOpen(merchantId);
+        return R.ok("卡密已作废", assets.voidCard(merchantId, SecurityUtils.getCurrentUserId(), id, request.reason()));
     }
     public R<CardVoidRecord> record(Long id) {
         return record(id, null);

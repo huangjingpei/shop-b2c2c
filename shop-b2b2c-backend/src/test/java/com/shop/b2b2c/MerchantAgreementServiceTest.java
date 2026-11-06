@@ -7,6 +7,8 @@
  *  2. 重复版本发布命中 uk_agreement_type_version 必须翻译为 409 且事务回滚；重复签署同一版本必须幂等成功且不重复写证据。
  *  3. 同意记录 append-only 是开通闸门合规前提：静态断言禁止 Consent Mapper 出现 UPDATE/DELETE。
  *  4. agreed_at 只在"全部必需协议签署完成"时写一次；版本升级不清空，完整性由 hasAllRequiredConsents 实时判定。
+ *  5. O4：每次成功签署后必须经 ObjectProvider 钩子调用 openIfConsentsComplete（同事务自动开通）；
+ *     既有用例 provider 默认返回 null 不触发钩子，仅专门用例验证钩子调用。
  */
 package com.shop.b2b2c;
 
@@ -45,8 +47,12 @@ class MerchantAgreementServiceTest {
     private final MerchantAgreementVersionMapper versionMapper = mock(MerchantAgreementVersionMapper.class);
     private final MerchantAgreementConsentMapper consentMapper = mock(MerchantAgreementConsentMapper.class);
     private final MerchantOnboardingApplicationMapper applicationMapper = mock(MerchantOnboardingApplicationMapper.class);
+    /** O4 自动开通钩子提供者；默认 getIfAvailable 返回 null 不触发钩子，专项用例再桩出服务。 */
+    @SuppressWarnings("unchecked")
+    private final org.springframework.beans.factory.ObjectProvider<com.shop.b2b2c.service.MerchantOnboardingService> onboardingProvider =
+            mock(org.springframework.beans.factory.ObjectProvider.class);
     private final MerchantAgreementService service = new MerchantAgreementService(
-            versionMapper, consentMapper, applicationMapper);
+            versionMapper, consentMapper, applicationMapper, onboardingProvider);
 
     // ---------- 发布/下线 ----------
 
@@ -202,6 +208,41 @@ class MerchantAgreementServiceTest {
         assertEquals("Mozilla/5.0", inserted.getUserAgent());
         assertNotNull(inserted.getAgreedAt());
         assertEquals(consent, inserted);
+    }
+
+    @Test
+    void consentTriggersAutoOpenHookAfterSuccessfulInsert() {
+        // O4：成功签署后同事务经钩子尝试自动开通；非 APPROVED 由服务侧静默跳过，本用例只验证钩子被调用。
+        com.shop.b2b2c.service.MerchantOnboardingService onboarding =
+                mock(com.shop.b2b2c.service.MerchantOnboardingService.class);
+        when(onboardingProvider.getIfAvailable()).thenReturn(onboarding);
+        when(versionMapper.findByTypeAndVersion("PRIVACY", "v1")).thenReturn(published("PRIVACY", "v1", "hash"));
+        when(consentMapper.countByApplicationAndTypeAndVersion(1L, "PRIVACY", "v1")).thenReturn(0, 1);
+        when(versionMapper.findAllPublished()).thenReturn(List.of(published("PRIVACY", "v1", "hash")));
+        MerchantOnboardingApplication application = new MerchantOnboardingApplication();
+        application.setId(1L);
+        application.setAgreementRequired(Boolean.TRUE);
+        when(applicationMapper.selectById(1L)).thenReturn(application);
+
+        service.consent(1L, 10L, "PRIVACY", "v1", "hash", "张三", null, null);
+
+        verify(onboarding).openIfConsentsComplete(1L);
+    }
+
+    @Test
+    void idempotentDuplicateConsentDoesNotTriggerAutoOpenHook() {
+        // 重复签署走幂等返回，不再触发开通钩子，避免重复审计。
+        MerchantAgreementConsent existing = new MerchantAgreementConsent();
+        existing.setApplicationId(1L);
+        existing.setProtocolType("PRIVACY");
+        existing.setProtocolVersion("v1");
+        when(versionMapper.findByTypeAndVersion("PRIVACY", "v1")).thenReturn(published("PRIVACY", "v1", "hash"));
+        when(consentMapper.countByApplicationAndTypeAndVersion(1L, "PRIVACY", "v1")).thenReturn(1);
+        when(consentMapper.findByApplicationId(1L)).thenReturn(List.of(existing));
+
+        service.consent(1L, null, "PRIVACY", "v1", "hash", "张三", null, null);
+
+        verify(onboardingProvider, never()).getIfAvailable();
     }
 
     @Test

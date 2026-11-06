@@ -17,10 +17,14 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/merchant/inventory-adjustments")
 public class InventoryAdjustmentController {
     private final InventoryAdjustmentService adjustments;
+    /** O4 商家写接口营业状态闸门。 */
+    private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
     @PostMapping
     public R<View> adjust(@RequestBody Adjust request, @RequestHeader("Idempotency-Key") String key) {
         StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN");
-        return R.ok("库存调整已记录", adjustments.adjust(SecurityUtils.requireCurrentMerchantId(), SecurityUtils.getCurrentUserId(), key, request));
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        storeGuard.requireOpen(merchantId);
+        return R.ok("库存调整已记录", adjustments.adjust(merchantId, SecurityUtils.getCurrentUserId(), key, request));
     }
     @GetMapping
     public R<Page> list(@RequestParam(required = false) Long skuId, @RequestParam(required = false) Long beforeId,

@@ -1,7 +1,7 @@
 /*
  * 文件：MerchantController.java
  * 用途：平台商户配置及商家本店资料接口。
- * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效。T39 起超管开通也必须走入驻申请与审核留痕，阶段一收款账户写入 merchant_settlement_account，不再生成 SUB+时间戳/PASSED 假进件值。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。Q13-A：员工资料读取走白名单，身份证/银行卡默认脱敏，资料修改仅店长。
+ * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效。T39 起超管开通也必须走入驻申请与审核留痕，阶段一收款账户写入 merchant_settlement_account，不再生成 SUB+时间戳/PASSED 假进件值。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。Q13-A：员工资料读取走白名单，身份证/银行卡默认脱敏，资料修改仅店长。O4：应急开通建店后店铺为 status=0 待开通（协议签齐自动开通或超管 open 兜底）；商家资料修改等写操作先经 MerchantStoreGuard.requireOpen 闸门。
  */
 package com.shop.b2b2c.controller;
 
@@ -46,6 +46,8 @@ public class MerchantController {
     private final MerchantOnboardingService onboardingService;
     private final MerchantSettlementAccountService settlementAccountService;
     private final MerchantFeePolicyService feePolicyService;
+    /** O4 商家写接口营业状态闸门；统一收口在 MerchantStoreGuard，不在各接口各写一套。 */
+    private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
 
     // ==========================================
     // 平台超级管理员视角 API (/api/v1/admin/merchants)
@@ -330,7 +332,9 @@ public class MerchantController {
         ManagementGuards.text(updateDTO.getCustomPayQrcode(), 512, false);
         com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
-        requireStore(merchantId);
+        MerchantStore store = storeMapper.findById(merchantId)
+                .orElseThrow(() -> new BusinessException(404, "店铺不存在"));
+        storeGuard.requireOpen(store);
         storeMapper.updateProfileOnly(merchantId, updateDTO.getNotice(), updateDTO.getLogoUrl(),
                 updateDTO.getContactPhone(), updateDTO.getCustomPayQrcode());
 

@@ -10,6 +10,9 @@
  * 4. 必需协议集合 = 全部有当前生效版本的协议类型；全部签署完成时在申请单上写 agreed_at（agreement_required=1 时），
  *    agreed_at 只写一次，后续版本升级不清空（未开通申请须同意新版本由 hasAllRequiredConsents 实时判定）。
  * 5. 证据要素：subjectName 取申请单实名主体快照；ip/userAgent 由接口层尽力采集，允许为空但不允许伪造。
+ * 6. O4 开通闸门：每次成功签署后在同一事务内经 ObjectProvider 调用 MerchantOnboardingService.openIfConsentsComplete，
+ *    申请 APPROVED 且签署齐全即自动开通（店铺 status 0->1、申请 OPENED、审计 OPEN）；用 ObjectProvider 是为避免
+ *    与 MerchantOnboardingService 的构造器循环依赖，延迟解析不改变事务边界，开通失败会同滚本次签署。
  */
 package com.shop.b2b2c.service;
 
@@ -54,6 +57,8 @@ public class MerchantAgreementService {
     private final MerchantAgreementVersionMapper versionMapper;
     private final MerchantAgreementConsentMapper consentMapper;
     private final MerchantOnboardingApplicationMapper applicationMapper;
+    /** O4 自动开通钩子（延迟解析避免循环依赖）；见文件头第 6 条。 */
+    private final org.springframework.beans.factory.ObjectProvider<MerchantOnboardingService> onboardingServiceProvider;
 
     @Data
     public static class PublishForm {
@@ -188,6 +193,11 @@ public class MerchantAgreementService {
                     .findFirst().orElseThrow(() -> new BusinessException(409, "协议签署冲突，请刷新后重试"));
         }
         stampAgreedAtIfComplete(applicationId);
+        // O4：签署落库后同事务尝试自动开通；非 APPROVED/未签齐时钩子静默跳过。
+        MerchantOnboardingService onboardingService = onboardingServiceProvider.getIfAvailable();
+        if (onboardingService != null) {
+            onboardingService.openIfConsentsComplete(applicationId);
+        }
         return consent;
     }
 

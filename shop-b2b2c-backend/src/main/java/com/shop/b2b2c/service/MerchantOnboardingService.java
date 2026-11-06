@@ -8,6 +8,9 @@
  * 3. 阶段一为人工审核，verificationMethod 固定 MANUAL，verificationSource 仅记录 MANUAL_REVIEW；
  *    未接第三方核验时不得标注为第三方实名，审核角色当前沿用平台超管（待用户确认）。
  * 4. 审核通过才创建店铺与店长账号；驳回/撤回不得产生店铺、账号或收款账户副作用。
+ *    O4 开通闸门：approve 建店后 merchant_store.status=0（待开通），不得直接营业；
+ *    协议签署齐全（MerchantAgreementService.hasAllRequiredConsents）后自动开通，或超管调用 open 兜底开通；
+ *    开通动作幂等（OPENED 重复调用直接返回），店铺侧用 CAS UPDATE ... WHERE status=0 防并发重复开通。
  * 5. 默认费率沿用既有 3.00% 默认值，具体默认数值仍待用户确认；开店允许直接设 0%，但必须走 PROMOTION 并填写推广原因。
  * 6. 审核人、原因码、审核阶段、前后状态与材料摘要写入 merchant_onboarding_audit；审计只追加不修改。
  * 7. S3 公开入驻：申请人凭创建时返回的一次性查询凭证（accessTokenHash 落库、明文不落库）维护材料、上传证件、提交与查进度；
@@ -18,6 +21,10 @@
  *    由不同超管再次 APPROVE 才终审通过；SECONDARY 阶段的 APPROVE/REJECT/SUPPLEMENT 必须换人，同人返回 403。
  * 10. O1 原因码：REJECT 与 SUPPLEMENT_REQUIRED 必须携带 REJECT_CODES 字典内的 rejectCode；OTHER 时 reason 必填，其余原因码 reason 可选。
  * 11. 补件重提：仅 SUPPLEMENT_REQUIRED -> SUBMITTED 时 resubmit_count+1；要求补件会重置 review_stage/first_reviewer_id，重提后重新走初审。
+ * 12. D3 逾期撤回：APPROVED 超 shop.onboarding.agreement-expire-days（默认30天）未开通、
+ *     SUPPLEMENT_REQUIRED 超 shop.onboarding.supplement-expire-days（默认30天）未补件，由 OnboardingExpiryJob 逐条调用
+ *     expireStaleApplication 置 WITHDRAWN，审计 action=EXPIRE 且 operator_id 为空（系统任务）；
+ *     逾期只撤回申请，已建的待开通店铺与店长账号的停用/注销属 O6 店铺状态机范围，本类不处理。
  */
 package com.shop.b2b2c.service;
 
@@ -124,6 +131,8 @@ public class MerchantOnboardingService {
     private final MerchantFeePolicyService feePolicyService;
     /** 双人复核统一开关与复核人校验；O1 复用其开关决定是否需要复审，不得在各入口各写一套。 */
     private final FinanceApprovalGuard approvalGuard;
+    /** O4 开通闸门：协议是否签署齐全的唯一判定来源，open/openIfConsentsComplete 都必须经它校验。 */
+    private final MerchantAgreementService agreementService;
 
     @Data
     public static class ApplicationForm {
@@ -368,7 +377,8 @@ public class MerchantOnboardingService {
         // 店铺主表只保留脱敏展示值，证件原文仅以密文留在入驻申请中。
         store.setIdCardNumber(maskedIdCard(application));
         store.setContactPhone(application.getContactPhone());
-        store.setStatus(1);
+        // O4 开通闸门：审核通过只代表资质合格，店铺先落“待开通”，签齐协议或超管 open 后才置 1 营业。
+        store.setStatus(0);
         store.setCommissionRate(resolveDefaultRate(effective));
         storeMapper.save(store);
 
@@ -469,6 +479,103 @@ public class MerchantOnboardingService {
         applicationMapper.updateById(application);
         writeAudit(application, "WITHDRAW", fromStatus, STATUS_WITHDRAWN, operatorId, null, null);
         return application;
+    }
+
+    /**
+     * O4 超管兜底开通：仅 APPROVED 可开通；协议未签齐 409；重复开通幂等返回。
+     * 双人复核开启时必须指定与操作人不同的复核人，校验统一走 FinanceApprovalGuard。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public MerchantOnboardingApplication open(Long id, Long operatorId, Long confirmedBy) {
+        MerchantOnboardingApplication application = requireLocked(id);
+        if (STATUS_OPENED.equals(application.getStatus())) {
+            // 开通动作幂等：重复调用返回当前态，不重复写审计、不重复 CAS 店铺。
+            return application;
+        }
+        if (operatorId != null) {
+            approvalGuard.verify("开通店铺(OPEN)", operatorId, confirmedBy);
+            approvalGuard.resolveReviewer(operatorId, confirmedBy);
+        }
+        return doOpen(application, operatorId);
+    }
+
+    /**
+     * O4 系统自动开通钩子：协议签署完成后由 MerchantAgreementService 在同一事务内调用。
+     * 仅当申请处于 APPROVED 且协议齐全时开通；其余状态（含未审核/已开通）静默跳过，不报错。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void openIfConsentsComplete(Long applicationId) {
+        if (applicationId == null) {
+            return;
+        }
+        MerchantOnboardingApplication application = applicationMapper.lockById(applicationId);
+        if (application == null || !STATUS_APPROVED.equals(application.getStatus())) {
+            return;
+        }
+        doOpen(application, null);
+    }
+
+    /** 开通公共段：状态/闸门校验 + 店铺 CAS 0->1 + 申请置 OPENED + 审计 OPEN（operatorId 为空表示系统任务）。 */
+    private MerchantOnboardingApplication doOpen(MerchantOnboardingApplication application, Long operatorId) {
+        if (!STATUS_APPROVED.equals(application.getStatus())) {
+            throw new BusinessException(409, "仅审核通过(APPROVED)的入驻申请可以开通");
+        }
+        if (Boolean.TRUE.equals(application.getAgreementRequired())
+                && !agreementService.hasAllRequiredConsents(application.getId())) {
+            throw new BusinessException(409, "开店协议尚未签署齐全，请先完成协议签署后再开通");
+        }
+        Long merchantId = application.getMerchantId();
+        if (merchantId == null) {
+            throw new BusinessException(409, "申请尚未建店，无法开通");
+        }
+        MerchantStore store = storeMapper.findById(merchantId)
+                .orElseThrow(() -> new BusinessException(500, "店铺不存在，无法开通"));
+        if (!Integer.valueOf(1).equals(store.getStatus())) {
+            if (!Integer.valueOf(0).equals(store.getStatus())) {
+                throw new BusinessException(409, "店铺当前状态不可开通，请检查店铺营业状态");
+            }
+            int updated = storeMapper.openIfPending(merchantId);
+            if (updated == 0) {
+                // 并发下另一请求已开通：重读确认，非 1 则视为状态冲突。
+                MerchantStore latest = storeMapper.findById(merchantId)
+                        .orElseThrow(() -> new BusinessException(500, "店铺不存在，无法开通"));
+                if (!Integer.valueOf(1).equals(latest.getStatus())) {
+                    throw new BusinessException(409, "店铺当前状态不可开通，请检查店铺营业状态");
+                }
+            }
+        }
+        String fromStatus = application.getStatus();
+        application.setStatus(STATUS_OPENED);
+        application.setOpenedAt(LocalDateTime.now());
+        application.setVersion((application.getVersion() == null ? 0 : application.getVersion()) + 1);
+        applicationMapper.updateById(application);
+        writeAudit(application, ACTION_OPEN, fromStatus, STATUS_OPENED, operatorId, null, null);
+        return application;
+    }
+
+    /** D3 逾期扫描：返回 (APPROVED 超期未开通) 或 (SUPPLEMENT_REQUIRED 超期未补件) 的申请ID，供定时任务逐条处理。 */
+    public List<Long> findExpirableIds(LocalDateTime approvedBefore, LocalDateTime supplementBefore, int limit) {
+        return applicationMapper.findExpirableIds(approvedBefore, supplementBefore, limit);
+    }
+
+    /**
+     * D3 逾期撤回（系统任务）：仅 APPROVED/SUPPLEMENT_REQUIRED 可逾期撤回，返回是否处理；
+     * 行锁内复核状态，已被人工推进的单据静默跳过，审计 action=EXPIRE 且操作人为空。
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public boolean expireStaleApplication(Long id) {
+        MerchantOnboardingApplication application = applicationMapper.lockById(id);
+        if (application == null
+                || (!STATUS_APPROVED.equals(application.getStatus())
+                && !STATUS_SUPPLEMENT_REQUIRED.equals(application.getStatus()))) {
+            return false;
+        }
+        String fromStatus = application.getStatus();
+        application.setStatus(STATUS_WITHDRAWN);
+        application.setVersion((application.getVersion() == null ? 0 : application.getVersion()) + 1);
+        applicationMapper.updateById(application);
+        writeAudit(application, ACTION_EXPIRE, fromStatus, STATUS_WITHDRAWN, null, "逾期未开通/未补件，系统自动撤回", null);
+        return true;
     }
 
     public List<MerchantOnboardingApplication> list() {

@@ -40,16 +40,27 @@ public class ProductController {
     private final CategoryMapper categoryMapper;
     private final com.shop.b2b2c.service.CardAssetService cardAssets;
     private final com.shop.b2b2c.service.CardCipherService cardCipher;
+    /** O4 商家写接口营业状态闸门；发布/卡密导入前必须店铺 status==1。 */
+    private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
 
     public ProductController(ProductMapper productMapper, ProductSkuMapper skuMapper, ProductVirtualCardMapper cardMapper,
                              MerchantStoreMapper storeMapper, CategoryMapper categoryMapper, com.shop.b2b2c.service.CardAssetService cardAssets) {
-        this(productMapper, skuMapper, cardMapper, storeMapper, categoryMapper, cardAssets, new com.shop.b2b2c.service.CardCipherService());
+        this(productMapper, skuMapper, cardMapper, storeMapper, categoryMapper, cardAssets,
+                new com.shop.b2b2c.service.CardCipherService(), new com.shop.b2b2c.service.MerchantStoreGuard(storeMapper));
+    }
+
+    /** 兼容已有 7 参调用：守卫由 storeMapper 现地构造，语义与 8 参一致。 */
+    public ProductController(ProductMapper productMapper, ProductSkuMapper skuMapper, ProductVirtualCardMapper cardMapper,
+                             MerchantStoreMapper storeMapper, CategoryMapper categoryMapper, com.shop.b2b2c.service.CardAssetService cardAssets,
+                             com.shop.b2b2c.service.CardCipherService cardCipher) {
+        this(productMapper, skuMapper, cardMapper, storeMapper, categoryMapper, cardAssets,
+                cardCipher, new com.shop.b2b2c.service.MerchantStoreGuard(storeMapper));
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public ProductController(ProductMapper productMapper, ProductSkuMapper skuMapper, ProductVirtualCardMapper cardMapper,
                              MerchantStoreMapper storeMapper, CategoryMapper categoryMapper, com.shop.b2b2c.service.CardAssetService cardAssets,
-                             com.shop.b2b2c.service.CardCipherService cardCipher) {
+                             com.shop.b2b2c.service.CardCipherService cardCipher, com.shop.b2b2c.service.MerchantStoreGuard storeGuard) {
         this.productMapper = productMapper;
         this.skuMapper = skuMapper;
         this.cardMapper = cardMapper;
@@ -57,6 +68,7 @@ public class ProductController {
         this.categoryMapper = categoryMapper;
         this.cardAssets = cardAssets;
         this.cardCipher = cardCipher != null ? cardCipher : new com.shop.b2b2c.service.CardCipherService();
+        this.storeGuard = storeGuard != null ? storeGuard : new com.shop.b2b2c.service.MerchantStoreGuard(storeMapper);
     }
 
     // ==========================================
@@ -184,6 +196,7 @@ public class ProductController {
         } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
         }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        storeGuard.requireOpen(merchantId);
 
         if (dto.getTitle() == null || dto.getTitle().isBlank() || dto.getTitle().length() > 255
                 || dto.getMainImage() == null || dto.getMainImage().isBlank() || dto.getMainImage().length() > 255
@@ -263,7 +276,9 @@ public class ProductController {
     public R<Map<String, Object>> importCards(@RequestBody BatchImportCardDTO dto) {
         com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
         if (dto == null) throw new BusinessException(400, "请输入卡密导入资料");
-        return R.ok("卡密批量导入成功", cardAssets.importCards(SecurityUtils.requireCurrentMerchantId(),
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        storeGuard.requireOpen(merchantId);
+        return R.ok("卡密批量导入成功", cardAssets.importCards(merchantId,
                 SecurityUtils.getCurrentUserId(), dto.getProductId(), dto.getSkuId(), dto.getCardContents()));
     }
 

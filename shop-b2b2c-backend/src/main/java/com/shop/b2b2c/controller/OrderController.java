@@ -57,6 +57,8 @@ public class OrderController {
     private final com.shop.b2b2c.service.ServiceFeeSnapshotService feeSnapshotService;
     private final com.shop.b2b2c.service.MerchantFeePolicyService feePolicyService;
     private final com.shop.b2b2c.service.MerchantAccountService merchantAccountService;
+    /** O4 商家写接口营业状态闸门：发货/推单/虚拟履约前店铺必须 status==1。 */
+    private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
 
     @Data
     public static class CheckoutDTO {
@@ -398,6 +400,7 @@ public class OrderController {
         }
         // Q13-A 澄清：实物订单发货对店长与员工开放；租户归属与状态校验仍必须通过，员工不得跨店发货。
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        storeGuard.requireOpen(merchantId);
         TradeOrder order = Optional.ofNullable(orderMapper.lockById(id))
                 .orElseThrow(() -> new BusinessException("订单不存在"));
         if (!merchantId.equals(order.getMerchantId())) {
@@ -434,6 +437,7 @@ public class OrderController {
         if (merchantId == null) {
             throw new BusinessException("仅限商家账号操作推单");
         }
+        storeGuard.requireOpen(merchantId);
         Map<String, Object> res = idempotency.execute("push:" + merchantId + ":" + SecurityUtils.getCurrentUserId(), key, req,
                 () -> peerPayService.createPushPayOrder(req, merchantId));
         // T26：推单海报在幂等事务提交后按需生成，失败不影响已落库订单。
@@ -452,6 +456,7 @@ public class OrderController {
         if (merchantId == null) {
             throw new BusinessException("仅限商家账号履约交付");
         }
+        storeGuard.requireOpen(merchantId);
         peerPayService.fulfillVirtualOrder(id, req.getServiceVoucher(), merchantId);
         return R.ok("线上服务交付凭证已成功录入，订单已完结", null);
     }

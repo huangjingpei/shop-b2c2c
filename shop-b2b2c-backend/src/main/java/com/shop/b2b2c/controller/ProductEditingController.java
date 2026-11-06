@@ -17,6 +17,8 @@ import org.springframework.web.bind.annotation.*;
 @RequestMapping("/api/v1/merchant/products")
 public class ProductEditingController {
     private final ProductEditingService editing;
+    /** O4 商家写接口营业状态闸门。 */
+    private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
     @GetMapping("/{id}/editor")
     public R<Editor> get(@PathVariable Long id) { return R.ok(editing.get(SecurityUtils.requireCurrentMerchantId(), id)); }
     @PutMapping("/{id}")
@@ -27,7 +29,9 @@ public class ProductEditingController {
             }
         } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
         }
-        return R.ok("商品资料已保存", editing.update(SecurityUtils.requireCurrentMerchantId(), id, edit));
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        storeGuard.requireOpen(merchantId);
+        return R.ok("商品资料已保存", editing.update(merchantId, id, edit));
     }
     @PatchMapping("/{id}/status")
     public R<Editor> status(@PathVariable Long id, @RequestBody Status change) {
@@ -37,6 +41,8 @@ public class ProductEditingController {
             }
         } catch (cn.dev33.satoken.exception.SaTokenContextException ignored) {
         }
-        return R.ok("商品状态已更新", editing.changeStatus(SecurityUtils.requireCurrentMerchantId(), id, change));
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        storeGuard.requireOpen(merchantId);
+        return R.ok("商品状态已更新", editing.changeStatus(merchantId, id, change));
     }
 }
