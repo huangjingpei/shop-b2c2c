@@ -488,7 +488,7 @@ CREATE TABLE IF NOT EXISTS `payment_event` (
   `currency` VARCHAR(16) NOT NULL DEFAULT 'CNY' COMMENT '交易币种',
   `payer_id` VARCHAR(128) NULL COMMENT '付款人渠道标识',
   `event_status` VARCHAR(32) NOT NULL COMMENT 'PROCESSING, SUCCESS, MANUAL_REVIEW, DUPLICATE_PAYMENT, AMOUNT_MISMATCH, CURRENCY_MISMATCH, MERCHANT_MISMATCH, LATE_PAYMENT, FULFILLMENT_FAILED',
-  `funds_received` TINYINT NULL COMMENT 'T+1：渠道侧是否确认收到资金，1-已到账，0-明确未到账，NULL-未标注（需人工核对，不得视为无需流水）；刻意不设默认值',
+  `funds_received` TINYINT NULL COMMENT 'T+1：渠道侧是否存在该笔资金往来、应当有对应渠道流水（非“此刻仍持有资金”）。1-预期渠道存在流水（新事件占位即 1，且只增不减）；0-明确无资金往来（仅对未标注行/历史或异常行生效，新事件不可达）；NULL-未判定（需人工核对，不得视为无需流水）；刻意不设默认值',
   `error_message` VARCHAR(512) NULL COMMENT '异常描述',
   `raw_payload` TEXT NULL COMMENT '渠道回调原始报文快照',
   `reconcile_attempts` INT NOT NULL DEFAULT 0 COMMENT 'G34：陈旧 PROCESSING 渠道回查已重试次数',

@@ -204,8 +204,9 @@
 - 第二轮回核返工：结算批次合计改按开区间 `periodEnd = to`（原 `to.minusDays(1)` 把月结/手工按月入口全关掉）；退款三条单边路径（`REF|id|NO`、`REF|id|ST`、`REFFEE`）统一受流水门禁；按渠道求差集返回 `incompleteChannels`，多渠道部分导入不再静默 `SUCCESS` 而是 `PARTIAL`。详见同一文档第 11 节。
 - 第三轮回核返工：本地渠道收集排除空串（避免永久 `PARTIAL`→`MANUAL`）；`success_at` 巡检改为按 `merchant_id` 且每店每轮一次。第三轮曾把缺失渠道差集限定为 `SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT`，**该口径在第四轮被认定为错误判断并已纠正**。详见同一文档第 12 节。
 - 第四轮回核返工：差集状态扩为七种（`SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT` 与 `reject(...)` 写入的 `MERCHANT_MISMATCH`/`AMOUNT_MISMATCH`/`CURRENCY_MISMATCH`/`FULFILLMENT_FAILED`）；非成功事件不再静默——拒绝状态生成 `PAYMENT_EVENT_REJECTED` 差异，悬挂超过 5 分钟的 `PROCESSING`（与 G34 阈值一致）生成 `PAYMENT_EVENT_REVIEW` 差异，未悬挂 `PROCESSING` 计入跑批 `processingPending` 汇总，未知状态（如 `ORDER_STATUS_INVALID`）生成 `PAYMENT_EVENT_REVIEW`。详见同一文档第 13 节。
-- 第五轮回核返工（纠正第四轮两条前提）：新增 `payment_event.funds_received TINYINT NULL`（**无默认值**），按 `1`/`0`/`NULL` 三值分别处理——`1` 且状态在七状态集合内才计入缺失渠道差集；`0` 不进差集但仍生成 `PAYMENT_EVENT_REJECTED`；`NULL` 不进差集但生成 `PAYMENT_EVENT_REVIEW`，禁止当作“无需流水”静默放过。`FULFILLMENT_FAILED` 一码多义由该列区分（G34 明确未支付=0、查单前置失败=NULL、回调后 reject=1）；`MANUAL_REVIEW` 明确列入支付事件状态清单且重试耗尽固定回写 `funds_received=NULL`。本项目无历史数据，该列不回填。详见同一文档 §13.4–§13.5。
+- 第五轮回核返工（纠正第四轮两条前提）：新增 `payment_event.funds_received TINYINT NULL`（**无默认值**），按 `1`/`0`/`NULL` 三值分别处理——`1` 且状态在七状态集合内才计入缺失渠道差集；`0` 不进差集但仍生成 `PAYMENT_EVENT_REJECTED`；`NULL` 不进差集但生成 `PAYMENT_EVENT_REVIEW`，禁止当作“无需流水”静默放过。`FULFILLMENT_FAILED` 一码多义由该列区分（G34 明确未支付请求 `0`，但新事件占位 `1` 被 `CASE` 保留，第七轮已把 `0` 限定为仅未标注行/历史或异常行，见下条；查单前置失败=NULL、回调后 reject=1）；`MANUAL_REVIEW` 明确列入支付事件状态清单且重试耗尽固定回写 `funds_received=NULL`。本项目无历史数据，该列不回填。详见同一文档 §13.4–§13.5。
 - 第六轮回核返工（纠正第五轮 `REFUNDED` 口径）：`REFUNDED` 从 `DEFINITIVE_NOT_PAID_STATES` 移出，按 `funds_received=1` 处理并单列 `DEFINITIVE_REFUNDED_STATES`，状态仍落 `FULFILLMENT_FAILED`、`error_message` 记“渠道已收款后已退款”，T+1 文案改写且不得出现“未收到资金”；`markFulfillmentFailed` 的 SQL 改为 `CASE WHEN funds_received = 1 THEN 1 ELSE ... END`，禁止把已确认到账覆盖成 0/NULL。补 retry 自动关闭 4 类用例、REFUNDED 差集/文案用例、资金标记保留与反向写 0 集成用例，`markManualReview` 集成用例起点改为 `funds_received=1` 以证明清空逻辑生效。详见同一文档 §13.6。
+- 第七轮回核返工（口径与文档对齐 + 差异类型可筛选）：`funds_received=1` 语义定死为“渠道侧存在该笔资金往来、应当有对应渠道流水”（不是“此刻仍持有资金”），新事件占位即 `1` 且 `CASE` 只增不减，因此 `DEFINITIVE_NOT_PAID_STATES → 0` 对新事件不可达，`0` 仅对 `funds_received IS NULL` 的未标注行/历史或异常行生效；`funds_received=1` 的失败事件按 G34 原因前缀拆出 `PAYMENT_EVENT_REFUNDED`（键 `EV|id|REFUNDED`）与 `PAYMENT_EVENT_CHANNEL_CONFLICT`（键 `EV|id|CHANNEL_CONFLICT`），不再与普通 `PAYMENT_EVENT_REJECTED` 共用类型/键，`retry` 对两类均以事件 `SUCCESS` 自动关闭；支付宝 `TRADE_CLOSED` 增加 `refund_fee`/`refund_amount` 证据判定，无证据时原因写“渠道已关闭，可能为全额退款，需核对退款流水”（不写“渠道明确未支付”）并按冲突类处理。逐渠道退款识别范围见 t1 方案 §13.7。
 - 登记缺口（未做）：支付事件仍按 `payment_event.created_at`（回调受理时间）切日，不是渠道成功时间；跨日回调可能归属错误业务日，缓解手段是渠道流水侧按 `trade_time` 对账并在差异中标注 `TIME_CROSS_DAY`。补齐需新增 `paid_at`/渠道成功时间字段并回填历史数据。
 - 登记缺口（未补数）：`success_at IS NULL` 的成功退款不进 T+1 窗口（旧数据或异常迁移）。跑批会统计数量并 `warn`，补数需按渠道流水 `trade_time`（无流水时按人工核对值）回填，方案见 t1 方案第 8 节，不得自动改写历史资金记录。
 - 部署前提：DB 会话时区必须与 `Asia/Shanghai` 对齐（`serverTimezone` 或 `time_zone='+08:00'`），否则 `CURRENT_TIMESTAMP` 与 Java 截断时间漂移；验收用 `SELECT @@session.time_zone, NOW(), UTC_TIMESTAMP()` 校验。
@@ -327,10 +328,12 @@
     | 渠道回查结果 | 判定 | 状态流转 |
     | --- | --- | --- |
     | SUCCESS 且流水号一致、金额/币种齐全 | 确认已支付 | 复用 `processPaymentEvent` 幂等履约 → `SUCCESS`；业务校验拒绝 → 对应失败态 |
-    | `PENDING`（NOTPAY/USERPAYING/WAIT_BUYER_PAY）、`CLOSED`、`FAILED`（PAYERROR）、`NOT_EXIST`（微信 404/ORDER_NOT_EXIST、支付宝 ACQ.TRADE_NOT_EXIST） | 渠道明确未支付/查无此单 | 落 `FULFILLMENT_FAILED` + ERROR 告警，`funds_received=0`（T+1 不据此判渠道缺流水但仍留 REJECTED 差异）；失败态不阻止后续真实成功通知重新履约 |
-    | `REFUNDED` | 渠道已收款后已退款 | 落 `FULFILLMENT_FAILED` + ERROR 告警，但 `funds_received=1`（钱到过账又退回，进入 T+1 预期流水差集）；差异文案记“渠道已收款后已退款”，不得写“未收到资金”（第六轮修正，见 t1 方案 §13.6） |
+    | `PENDING`（NOTPAY/USERPAYING/WAIT_BUYER_PAY）、`CLOSED`、`FAILED`（PAYERROR）、`NOT_EXIST`（微信 404/ORDER_NOT_EXIST、支付宝 ACQ.TRADE_NOT_EXIST） | 渠道明确未支付/查无此单 | 落 `FULFILLMENT_FAILED` + ERROR 告警，原因前缀“渠道明确未支付”。**新事件占位即 `1`，SQL `CASE` 保留 `1`**，实际为“`FULFILLMENT_FAILED` + `1` + 渠道明确未支付”冲突行，T+1 记 `PAYMENT_EVENT_CHANNEL_CONFLICT`；仅未标注行/历史或异常行才会真的落 `0`（T+1 记 `PAYMENT_EVENT_REJECTED`）；失败态不阻止后续真实成功通知重新履约。**支付宝 `TRADE_CLOSED` 属退款/关闭无法判定场景，见下两行，不写“渠道明确未支付”** |
+    | `REFUNDED` | 渠道已收款后已退款 | 落 `FULFILLMENT_FAILED` + ERROR 告警，原因前缀“渠道已收款后已退款”，`funds_received=1`（存在资金往来，进入 T+1 预期流水差集）；T+1 记 `PAYMENT_EVENT_REFUNDED`（键 `EV\|id\|REFUNDED`），不得写“未收到资金”（第六轮修正，第七轮拆分类型，见 t1 方案 §13.6/§13.7） |
+    | 支付宝 `TRADE_CLOSED` 且响应携带 `refund_fee`/`refund_amount > 0` | 支付宝全额退款 | 适配器映射为 `REFUNDED`，按上一行处理；字段是否稳定返回需真实联调确认 |
+    | 支付宝 `TRADE_CLOSED` 且无退款金额证据 | 可能为全额退款，也可能为超时关闭（无法区分） | 适配器保持 `CLOSED`，G34 原因写“渠道已关闭，可能为全额退款，需核对退款流水”（**不得写“渠道明确未支付”**），`funds_received` 保留 `1`；T+1 记 `PAYMENT_EVENT_CHANNEL_CONFLICT`，文案提示“可能为全额退款或渠道状态异常，需核对渠道流水” |
     | 400/401/403/404 | 查单前置校验失败 | 落 `FULFILLMENT_FAILED` + ERROR 告警，资金状态未知写 `NULL`，由 T+1 `REVIEW` 差异兜住 |
-    | 事件已有 `funds_received=1` 再遇上述“未支付/退款/无法确认”答复 | 已确认到账不得降级 | Mapper SQL 用 `CASE WHEN funds_received=1 THEN 1 ELSE ... END` 保留 `1`；状态与标记共存为“`FULFILLMENT_FAILED` + `1`”，由 T+1 差异要求人工核对冲突 |
+    | 事件已有 `funds_received=1` 再遇上述“未支付/退款/无法确认”答复 | 存在资金往来的记录不得降级 | Mapper SQL 用 `CASE WHEN funds_received=1 THEN 1 ELSE ... END` 保留 `1`；状态与标记共存为“`FULFILLMENT_FAILED` + `1`”，由 T+1 按原因前缀生成冲突类/退款类差异，要求人工核对 |
     | 超时、网络、限流、5xx、空响应/解析失败、未知 trade_state、SUCCESS 但流水号/金额不一致 | 查询异常或答复不确定 | **保持 PROCESSING**，`reconcile_attempts+1`、写 `next_reconcile_at` 指数退避；到期前不再回查 |
     | 上述不确定结果达到 `payment.reconcile.max-attempts` | 重试耗尽 | 转 `MANUAL_REVIEW` 人工队列 + ERROR 告警，不静默失败 |
   - 失败态不锁死资金：`processPaymentEvent` 对已存在的 `FULFILLMENT_FAILED` 事件没有“禁止重放”的短路，后续收到真实
@@ -458,5 +461,28 @@
 - 建议归属：T35 查询优化或性能专项；补 `(merchant_id, created_at)` 复合索引，并确认 `findByMerchantAndPeriod` 能命中该索引（必要时改为范围条件下推）。
 - 影响面：功能正确，仅性能随数据量下降；不会造成误报或漏对。
 
+## G46 部分导入时非 SUCCESS 事件无逐笔缺流水检查（已登记未做）
+
+- 发现位置：[ReconciliationService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ReconciliationService.java) 的事件循环与渠道差集。
+- 现象：`funds_received=1` 的非 `SUCCESS` 事件只进入“渠道是否有任意本地单据”的整批判定：若该渠道已导入任意一条流水，整批未导入也会被掩盖；没有针对单个事件键（如 `EV|id|ST`）检查其对应支付流水是否缺失。当前只有“该渠道整批未导入”才 `PARTIAL`。
+- 未改原因：逐笔检查需要为每个非成功事件按其 `pay_trade_no` 匹配流水，会改变差异数量与跑批噪声水平；本卡当前目标是“不漏整批”，逐笔补强涉及差异口径调整，未纳入本轮。
+- 建议归属：T+1 后续增强；若业务要求“每笔已收款事件都必须有对应流水”，应新增 `EV|{id}|ST` 差异并在 `incompleteChannels` 之外单独统计，同时评估对人工队列量的影响。
+- 影响面：功能不误报；残留风险是“渠道部分导入时，个别非成功事件仍可能没有对应流水却无逐笔差异”。
+
+## G47 markFailed 的 CASE 在“现有 0 + 入参 NULL”时会把 0 退化为 NULL（已登记未做）
+
+- 发现位置：[PaymentEventMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/PaymentEventMapper.java) 的 `markFulfillmentFailed`。
+- 现象：`funds_received = CASE WHEN funds_received = 1 THEN 1 ELSE #{fundsReceived} END` 只保护 `1`；若某行已是 `0`，又收到“查单前置校验失败（400/401/403/404，入参 NULL）”的答复，`0` 会被改写成 `NULL`，SQL 层没有“0 也保留”的防御。
+- 未改原因：当前状态机不可达——`0` 只在未标注行/历史或异常行出现，而这类事件在 G34 扫描前已被视为 `PROCESSING` 并可被 400/401/403/404 分支命中；一旦需要在 SQL 层兜底，应改为 `CASE WHEN funds_received IN (0,1) THEN funds_received ELSE #{fundsReceived} END`，但会改变 NULL 分支的语义，需专项评审。
+- 建议归属：G34/对账专项；补防御 + 用例（现有 `0` + 入参 NULL 仍是 `0`）。
+- 影响面：当前无实际触发路径；仅是 SQL 层缺少防御，不构成已发生的数据错误。
+
+## G48 markManualReview 用例未回读中间态（已登记偏弱）
+
+- 发现位置：[Sprint1SecurityIntegrationTest.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/test/java/com/shop/b2b2c/Sprint1SecurityIntegrationTest.java) 的 `g34ExceedingRetryLimitMovesToManualReview`。
+- 现象：第六轮把起点改为 `funds_received=1`，并断言最终为 `NULL`，能证明 `SET funds_received=NULL` 生效；但没有在“第 1 次重试、尚未转 MANUAL_REVIEW”的中间态回读，无法证明重试过程中 `1` 一直保持、只在转人工时才被清空。
+- 未改原因：需要精确控制多次扫描与 `next_reconcile_at` 到期时间，用例成本高于本轮收益；现有断言已覆盖最终态。
+- 建议归属：G34 用例补强；分步执行三次扫描并在每次后回读 `funds_received`/`reconcile_attempts`，断言前两次仍为 `1`、第三次转 `MANUAL_REVIEW` 且为 `NULL`。
+- 影响面：测试覆盖偏弱，不影响当前实现正确性判断。
 
 

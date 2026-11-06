@@ -8,6 +8,9 @@
  *  4. 请求签名统一 RSA2，参数按字典序拼接；不要对 biz_content 二次转义。
  *  5. 异步通知 notify_time 必须落在 ±300 秒窗口内，超窗按重放拒绝并留审计；口径与微信一致。
  *  6. G34：查单 ACQ.TRADE_NOT_EXIST 返回 tradeState=NOT_EXIST（明确查无此单），其余渠道错误/空响应抛出供补偿扫描重试。
+ *  7. 支付宝全额退款后 trade_status=TRADE_CLOSED；仅当查单响应携带 refund_fee/refund_amount 且大于 0 时映射为
+ *     REFUNDED（已收款后已退款），否则保持 CLOSED 由 G34/T+1 按“渠道答复与已收款记录冲突”处理。
+ *     trade.query 是否稳定返回退款金额字段需真实联调确认，不得据此宣称已覆盖支付宝全部退款情形。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -173,6 +176,12 @@ public class AlipayPaymentChannelAdapter implements PaymentChannelAdapter {
         String code = text(node, "code");
         String tradeState = "ACQ.TRADE_NOT_EXIST".equals(code)
                 ? "NOT_EXIST" : mapTradeState(text(node, "trade_status"));
+        // 支付宝全额退款后 trade_status=TRADE_CLOSED，与超时关闭无法仅凭状态区分：
+        // 响应携带 refund_fee/refund_amount 且大于 0 时判为已收款后已退款；未携带则保持 CLOSED，
+        // 由 G34/T+1 按“渠道答复与已收款记录冲突”处理并提示核对退款流水。
+        if ("CLOSED".equals(tradeState) && queryShowsRefund(node)) {
+            tradeState = "REFUNDED";
+        }
         BigDecimal amount = null;
         if (node.hasNonNull("total_amount")) {
             amount = new BigDecimal(node.get("total_amount").asText()).setScale(2, RoundingMode.HALF_UP);
@@ -395,6 +404,24 @@ public class AlipayPaymentChannelAdapter implements PaymentChannelAdapter {
             // G34：未识别的交易状态按答复不确定保留可重试，不冒充“明确未支付”。
             default -> "UNKNOWN";
         };
+    }
+
+    /**
+     * 判断支付宝查单响应是否携带“已退款”证据。
+     * 文档层面 trade.query 的响应字段集合需真实联调确认（本轮按防御式解析 refund_fee / refund_amount）；
+     * 字段存在且大于 0 才判为退款，字段缺失或非数值时返回 false，避免把普通关闭误判为退款。
+     */
+    boolean queryShowsRefund(JsonNode node) {
+        if (node == null) return false;
+        for (String field : new String[]{"refund_fee", "refund_amount"}) {
+            if (!node.hasNonNull(field)) continue;
+            try {
+                if (new BigDecimal(node.get(field).asText()).signum() > 0) return true;
+            } catch (NumberFormatException ignored) {
+                // 字段存在但非数值：按不可判定处理，保留 CLOSED 冲突路径。
+            }
+        }
+        return false;
     }
 
     private static String truncate(String value, int max) {

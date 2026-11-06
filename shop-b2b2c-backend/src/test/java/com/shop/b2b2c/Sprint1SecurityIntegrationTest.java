@@ -1921,7 +1921,7 @@ class Sprint1SecurityIntegrationTest {
         com.shop.b2b2c.entity.PaymentEvent stored =
                 paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_REFUNDED");
         assertEquals("FULFILLMENT_FAILED", stored.getEventStatus());
-        // 钱到过账又退回：funds_received 必须为 1，进入 T+1 预期流水差集。
+        // 已收款后已退款：渠道侧发生过资金往来，funds_received 必须为 1，进入 T+1 预期流水差集。
         assertEquals(1, stored.getFundsReceived().intValue());
         assertTrue(stored.getErrorMessage().contains("渠道已收款后已退款"));
         assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
@@ -1929,9 +1929,11 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
-    @DisplayName("G34: 已确认到账的 funds_received=1 不被明确未支付答复覆盖")
-    void g34DefinitiveNotPaidDoesNotOverwriteConfirmedFunds() {
+    @DisplayName("G34: 占位 funds_received=1（渠道侧存在资金往来）不被明确未支付答复降级")
+    void g34DefinitiveNotPaidKeepsFundsOnClaimedEvent() {
         TradeOrder order = unpaid("g34-preserve", 1);
+        // 与 claimEvent 占位行同形：新事件建出即为 1，语义是“渠道侧存在该笔资金往来、应有对应流水”，
+        // 不是“此刻仍持有资金”。这里不是人工“确认到账”，而是正常占位数据。
         var seeded = insertProcessingEvent(order, "TX_G34_PRESERVE", LocalDateTime.now().minusMinutes(10));
         seeded.setFundsReceived(1);
         paymentEvents.updateById(seeded);
@@ -1944,14 +1946,42 @@ class Sprint1SecurityIntegrationTest {
 
         com.shop.b2b2c.entity.PaymentEvent stored =
                 paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_PRESERVE");
-        // 已到账是既成事实：状态落 FULFILLMENT_FAILED 但资金标记仍为 1，由 T+1 差异要求人工核对冲突。
+        // 资金往来有记录（1）与渠道答复（明确未支付）冲突：保留 1，由 T+1 生成冲突类差异要求人工核对。
         assertEquals("FULFILLMENT_FAILED", stored.getEventStatus());
         assertEquals(1, stored.getFundsReceived().intValue());
+        assertTrue(stored.getErrorMessage().startsWith("渠道明确未支付"));
         assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
     }
 
     @Test
-    @DisplayName("G34: 资金未标注的事件在渠道查无此单时仍写 0")
+    @DisplayName("G34: 支付宝 TRADE_CLOSED 无退款金额证据时按冲突处理，不写“明确未支付=0”")
+    void g34AlipayClosedWithoutRefundEvidenceKeepsFunds() {
+        TradeOrder order = unpaid("g34-alipay-closed", 1);
+        // 支付宝适配器：TRADE_CLOSED 且响应未携带 refund_fee/refund_amount 时仍输出 CLOSED。
+        var seeded = insertProcessingEvent(order, "TX_G34_ALIPAY_CLOSED", LocalDateTime.now().minusMinutes(10));
+        seeded.setChannel("ALIPAY");
+        seeded.setFundsReceived(1);
+        paymentEvents.updateById(seeded);
+        when(paymentGateway.queryChannelPayment(eq(1L), eq("ALIPAY"), eq(order.getOrderSn())))
+                .thenReturn(com.shop.b2b2c.dto.PaymentChannelDTOs.ChannelQueryResult.builder()
+                        .channel("ALIPAY").orderSn(order.getOrderSn()).payTradeNo("TX_G34_ALIPAY_CLOSED")
+                        .tradeState("CLOSED").currency("CNY").build());
+
+        paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
+
+        com.shop.b2b2c.entity.PaymentEvent stored =
+                paymentEvents.findByChannelAndTradeNo("ALIPAY", "TX_G34_ALIPAY_CLOSED");
+        assertEquals("FULFILLMENT_FAILED", stored.getEventStatus());
+        // 无法判定是否全额退款：资金往来记录保留 1；错误信息必须提示“可能为全额退款”并核对退款流水，
+        // 不得写成“渠道明确未支付”，T+1 按 REASON_CHANNEL_CLOSED_UNDETERMINED 归入冲突类。
+        assertEquals(1, stored.getFundsReceived().intValue());
+        assertTrue(stored.getErrorMessage().startsWith("渠道已关闭，可能为全额退款，需核对退款流水"));
+        assertFalse(stored.getErrorMessage().contains("渠道明确未支付"));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
+    @DisplayName("G34: 仅未标注行/历史或异常行在渠道查无此单时写 0（新事件不可达）")
     void g34DefinitiveNotPaidMarksZeroWhenFundsUnmarked() {
         TradeOrder order = unpaid("g34-notexist", 1);
         insertProcessingEvent(order, "TX_G34_NOTEXIST", LocalDateTime.now().minusMinutes(10));

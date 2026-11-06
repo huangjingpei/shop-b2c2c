@@ -5,7 +5,8 @@
  * 不得把缺失订单纳入自动补履约，避免无限重试；已 PAID/COMPLETED/SHIPPED 的订单不得再次进入两条补偿查询，
  * 避免与主事务正常履约重复处理。陈旧 PROCESSING 的退避与人工队列更新必须带 event_status = 'PROCESSING' 条件，
  * 防止把并发已成功的事件改回失败/人工态。
- * T+1：markFulfillmentFailed 必须显式传入 funds_received（明确未支付=0、查单失败/资金未知=NULL）；
+ * T+1：markFulfillmentFailed 必须显式传入 funds_received（明确未支付请求 0，但对已建事件占位 1 由 CASE 保留，
+ * 实际成为冲突行；查单失败/资金未知=NULL）；1 表示渠道侧存在该笔资金往来、应当有对应流水，只增不减；
  * markManualReview 一律回写 NULL（资金状态未知），对账侧据此生成 REVIEW 差异，不得静默。
  */
 package com.shop.b2b2c.mapper;
@@ -98,9 +99,11 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
 
     /**
      * G34 FULFILLMENT_FAILED：只允许从 PROCESSING 迁移。
-     * fundsReceived 由调用方显式给出：渠道明确未支付（PENDING/CLOSED/FAILED/NOT_EXIST）=0；
+     * fundsReceived 由调用方显式给出：渠道明确未支付（PENDING/CLOSED/FAILED/NOT_EXIST）请求写 0
+     * （只对未标注行/历史或异常行落地，已建事件占位即 1 会被 CASE 保留，形成冲突类差异）；
+     * 支付宝 TRADE_CLOSED 无退款金额证据时无法区分全额退款与超时关闭，原因不得写“渠道明确未支付”；
      * 已收款后已退款（REFUNDED）=1；查单前置校验失败（400/401/403/404）资金状态未知，必须传 NULL。
-     * 资金标记只增不减：已存在的 funds_received=1 是“渠道已确认到账”的既成事实，
+     * 资金标记只增不减：已存在的 funds_received=1 表示“渠道侧存在该笔资金往来、应当有对应流水”的既成事实，
      * 后续“未支付/退款/无法确认”答复一律不得覆盖成 0/NULL，SQL 用 CASE 保留 1；
      * 此时状态与资金标记以“FULFILLMENT_FAILED + funds_received=1”共存，由 T+1 差异要求人工核对。
      * 返回 0 表示事件已被主事务并发收敛为 SUCCESS 等状态，不得降级。

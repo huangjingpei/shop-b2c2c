@@ -6,12 +6,17 @@
  *     才允许调用 PaymentEventService.processPaymentEvent 补履约，禁止仅凭本地事件状态直接交付。
  *  2. 补履约复用 processPaymentEvent 的占位/订单行锁/CAS/卡密认领幂等路径；本类不直接写订单、不直接发卡，
  *     不出现第二次交付。
- *  3. 渠道结果分四类：明确未支付（渠道返回 PENDING/CLOSED/FAILED/NOT_EXIST）落 FULFILLMENT_FAILED
- *     且 funds_received=0；已收款后已退款（REFUNDED）同样落 FULFILLMENT_FAILED，但资金到过账，
- *     funds_received 必须为 1（进入 T+1 预期流水差集，文案记“渠道已收款后已退款”）；查询前置校验失败
- *     （400/401/403/404）资金状态未知，写 NULL；查询异常或答复不确定（超时/限流/5xx/空响应/未知状态/
- *     流水号不一致）保留 PROCESSING，按指数退避写 reconcile_attempts/next_reconcile_at 重试；超过上限转
- *     MANUAL_REVIEW 人工队列并告警，同时把 funds_received 回写 NULL（资金状态未知，由 T+1 REVIEW 差异兜住）。
+ *  3. 渠道结果分四类：明确未支付（渠道返回 PENDING/CLOSED/FAILED/NOT_EXIST）落 FULFILLMENT_FAILED，
+ *     请求写 funds_received=0，但已建事件（占位即 1）由 SQL CASE 保留 1，形成“渠道答复与已收款记录冲突”，
+ *     由 T+1 生成 PAYMENT_EVENT_CHANNEL_CONFLICT；支付宝 TRADE_CLOSED 无法区分全额退款与超时关闭，
+ *     原因写“渠道已关闭，可能为全额退款，需核对退款流水”，不得写“渠道明确未支付”；
+ *     已收款后已退款（REFUNDED）同样落 FULFILLMENT_FAILED，
+ *     但资金到过账，funds_received 必须为 1（进入 T+1 预期流水差集，记为 PAYMENT_EVENT_REFUNDED）；
+ *     查询前置校验失败（400/401/403/404）资金状态未知，写 NULL；查询异常或答复不确定（超时/限流/5xx/
+ *     空响应/未知状态/流水号不一致）保留 PROCESSING，按指数退避写 reconcile_attempts/next_reconcile_at 重试；
+ *     超过上限转 MANUAL_REVIEW 人工队列并告警，同时把 funds_received 回写 NULL（资金状态未知，由 REVIEW 兜住）。
+ *     funds_received 语义为“渠道侧存在该笔资金往来、应当有对应渠道流水”，不是“此刻仍持有资金”；
+ *     能走到占位的回调已通过验签/订单/商户号/金额币种/归集阶段校验，故新事件一律为 1。
  *     已存在 funds_received=1 的事件不得被 markFailed 覆盖成 0/NULL（SQL 用 CASE 保留 1）。
  *     失败态不是永久锁死：后续收到真实 SUCCESS 通知仍可由 processPaymentEvent 幂等履约。
  *  4. 已被主事务正常履约的订单（PAID/COMPLETED/SHIPPED）不进入陈旧 PROCESSING 查询，避免与主事务重复处理。
@@ -56,9 +61,21 @@ public class PaymentEventReconcileService {
     /**
      * 渠道明确答复“已收款后已退款”：资金到过账又退回，不能按“明确未支付”写 0。
      * 仍落 FULFILLMENT_FAILED（订单不会履约），但 funds_received=1，使其进入 T+1 预期流水差集；
-     * 状态与资金标记的共存语义由 error_message 的“渠道已收款后已退款”与 T+1 文案共同表达。
+     * T+1 以 {@link #REASON_REFUNDED} 前缀识别成因并生成独立的 PAYMENT_EVENT_REFUNDED 差异类型。
      */
     private static final Set<String> DEFINITIVE_REFUNDED_STATES = Set.of("REFUNDED");
+
+    /** G34 → T+1 的成因约定：退款类失败原因的固定前缀，T+1 据此生成 PAYMENT_EVENT_REFUNDED 差异。 */
+    public static final String REASON_REFUNDED = "渠道已收款后已退款";
+
+    /** G34 → T+1 的成因约定：渠道明确未支付原因的固定前缀，funds_received=1 时据此生成冲突类差异。 */
+    public static final String REASON_DEFINITIVE_NOT_PAID = "渠道明确未支付";
+
+    /**
+     * G34 → T+1 的成因约定：支付宝 TRADE_CLOSED 且查单无退款金额证据时无法区分全额退款与超时关闭，
+     * 禁止写成“渠道明确未支付”；T+1 与 REASON_DEFINITIVE_NOT_PAID 一样归入冲突类差异。
+     */
+    public static final String REASON_CHANNEL_CLOSED_UNDETERMINED = "渠道已关闭，可能为全额退款，需核对退款流水";
 
     /** 查询前置校验类错误码：重试无法自愈，按明确失败处理；其余异常保留重试。 */
     private static final Set<Integer> DEFINITIVE_BUSINESS_CODES = Set.of(400, 401, 403, 404);
@@ -156,13 +173,18 @@ public class PaymentEventReconcileService {
             }
         }
         if (DEFINITIVE_REFUNDED_STATES.contains(query.getTradeState())) {
-            // 渠道已收款后已退款：钱到过账，禁止写 0；进入差集，保证“支付流水整批未导入”能被 PARTIAL 暴露。
-            markFailed(candidate, "渠道已收款后已退款: state=" + query.getTradeState(), 1);
+            // 渠道已收款后已退款：存在资金往来，funds_received 必须为 1；进入差集，保证整批流水未导入能被 PARTIAL 暴露。
+            markFailed(candidate, REASON_REFUNDED + ": state=" + query.getTradeState(), 1);
             return false;
         }
         if (DEFINITIVE_NOT_PAID_STATES.contains(query.getTradeState())) {
-            // 渠道明确未支付：不会产生流水，funds_received=0；T+1 不会据此判渠道未导入。
-            markFailed(candidate, "渠道明确未支付: state=" + query.getTradeState(), 0);
+            // 渠道明确未支付：新事件 funds_received 已为 1（占位即代表渠道侧发生过资金往来），CASE 保留 1，
+            // 该答复与已建事件冲突，由 T+1 按原因前缀生成冲突类差异。
+            // 支付宝 TRADE_CLOSED 无法仅凭状态区分“全额退款”与“超时关闭”，不得写成“渠道明确未支付”。
+            String reason = "ALIPAY".equals(candidate.getChannel()) && "CLOSED".equals(query.getTradeState())
+                    ? REASON_CHANNEL_CLOSED_UNDETERMINED + ": state=" + query.getTradeState()
+                    : REASON_DEFINITIVE_NOT_PAID + ": state=" + query.getTradeState();
+            markFailed(candidate, reason, 0);
             return false;
         }
         handleRetryable(candidate, "渠道答复不确定: state=" + query.getTradeState(),
@@ -236,8 +258,9 @@ public class PaymentEventReconcileService {
     /**
      * 落 FULFILLMENT_FAILED：只把仍 PROCESSING 的事件更新并告警；已被主事务并发收敛为 SUCCESS 的事件不降级。
      * fundsReceived 由调用方按渠道答复显式给出：明确未支付=0，已收款后已退款=1，查单前置校验失败/资金未知=NULL。
-     * 已确认到账（1）是既成事实，不得被后续“未支付/退款”答复覆盖成 0/NULL；Mapper SQL 用 CASE 保留 1，
-     * 此时状态与资金标记共存为“FULFILLMENT_FAILED + funds_received=1”，由 T+1 生成差异要求人工核对冲突。
+     * funds_received=1 表示“渠道侧存在该笔资金往来、应当有对应流水”，不得被后续“未支付/退款”答复覆盖成 0/NULL；
+     * Mapper SQL 用 CASE 保留 1，此时状态与资金标记共存为“FULFILLMENT_FAILED + funds_received=1”，
+     * 由 T+1 按原因前缀生成退款类或渠道答复冲突类差异，要求人工核对。
      * 该失败态不阻止后续真实 SUCCESS 通知重新履约。
      */
     private void markFailed(PaymentEvent candidate, String reason, Integer fundsReceived) {

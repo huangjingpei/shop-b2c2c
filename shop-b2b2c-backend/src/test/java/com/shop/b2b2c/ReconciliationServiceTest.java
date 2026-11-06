@@ -7,11 +7,13 @@
  *  3. CSV 用例覆盖公式注入防护和逗号/引号转义，避免导出打开即执行公式。
  *  4. 真实渠道流水导入与 MySQL 并发对账仍由用户手动验证。
  *  5. T+1 用例覆盖退款↔渠道退款、服务费金额、平台代收、同日重试防重复与审计留痕。
- *  6. 非成功支付事件不得静默：按 funds_received 三值分别断言——=1 进差集且落 REJECTED，
- *     =0 不进差集但仍落 REJECTED，NULL 不进差集但落 REVIEW；断言使用具体差异条数与类型。
- *  7. 渠道退款（REFUNDED）按“已收款后已退款”处理，funds_received=1 仍进差集；文案不得出现“未收到资金”。
- *  8. retry 自动关闭必须有用例：REVIEW 要求事件 SUCCESS 且 funds_received 非 NULL；REJECTED 仅要求 SUCCESS；
- *     断言差异状态（RESOLVED/RETRY）而不只是“不抛异常”。
+ *  6. 非成功支付事件不得静默：按 funds_received 三值分别断言——=1 进差集且按成因落 REJECTED/REFUNDED/
+ *     CHANNEL_CONFLICT，=0 不进差集但仍落 REJECTED，NULL 不进差集但落 REVIEW；断言具体差异条数与类型。
+ *  7. funds_received=1 按成因拆成独立差异类型：退款类 PAYMENT_EVENT_REFUNDED（键 EV|id|REFUNDED）与
+ *     渠道答复冲突类 PAYMENT_EVENT_CHANNEL_CONFLICT（键 EV|id|CHANNEL_CONFLICT），与普通 REJECTED 键不同；
+ *     断言具体类型名与键，文案不得出现“未收到资金”。
+ *  8. retry 自动关闭必须有用例：REVIEW 要求事件 SUCCESS 且 funds_received 非 NULL；REJECTED/REFUNDED/
+ *     CHANNEL_CONFLICT 仅要求 SUCCESS；断言差异状态（RESOLVED/RETRY）而不只是“不抛异常”。
  */
 package com.shop.b2b2c;
 
@@ -60,6 +62,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -449,7 +452,7 @@ class ReconciliationServiceTest {
     void refundedEventIsIncompleteAndDetailSaysRefundedNotUnreceived() {
         LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
         LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
-        // G34 渠道已收款后已退款：状态落 FULFILLMENT_FAILED，但钱到过账，funds_received=1。
+        // G34 渠道已收款后已退款：状态落 FULFILLMENT_FAILED，资金往来发生过，funds_received=1。
         PaymentEvent refunded = successEvent("SN-RF", new BigDecimal("20.00"));
         refunded.setId(16L);
         refunded.setChannel("ALIPAY");
@@ -468,9 +471,104 @@ class ReconciliationServiceTest {
         ArgumentCaptor<ReconciliationDifference> captor =
                 ArgumentCaptor.forClass(ReconciliationDifference.class);
         verify(differenceMapper).insert(captor.capture());
-        assertEquals(ReconciliationService.PAYMENT_EVENT_REJECTED, captor.getValue().getDiffType());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REFUNDED, captor.getValue().getDiffType());
+        assertEquals("EV|16|REFUNDED", captor.getValue().getDifferenceKey());
         assertTrue(captor.getValue().getDetail().contains("渠道已收款后已退款"));
         assertFalse(captor.getValue().getDetail().contains("未收到资金"));
+    }
+
+    @Test
+    void channelConflictEventUsesOwnTypeAndKey() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        // 占位即 1 的已建事件，渠道却回 CLOSED：不得降级资金标记，差异类型须体现“答复与记录冲突”。
+        PaymentEvent conflict = successEvent("SN-CF", new BigDecimal("30.00"));
+        conflict.setId(17L);
+        conflict.setChannel("ALIPAY");
+        conflict.setEventStatus("FULFILLMENT_FAILED");
+        conflict.setFundsReceived(1);
+        conflict.setErrorMessage("渠道明确未支付: state=CLOSED");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(conflict));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        // 资金往来有记录但渠道答复未支付：仍预期流水，未导入必须 PARTIAL。
+        assertEquals("ALIPAY", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_CHANNEL_CONFLICT,
+                captor.getValue().getDiffType());
+        assertEquals("EV|17|CHANNEL_CONFLICT", captor.getValue().getDifferenceKey());
+        assertTrue(captor.getValue().getDetail().contains("渠道答复与已收款记录冲突"));
+        assertTrue(captor.getValue().getDetail().contains("state=CLOSED"));
+    }
+
+    @Test
+    void alipayClosedUndeterminedReasonUsesConflictTypeAndKey() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        // 支付宝 TRADE_CLOSED 无退款证据：原因不是“渠道明确未支付”，但仍属冲突类，类型/键必须固定。
+        PaymentEvent conflict = successEvent("SN-CF3", new BigDecimal("31.00"));
+        conflict.setId(20L);
+        conflict.setChannel("ALIPAY");
+        conflict.setEventStatus("FULFILLMENT_FAILED");
+        conflict.setFundsReceived(1);
+        conflict.setErrorMessage("渠道已关闭，可能为全额退款，需核对退款流水: state=CLOSED");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(conflict));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals("ALIPAY", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_CHANNEL_CONFLICT,
+                captor.getValue().getDiffType());
+        assertEquals("EV|20|CHANNEL_CONFLICT", captor.getValue().getDifferenceKey());
+        assertTrue(captor.getValue().getDetail().contains("渠道答复与已收款记录冲突"));
+        assertTrue(captor.getValue().getDetail().contains("state=CLOSED"));
+    }
+
+    @Test
+    void refundedAndConflictDifferencesUseDistinctTypesAndKeys() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PaymentEvent refunded = successEvent("SN-RF2", new BigDecimal("20.00"));
+        refunded.setId(18L);
+        refunded.setChannel("ALIPAY");
+        refunded.setEventStatus("FULFILLMENT_FAILED");
+        refunded.setFundsReceived(1);
+        refunded.setErrorMessage("渠道已收款后已退款: state=REFUNDED");
+        PaymentEvent conflict = successEvent("SN-CF2", new BigDecimal("30.00"));
+        conflict.setId(19L);
+        conflict.setChannel("ALIPAY");
+        conflict.setEventStatus("FULFILLMENT_FAILED");
+        conflict.setFundsReceived(1);
+        conflict.setErrorMessage("渠道明确未支付: state=FAILED");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(refunded, conflict));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        service().reconcile(1L, from, to);
+
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper, times(2)).insert(captor.capture());
+        List<ReconciliationDifference> inserted = captor.getAllValues();
+        assertEquals(2, inserted.size());
+        assertTrue(inserted.stream().anyMatch(d ->
+                ReconciliationService.PAYMENT_EVENT_REFUNDED.equals(d.getDiffType())
+                        && "EV|18|REFUNDED".equals(d.getDifferenceKey())));
+        assertTrue(inserted.stream().anyMatch(d ->
+                ReconciliationService.PAYMENT_EVENT_CHANNEL_CONFLICT.equals(d.getDiffType())
+                        && "EV|19|CHANNEL_CONFLICT".equals(d.getDifferenceKey())));
     }
 
     @Test
@@ -791,6 +889,68 @@ class ReconciliationServiceTest {
 
         assertEquals("RETRY", stillOpen.getStatus());
         verify(differenceMapper).updateById(openCase);
+    }
+
+    @Test
+    void retryResolvesRefundedAndConflictDifferencesWhenEventSuccess() {
+        ReconciliationDifference refundedDiff = new ReconciliationDifference();
+        refundedDiff.setId(25L);
+        refundedDiff.setDiffType(ReconciliationService.PAYMENT_EVENT_REFUNDED);
+        refundedDiff.setBizId(106L);
+        refundedDiff.setStatus("DISPUTED");
+        ReconciliationDifference conflictDiff = new ReconciliationDifference();
+        conflictDiff.setId(26L);
+        conflictDiff.setDiffType(ReconciliationService.PAYMENT_EVENT_CHANNEL_CONFLICT);
+        conflictDiff.setBizId(107L);
+        conflictDiff.setStatus("DISPUTED");
+        PaymentEvent success = new PaymentEvent();
+        success.setId(106L);
+        success.setEventStatus("SUCCESS");
+        success.setFundsReceived(1);
+        PaymentEvent successSecond = new PaymentEvent();
+        successSecond.setId(107L);
+        successSecond.setEventStatus("SUCCESS");
+        successSecond.setFundsReceived(1);
+        when(differenceMapper.selectById(25L)).thenReturn(refundedDiff);
+        when(differenceMapper.selectById(26L)).thenReturn(conflictDiff);
+        when(eventMapper.selectById(106L)).thenReturn(success);
+        when(eventMapper.selectById(107L)).thenReturn(successSecond);
+
+        assertEquals("RESOLVED", service().retry(25L, 3L).getStatus());
+        assertEquals("RESOLVED", service().retry(26L, 3L).getStatus());
+        verify(differenceMapper).updateById(refundedDiff);
+        verify(differenceMapper).updateById(conflictDiff);
+    }
+
+    @Test
+    void retryKeepsRefundedAndConflictDifferencesOpenWhenEventNotSuccess() {
+        ReconciliationDifference refundedDiff = new ReconciliationDifference();
+        refundedDiff.setId(27L);
+        refundedDiff.setDiffType(ReconciliationService.PAYMENT_EVENT_REFUNDED);
+        refundedDiff.setBizId(108L);
+        refundedDiff.setStatus("DISPUTED");
+        ReconciliationDifference conflictDiff = new ReconciliationDifference();
+        conflictDiff.setId(28L);
+        conflictDiff.setDiffType(ReconciliationService.PAYMENT_EVENT_CHANNEL_CONFLICT);
+        conflictDiff.setBizId(109L);
+        conflictDiff.setStatus("DISPUTED");
+        PaymentEvent notSuccess = new PaymentEvent();
+        notSuccess.setId(108L);
+        notSuccess.setEventStatus("FULFILLMENT_FAILED");
+        notSuccess.setFundsReceived(1);
+        PaymentEvent notSuccessSecond = new PaymentEvent();
+        notSuccessSecond.setId(109L);
+        notSuccessSecond.setEventStatus("FULFILLMENT_FAILED");
+        notSuccessSecond.setFundsReceived(1);
+        when(differenceMapper.selectById(27L)).thenReturn(refundedDiff);
+        when(differenceMapper.selectById(28L)).thenReturn(conflictDiff);
+        when(eventMapper.selectById(108L)).thenReturn(notSuccess);
+        when(eventMapper.selectById(109L)).thenReturn(notSuccessSecond);
+
+        assertEquals("RETRY", service().retry(27L, 3L).getStatus());
+        assertEquals("RETRY", service().retry(28L, 3L).getStatus());
+        verify(differenceMapper).updateById(refundedDiff);
+        verify(differenceMapper).updateById(conflictDiff);
     }
 
     @Test
@@ -1131,7 +1291,7 @@ class ReconciliationServiceTest {
         event.setMerchantId(1L);
         event.setPayAmount(amount);
         event.setEventStatus("SUCCESS");
-        // 默认按“渠道已确认到账”构造；明确未支付/未标注的用例自行改回 0/null。
+        // 默认按“渠道侧存在资金往来（占位即 1，应有对应流水）”构造；明确未支付/未标注的用例自行改回 0/null。
         event.setFundsReceived(1);
         return event;
     }

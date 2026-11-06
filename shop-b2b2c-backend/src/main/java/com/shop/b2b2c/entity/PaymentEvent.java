@@ -4,10 +4,11 @@
  * 维护注意：T32 新增 collection_mode（货款归集模式）、platform_trade_no（阶段二平台流水，阶段一为空）、channel_merchant_id（渠道商户号）；merchant_id 仍为平台内部店铺ID。
  * G34 新增 reconcile_attempts（陈旧 PROCESSING 渠道回查已重试次数）与 next_reconcile_at（下次允许回查时间，NULL 表示立即可扫）。
  * event_status 中的 MANUAL_REVIEW 是超过重试上限后的人工队列状态，不得当作已履约或终态成功。
- * T+1 第五轮新增 funds_received：渠道侧是否已确认收到资金，1-已到账、0-明确未到账、NULL-未标注；
- * 不设默认值，NULL 是有意义的状态（必须产生可见对账信号），写入方必须显式赋值。
- * 已到账（1）不得被后续“未支付/退款/无法确认”答复覆盖成 0/NULL；渠道退款（REFUNDED）也记 1（钱到过账又退回），
- * 状态仍可为 FULFILLMENT_FAILED，由 error_message（“渠道已收款后已退款”）与对账文案共同区分。
+ * T+1 第五轮新增 funds_received，语义为“渠道侧存在该笔资金往来、应当有对应渠道流水”，不是“此刻仍持有资金”；
+ * 1-预期渠道存在流水（新事件由 claimEvent 占位即写 1，且只增不减）、0-明确无资金往来（仅对未标注行/历史或异常行生效，
+ * 新事件不可达）、NULL-未判定（必须产生可见对账信号）。不设默认值，NULL 是有意义的状态，写入方必须显式赋值。
+ * 1 不得被后续“未支付/退款/无法确认”答复覆盖成 0/NULL；渠道退款也记 1（钱到过账又退回），
+ * 状态仍可为 FULFILLMENT_FAILED，由 error_message 前缀区分退款类与渠道答复冲突类。
  */
 package com.shop.b2b2c.entity;
 
@@ -41,8 +42,10 @@ public class PaymentEvent {
     private Integer reconcileAttempts; // G34：陈旧 PROCESSING 渠道回查已重试次数
     private LocalDateTime nextReconcileAt; // G34：下次允许回查时间，NULL 表示立即可扫
     /**
-     * 渠道侧是否已确认收到资金：1-已到账（进入“预期产生流水”判定）、
-     * 0-明确未到账（不预期流水但拒绝事件仍须可见）、NULL-未标注（不预期流水但必须人工核对）。
+     * 渠道侧是否存在该笔资金往来、应当有对应渠道流水（不是“此刻仍持有资金”）：
+     * 1-预期渠道存在流水（新事件占位即 1，进入“预期产生流水”判定，且只增不减）、
+     * 0-明确无资金往来（仅对未标注行/历史或异常行生效，不预期流水但差异仍须可见）、
+     * NULL-未判定（不预期流水但必须人工核对）。
      * 该列无默认值，漏写即为 NULL，由对账侧强制产生可见信号，避免被当成“无需流水”静默放过。
      */
     private Integer fundsReceived;
