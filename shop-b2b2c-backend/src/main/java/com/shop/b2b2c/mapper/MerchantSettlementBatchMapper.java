@@ -36,4 +36,13 @@ public interface MerchantSettlementBatchMapper extends BaseMapper<MerchantSettle
                 .orderByDesc(MerchantSettlementBatch::getPeriodStart)
                 .last("LIMIT " + limit));
     }
+
+    default List<MerchantSettlementBatch> findConfirmedByPeriod(Long merchantId, LocalDate start, LocalDate end) {
+        return selectList(new LambdaQueryWrapper<MerchantSettlementBatch>()
+                .eq(MerchantSettlementBatch::getMerchantId, merchantId)
+                .ge(MerchantSettlementBatch::getPeriodStart, start)
+                .lt(MerchantSettlementBatch::getPeriodEnd, end.plusDays(1))
+                .eq(MerchantSettlementBatch::getStatus, "CONFIRMED")
+                .orderByAsc(MerchantSettlementBatch::getId));
+    }
 }

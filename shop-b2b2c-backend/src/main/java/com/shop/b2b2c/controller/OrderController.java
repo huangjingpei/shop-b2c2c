@@ -56,6 +56,7 @@ public class OrderController {
     private final com.shop.b2b2c.service.CardCipherService cardCipher;
     private final com.shop.b2b2c.service.TradeCostLimiter costLimiter;
     private final com.shop.b2b2c.service.ServiceFeeSnapshotService feeSnapshotService;
+    private final com.shop.b2b2c.service.MerchantAccountService merchantAccountService;
 
     @Data
     public static class CheckoutDTO {
@@ -108,6 +109,8 @@ public class OrderController {
 
         TradeGuards.requireSkuOwnership(product, sku);
         TradeGuards.requirePurchasable(product, store);
+        // T35：欠费超额度/账期到期停新单收款；已支付订单履约与退款不受影响。
+        merchantAccountService.requireCollectionAllowed(store.getId());
         TradeGuards.requireMoney(sku.getPrice());
         if (dto.getMerchantId() != null && !store.getId().equals(dto.getMerchantId())) {
             throw new BusinessException("商户与商品不匹配");

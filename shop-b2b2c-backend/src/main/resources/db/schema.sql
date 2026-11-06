@@ -495,6 +495,10 @@ CREATE TABLE IF NOT EXISTS `merchant_account` (
   `grace_days` INT NULL COMMENT '欠费宽限期；允许7/21/30，NULL 表示管理员尚未确认',
   `arrears_due_at` DATETIME NULL COMMENT '当前欠费到期时间；NULL 表示无未结清欠费',
   `currency` VARCHAR(16) NOT NULL DEFAULT 'CNY' COMMENT '币种',
+  `collection_stopped` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'T35 是否已停止新单收款：1-停收，0-正常',
+  `stop_reason` VARCHAR(32) NULL COMMENT 'T35 停收原因 ARREARS_LIMIT/GRACE_EXPIRED/MANUAL',
+  `stopped_at` DATETIME NULL COMMENT 'T35 停收时间',
+  `recovered_at` DATETIME NULL COMMENT 'T35 最近恢复收款时间',
   `version` INT NOT NULL DEFAULT 0 COMMENT '乐观锁版本',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -605,3 +609,66 @@ CREATE TABLE IF NOT EXISTS `merchant_settlement_item` (
   CONSTRAINT fk_settlement_item_batch FOREIGN KEY (`batch_id`) REFERENCES `merchant_settlement_batch` (`id`),
   CONSTRAINT fk_settlement_item_order FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='结算明细';
+
+-- 25. 收款状态审计（T35）：停收/恢复/策略确认留痕；系统自动动作 operator_id 为空
+CREATE TABLE IF NOT EXISTS `merchant_collection_status_audit` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '所属店铺ID',
+  `action` VARCHAR(24) NOT NULL COMMENT 'STOP/RECOVER/POLICY',
+  `reason` VARCHAR(64) NULL COMMENT 'ARREARS_LIMIT/GRACE_EXPIRED/POLICY_CONFIRMED',
+  `arrears_at_action` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '动作时欠费',
+  `credit_limit` DECIMAL(12,2) NULL COMMENT '动作时信用额度',
+  `grace_days` INT NULL COMMENT '动作时账期',
+  `due_at` DATETIME NULL COMMENT '动作时欠费到期时间',
+  `operator_id` BIGINT NULL COMMENT '操作人；系统任务为空',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_collection_audit_merchant` (`merchant_id`, `created_at`),
+  CONSTRAINT fk_collection_audit_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='收款状态审计';
+
+-- 26. 渠道流水（T35）：人工导入的渠道对账文件明细，只读比对，不直接改订单
+CREATE TABLE IF NOT EXISTS `payment_channel_statement` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `channel` VARCHAR(32) NOT NULL COMMENT 'WECHAT/ALIPAY',
+  `channel_trade_no` VARCHAR(128) NOT NULL COMMENT '渠道交易流水号',
+  `out_trade_no` VARCHAR(64) NULL COMMENT '渠道侧商户订单号；可为空用于发现无订单流水',
+  `order_sn` VARCHAR(64) NULL COMMENT '平台订单号（导入时按 out_trade_no 映射）',
+  `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '归属店铺',
+  `amount` DECIMAL(12,2) NOT NULL COMMENT '渠道金额',
+  `trade_status` VARCHAR(24) NOT NULL DEFAULT 'SUCCESS' COMMENT 'SUCCESS/REFUND/FAIL',
+  `trade_time` DATETIME NULL COMMENT '渠道交易时间',
+  `imported_by` BIGINT NULL COMMENT '导入人',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_statement_trade` (`channel`, `channel_trade_no`),
+  KEY `idx_statement_merchant_time` (`merchant_id`, `trade_time`),
+  CONSTRAINT fk_statement_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='渠道流水';
+
+-- 27. 对账差异队列（T35）：差异只记录不自动平衡，处理动作留痕
+CREATE TABLE IF NOT EXISTS `reconciliation_difference` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `difference_key` VARCHAR(191) NOT NULL COMMENT '稳定差异键，防重复入队',
+  `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '所属店铺ID',
+  `channel` VARCHAR(32) NULL COMMENT '渠道',
+  `diff_type` VARCHAR(48) NOT NULL COMMENT 'CHANNEL_WITHOUT_EVENT/EVENT_WITHOUT_STATEMENT/AMOUNT_MISMATCH/ORDER_MISMATCH/ORDER_MISSING/FEE_LEDGER_MISSING/DUPLICATE_PAYMENT/SETTLEMENT_ITEM_MISMATCH/RECHARGE_AMOUNT_MISMATCH',
+  `biz_type` VARCHAR(24) NOT NULL COMMENT 'ORDER/EVENT/STATEMENT/SETTLEMENT/RECHARGE',
+  `biz_id` BIGINT NULL COMMENT '关联业务主键',
+  `order_sn` VARCHAR(64) NULL COMMENT '订单号',
+  `channel_trade_no` VARCHAR(128) NULL COMMENT '渠道流水号',
+  `expected_amount` DECIMAL(12,2) NULL COMMENT '平台应有金额',
+  `actual_amount` DECIMAL(12,2) NULL COMMENT '渠道/实际金额',
+  `status` VARCHAR(24) NOT NULL DEFAULT 'DISPUTED' COMMENT 'DISPUTED/RETRY/RESOLVED/IGNORED',
+  `detail` VARCHAR(512) NULL COMMENT '差异说明',
+  `retry_count` INT NOT NULL DEFAULT 0 COMMENT '重试次数',
+  `handled_by` BIGINT NULL COMMENT '处理人',
+  `handled_at` DATETIME NULL COMMENT '处理时间',
+  `handle_note` VARCHAR(512) NULL COMMENT '处理说明',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_difference_key` (`difference_key`),
+  KEY `idx_difference_merchant_status` (`merchant_id`, `status`, `created_at`),
+  CONSTRAINT fk_difference_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='对账差异队列';

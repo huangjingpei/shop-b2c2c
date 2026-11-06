@@ -12,6 +12,7 @@ import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 
+import java.math.BigDecimal;
 import java.util.Optional;
 
 @Mapper
@@ -23,5 +24,15 @@ public interface MerchantAccountMapper extends BaseMapper<MerchantAccount> {
     default Optional<MerchantAccount> findByMerchantId(Long merchantId) {
         return Optional.ofNullable(selectOne(new LambdaQueryWrapper<MerchantAccount>()
                 .eq(MerchantAccount::getMerchantId, merchantId)));
+    }
+
+    /**
+     * T35：到期任务候选账户；只挑有欠费的行，调用方须逐行加锁后再评估。
+     */
+    default java.util.List<MerchantAccount> findWithArrears(int limit) {
+        return selectList(new LambdaQueryWrapper<MerchantAccount>()
+                .gt(MerchantAccount::getArrears, BigDecimal.ZERO)
+                .orderByAsc(MerchantAccount::getId)
+                .last("LIMIT " + limit));
     }
 }

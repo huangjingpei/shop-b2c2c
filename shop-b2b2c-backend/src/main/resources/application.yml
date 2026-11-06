@@ -133,6 +133,8 @@ shop:
     fee-tax-rate: ${SETTLEMENT_FEE_TAX_RATE:0.06}
     # 月度结算草稿生成任务，仅生成DRAFT，不自动确认
     monthly-cron: ${SETTLEMENT_MONTHLY_CRON:0 20 2 1 * ?}
+    # 欠费停收巡检任务，只更新收款状态，不改订单/账本金额
+    arrears-cron: ${SETTLEMENT_ARREARS_CRON:0 5 3 * * ?}
 
 # R27/T27：幂等轻量映射保留 30 天（Q18-B），清理受最大轮次与时间预算约束
 idempotency:

@@ -221,4 +221,14 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
     List<TradeOrder> findFeeBearingByMerchantAndPeriod(@Param("merchantId") Long merchantId,
                                                        @Param("from") LocalDateTime from,
                                                        @Param("to") LocalDateTime to);
+
+    /**
+     * T35：仅用于账期建议，统计店铺近 N 天已支付订单量；不得用于对外统计口径。
+     */
+    @Select("SELECT COUNT(*) FROM trade_order WHERE merchant_id = #{merchantId} "
+            + "AND created_at >= #{from} AND created_at < #{to} "
+            + "AND order_status IN ('PAID','SHIPPED','COMPLETED','REFUNDED')")
+    int countPaidOrdersByPeriod(@Param("merchantId") Long merchantId,
+                                @Param("from") LocalDateTime from,
+                                @Param("to") LocalDateTime to);
 }

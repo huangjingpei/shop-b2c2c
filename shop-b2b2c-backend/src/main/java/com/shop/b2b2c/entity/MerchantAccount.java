@@ -5,6 +5,7 @@
  *  1. 余额/欠费只能通过 MerchantAccountService 的账本入账方法变更；禁止直接 set 后保存绕过账本。
  *  2. arrearsDueAt 仅在存在欠费时有意义；graceDays 为空表示管理员尚未确认账期，按即时到期处理。
  *  3. version 用于并发更新；账户行更新前必须通过 mapper 的 FOR UPDATE 查询加锁。
+ *  4. T35 停收只停新单收款（collectionStopped），不影响已支付订单履约与退款；停收/恢复必须写审计。
  */
 package com.shop.b2b2c.entity;
 
@@ -30,6 +31,10 @@ public class MerchantAccount {
     private Integer graceDays; // 7/21/30；null 表示未确认
     private LocalDateTime arrearsDueAt;
     private String currency = "CNY";
+    private Boolean collectionStopped = false;
+    private String stopReason;
+    private LocalDateTime stoppedAt;
+    private LocalDateTime recoveredAt;
     private Integer version = 0;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

@@ -11,14 +11,23 @@ package com.shop.b2b2c.controller;
 import cn.dev33.satoken.stp.StpUtil;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.dto.SettlementDTOs;
+import com.shop.b2b2c.entity.MerchantAccount;
+import com.shop.b2b2c.entity.MerchantCollectionStatusAudit;
 import com.shop.b2b2c.entity.MerchantRechargeOrder;
 import com.shop.b2b2c.entity.MerchantSettlementBatch;
 import com.shop.b2b2c.entity.MerchantSettlementItem;
+import com.shop.b2b2c.entity.PaymentChannelStatement;
+import com.shop.b2b2c.entity.ReconciliationDifference;
 import com.shop.b2b2c.service.MerchantAccountService;
+import com.shop.b2b2c.service.ReconciliationService;
 import com.shop.b2b2c.service.SettlementService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -27,8 +36,13 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.YearMonth;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @Tag(name = "平台服务费结算 (Admin Settlement)")
 @RestController
@@ -38,6 +52,7 @@ public class AdminSettlementController {
 
     private final MerchantAccountService accountService;
     private final SettlementService settlementService;
+    private final ReconciliationService reconciliationService;
 
     @Operation(summary = "查询待确认充值单")
     @GetMapping("/recharges/pending")
@@ -96,5 +111,140 @@ public class AdminSettlementController {
                                                  @RequestParam(required = false) Long paymentEventId) {
         StpUtil.checkRole("SUPERADMIN");
         return R.ok(settlementService.searchItems(batchId, null, orderSn, goodsType, refundNo, paymentEventId));
+    }
+
+    @Operation(summary = "查询店铺服务费账户")
+    @GetMapping("/merchants/{merchantId}/account")
+    public R<MerchantAccount> account(@PathVariable Long merchantId) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok(accountService.view(merchantId));
+    }
+
+    @Operation(summary = "查询账期建议（不自动生效）")
+    @GetMapping("/merchants/{merchantId}/policy/suggestion")
+    public R<Map<String, Object>> policySuggestion(@PathVariable Long merchantId) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok(accountService.suggestGraceDays(merchantId));
+    }
+
+    @Operation(summary = "确认店铺信用额度与账期")
+    @PostMapping("/merchants/{merchantId}/policy")
+    public R<MerchantAccount> policy(@PathVariable Long merchantId,
+                                     @RequestBody SettlementDTOs.PolicyRequest request) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok("账期策略已确认", accountService.configurePolicy(merchantId,
+                request.getCreditLimit(), request.getGraceDays(), StpUtil.getLoginIdAsLong()));
+    }
+
+    @Operation(summary = "查询收款状态审计")
+    @GetMapping("/merchants/{merchantId}/collection-audits")
+    public R<List<MerchantCollectionStatusAudit>> collectionAudits(@PathVariable Long merchantId,
+                                                                   @RequestParam(defaultValue = "50") int limit) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok(accountService.auditOf(merchantId, limit));
+    }
+
+    @Operation(summary = "手动触发欠费停收巡检")
+    @PostMapping("/arrears/evaluate")
+    public R<Map<String, Object>> evaluateArrears(@RequestParam(defaultValue = "200") int limit) {
+        StpUtil.checkRole("SUPERADMIN");
+        int changed = accountService.evaluateDueArrears(limit);
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("changed", changed);
+        return R.ok(result);
+    }
+
+    @Operation(summary = "导入渠道对账流水")
+    @PostMapping("/channel-statements/import")
+    public R<Map<String, Object>> importStatements(
+            @RequestBody SettlementDTOs.ChannelStatementImportRequest request) {
+        StpUtil.checkRole("SUPERADMIN");
+        List<PaymentChannelStatement> statements = new ArrayList<>();
+        if (request != null && request.getStatements() != null) {
+            for (SettlementDTOs.ChannelStatementItem item : request.getStatements()) {
+                PaymentChannelStatement statement = new PaymentChannelStatement();
+                statement.setChannel(item.getChannel());
+                statement.setChannelTradeNo(item.getChannelTradeNo());
+                statement.setOutTradeNo(item.getOutTradeNo());
+                statement.setOrderSn(item.getOrderSn());
+                statement.setMerchantId(item.getMerchantId());
+                statement.setAmount(item.getAmount());
+                statement.setTradeStatus(item.getTradeStatus());
+                statement.setTradeTime(item.getTradeTime());
+                statements.add(statement);
+            }
+        }
+        return R.ok(reconciliationService.importStatements(statements, StpUtil.getLoginIdAsLong()));
+    }
+
+    @Operation(summary = "执行店铺对账")
+    @PostMapping("/merchants/{merchantId}/reconcile")
+    public R<Map<String, Object>> reconcile(
+            @PathVariable Long merchantId,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        StpUtil.checkRole("SUPERADMIN");
+        LocalDate start = from == null ? YearMonth.now().atDay(1) : from;
+        LocalDate end = to == null ? YearMonth.now().plusMonths(1).atDay(1) : to;
+        return R.ok(reconciliationService.reconcile(merchantId, start.atStartOfDay(), end.atStartOfDay()));
+    }
+
+    @Operation(summary = "查询对账差异队列")
+    @GetMapping("/differences")
+    public R<List<ReconciliationDifference>> differences(@RequestParam(required = false) Long merchantId,
+                                                         @RequestParam(required = false) String status,
+                                                         @RequestParam(defaultValue = "100") int limit) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok(reconciliationService.list(merchantId, status, limit));
+    }
+
+    @Operation(summary = "重试对账差异")
+    @PostMapping("/differences/{id}/retry")
+    public R<ReconciliationDifference> retryDifference(@PathVariable Long id) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok("已重试", reconciliationService.retry(id, StpUtil.getLoginIdAsLong()));
+    }
+
+    @Operation(summary = "人工处理对账差异")
+    @PostMapping("/differences/{id}/resolve")
+    public R<ReconciliationDifference> resolveDifference(@PathVariable Long id,
+                                                         @RequestBody SettlementDTOs.ResolveRequest request) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok("差异已处理", reconciliationService.resolve(id, StpUtil.getLoginIdAsLong(),
+                request.getNote(), request.isIgnore()));
+    }
+
+    @Operation(summary = "导出结算单 CSV")
+    @GetMapping("/batches/{batchId}/export")
+    public ResponseEntity<byte[]> exportSettlement(@PathVariable Long batchId,
+                                                   @RequestParam(required = false) String orderSn,
+                                                   @RequestParam(required = false) Integer goodsType,
+                                                   @RequestParam(required = false) String refundNo,
+                                                   @RequestParam(required = false) Long paymentEventId) {
+        StpUtil.checkRole("SUPERADMIN");
+        String csv = reconciliationService.settlementCsv(batchId, null, orderSn, goodsType, refundNo,
+                paymentEventId);
+        return csvResponse("settlement-" + batchId + ".csv", csv);
+    }
+
+    @Operation(summary = "导出服务费账本 CSV")
+    @GetMapping("/merchants/{merchantId}/ledger/export")
+    public ResponseEntity<byte[]> exportLedger(@PathVariable Long merchantId,
+                                               @RequestParam(required = false)
+                                               @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
+                                               @RequestParam(required = false)
+                                               @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to) {
+        StpUtil.checkRole("SUPERADMIN");
+        LocalDate start = from == null ? YearMonth.now().atDay(1) : from;
+        LocalDate end = to == null ? YearMonth.now().plusMonths(1).atDay(1) : to;
+        String csv = reconciliationService.ledgerCsv(merchantId, start.atStartOfDay(), end.atStartOfDay());
+        return csvResponse("ledger-" + merchantId + ".csv", csv);
+    }
+
+    private ResponseEntity<byte[]> csvResponse(String filename, String csv) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.parseMediaType("text/csv;charset=UTF-8"));
+        headers.set(HttpHeaders.CONTENT_DISPOSITION, "attachment; filename=\"" + filename + "\"");
+        return ResponseEntity.ok().headers(headers).body(csv.getBytes(StandardCharsets.UTF_8));
     }
 }

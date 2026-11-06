@@ -58,4 +58,14 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
     @Select("SELECT * FROM payment_event WHERE order_sn = #{orderSn} AND event_status = 'SUCCESS' "
             + "ORDER BY id LIMIT 1")
     PaymentEvent findFirstSuccessByOrderSn(@Param("orderSn") String orderSn);
+
+    /**
+     * T35：按商户+时间读取到账事件（含重复付款），供对账比对。
+     */
+    @Select("SELECT * FROM payment_event WHERE merchant_id = #{merchantId} "
+            + "AND created_at >= #{from} AND created_at < #{to} "
+            + "ORDER BY id")
+    List<PaymentEvent> findByMerchantAndPeriod(@Param("merchantId") Long merchantId,
+                                               @Param("from") java.time.LocalDateTime from,
+                                               @Param("to") java.time.LocalDateTime to);
 }

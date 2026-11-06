@@ -43,6 +43,7 @@ public class PeerPayServiceImpl implements PeerPayService {
     private final PlatformAdConfigMapper adConfigMapper;
     private final com.shop.b2b2c.service.PaymentEventService paymentEventService;
     private final com.shop.b2b2c.service.ServiceFeeSnapshotService feeSnapshotService;
+    private final com.shop.b2b2c.service.MerchantAccountService merchantAccountService;
 
     @Value("${app.frontend.storefront-url:http://localhost:3002}")
     private String storefrontUrl;
@@ -78,6 +79,8 @@ public class PeerPayServiceImpl implements PeerPayService {
 
         TradeGuards.requireSkuOwnership(product, sku);
         TradeGuards.requirePurchasable(product, store);
+        // T35：欠费停收款只拦截新单，不影响已支付订单履约与退款。
+        merchantAccountService.requireCollectionAllowed(store.getId());
         TradeGuards.requireMoney(sku.getPrice());
 
         // 阶段一意向校验：只查物理库存是否存在，不执行真实扣减 (防刷与防恶搞占库存)
@@ -184,6 +187,8 @@ public class PeerPayServiceImpl implements PeerPayService {
                 .orElseThrow(() -> new BusinessException("商户店铺不存在"));
         TradeGuards.requireSkuOwnership(product, sku);
         TradeGuards.requirePurchasable(product, store);
+        // T35：欠费停收款只拦截新单，不影响已支付订单履约与退款。
+        merchantAccountService.requireCollectionAllowed(store.getId());
         TradeGuards.requireMoney(sku.getPrice());
 
         if (sku.getStockQuantity() < req.getQuantity()) {

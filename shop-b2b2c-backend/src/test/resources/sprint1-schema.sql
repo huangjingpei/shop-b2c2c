@@ -408,6 +408,10 @@ CREATE TABLE IF NOT EXISTS merchant_account (
   grace_days INT NULL,
   arrears_due_at DATETIME NULL,
   currency VARCHAR(16) NOT NULL DEFAULT 'CNY',
+  collection_stopped TINYINT(1) NOT NULL DEFAULT 0,
+  stop_reason VARCHAR(32) NULL,
+  stopped_at DATETIME NULL,
+  recovered_at DATETIME NULL,
   version INT NOT NULL DEFAULT 0,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -498,4 +502,58 @@ CREATE TABLE IF NOT EXISTS merchant_settlement_item (
   net_fee DECIMAL(12,2) NOT NULL DEFAULT 0.00,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT uk_settlement_item UNIQUE (batch_id, item_type, order_id, refund_id)
+);
+
+-- 25. 收款状态审计（T35）
+CREATE TABLE IF NOT EXISTS merchant_collection_status_audit (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT NOT NULL,
+  action VARCHAR(24) NOT NULL,
+  reason VARCHAR(64) NULL,
+  arrears_at_action DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  credit_limit DECIMAL(12,2) NULL,
+  grace_days INT NULL,
+  due_at DATETIME NULL,
+  operator_id BIGINT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 26. 渠道流水（T35）
+CREATE TABLE IF NOT EXISTS payment_channel_statement (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  channel VARCHAR(32) NOT NULL,
+  channel_trade_no VARCHAR(128) NOT NULL,
+  out_trade_no VARCHAR(64) NULL,
+  order_sn VARCHAR(64) NULL,
+  merchant_id BIGINT NOT NULL,
+  amount DECIMAL(12,2) NOT NULL,
+  trade_status VARCHAR(24) NOT NULL DEFAULT 'SUCCESS',
+  trade_time DATETIME NULL,
+  imported_by BIGINT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_statement_trade UNIQUE (channel, channel_trade_no)
+);
+
+-- 27. 对账差异队列（T35）
+CREATE TABLE IF NOT EXISTS reconciliation_difference (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  difference_key VARCHAR(191) NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  channel VARCHAR(32) NULL,
+  diff_type VARCHAR(48) NOT NULL,
+  biz_type VARCHAR(24) NOT NULL,
+  biz_id BIGINT NULL,
+  order_sn VARCHAR(64) NULL,
+  channel_trade_no VARCHAR(128) NULL,
+  expected_amount DECIMAL(12,2) NULL,
+  actual_amount DECIMAL(12,2) NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'DISPUTED',
+  detail VARCHAR(512) NULL,
+  retry_count INT NOT NULL DEFAULT 0,
+  handled_by BIGINT NULL,
+  handled_at DATETIME NULL,
+  handle_note VARCHAR(512) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_difference_key UNIQUE (difference_key)
 );

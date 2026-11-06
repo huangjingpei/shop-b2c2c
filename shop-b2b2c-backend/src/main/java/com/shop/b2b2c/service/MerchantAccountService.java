@@ -6,6 +6,9 @@
  *  2. 支付成功扣费与支付事件 SUCCESS 在同一事务内完成；余额不足时整笔转欠费，不部分扣减。
  *  3. 退款冲正只接入 T33 已确认的退款成功流程，不重建退款状态机；冲正优先冲减欠费，剩余才回补余额。
  *  4. 推广期 0 费率仍写一条金额为 0 的免收账本，保留业务记录但不改余额。
+ *  5. T35：欠费达到信用额度或账期到期即停新单收款；补齐欠费（含退款冲减/充值抵扣）后自动恢复并写审计。
+ *     停收只影响新单，不影响已支付订单履约与退款。
+ *  6. 账期只允许 7/21/30，且必须管理员显式确认；系统建议值不得自动写入。
  */
 package com.shop.b2b2c.service;
 
@@ -38,6 +41,7 @@ public class MerchantAccountService {
     private final MerchantAccountLedgerMapper ledgerMapper;
     private final MerchantRechargeOrderMapper rechargeMapper;
     private final TradeOrderMapper orderMapper;
+    private final com.shop.b2b2c.mapper.MerchantCollectionStatusAuditMapper auditMapper;
     private final ServiceFeeSnapshotService snapshotService;
 
     public static final String ENTRY_CHARGE = "SERVICE_FEE_CHARGE";
@@ -75,6 +79,7 @@ public class MerchantAccountService {
         BigDecimal arrears = account.getArrears() == null ? BigDecimal.ZERO : account.getArrears();
         if (balance.compareTo(fee) >= 0) {
             account.setBalanceAvailable(balance.subtract(fee).setScale(2, RoundingMode.HALF_UP));
+            applyArrearsControl(account, null);
             touch(account);
             insertLedger(account, ENTRY_CHARGE, "DEBIT", fee,
                     "ORDER", order.getId(), order.getOrderSn(), null, key, "支付成功扣减服务费");
@@ -87,6 +92,7 @@ public class MerchantAccountService {
             int grace = account.getGraceDays() == null ? 0 : account.getGraceDays();
             account.setArrearsDueAt(LocalDateTime.now().plusDays(grace));
         }
+        applyArrearsControl(account, null);
         touch(account);
         insertLedger(account, ENTRY_ARREARS, "DEBIT", fee,
                 "ORDER", order.getId(), order.getOrderSn(), null, key, "余额不足，转入欠费");
@@ -130,6 +136,7 @@ public class MerchantAccountService {
         if (account.getArrears() == null || account.getArrears().signum() == 0) {
             account.setArrearsDueAt(null);
         }
+        applyArrearsControl(account, null);
         touch(account);
         insertLedger(account, ENTRY_REFUND, "CREDIT", amount,
                 "REFUND", refund.getId(), order.getOrderSn(), refund.getRefundNo(), key,
@@ -186,8 +193,18 @@ public class MerchantAccountService {
             return recharge;
         }
         MerchantAccount account = lockOrCreate(recharge.getMerchantId());
+        BigDecimal arrears = account.getArrears() == null ? BigDecimal.ZERO : account.getArrears();
+        BigDecimal offset = arrears.min(amount);
+        BigDecimal remaining = amount.subtract(offset);
+        if (offset.signum() > 0) {
+            account.setArrears(arrears.subtract(offset).setScale(2, RoundingMode.HALF_UP));
+            if (account.getArrears().signum() == 0) {
+                account.setArrearsDueAt(null);
+            }
+        }
         BigDecimal balance = account.getBalanceAvailable() == null ? BigDecimal.ZERO : account.getBalanceAvailable();
-        account.setBalanceAvailable(balance.add(amount).setScale(2, RoundingMode.HALF_UP));
+        account.setBalanceAvailable(balance.add(remaining).setScale(2, RoundingMode.HALF_UP));
+        applyArrearsControl(account, operatorId);
         touch(account);
         MerchantAccountLedger entry = insertLedger(account, ENTRY_RECHARGE, "CREDIT", amount,
                 "RECHARGE", recharge.getId(), null, null, key, "线下转账人工确认入账");
@@ -216,6 +233,102 @@ public class MerchantAccountService {
         recharge.setConfirmedAt(LocalDateTime.now());
         rechargeMapper.updateById(recharge);
         return recharge;
+    }
+
+    /**
+     * T35：新单收款前置检查。只读判断，不在此处持久化停收状态；停收状态由扣费/策略确认/到期任务落库留痕。
+     * 已支付订单履约与退款不调用本方法。
+     */
+    public void requireCollectionAllowed(Long merchantId) {
+        if (merchantId == null) {
+            return;
+        }
+        MerchantAccount account = accountMapper.findByMerchantId(merchantId).orElse(null);
+        if (account == null) {
+            return;
+        }
+        if (Boolean.TRUE.equals(account.getCollectionStopped())) {
+            throw new BusinessException(409, "欠费已暂停新单收款，请先补齐欠费");
+        }
+        BigDecimal arrears = account.getArrears() == null ? BigDecimal.ZERO : account.getArrears();
+        if (arrears.signum() == 0) {
+            return;
+        }
+        BigDecimal credit = account.getCreditLimit() == null ? DEFAULT_CREDIT_LIMIT : account.getCreditLimit();
+        if (arrears.compareTo(credit) >= 0) {
+            throw new BusinessException(409, "欠费已达信用额度，新单收款已暂停");
+        }
+        if (account.getArrearsDueAt() != null && !account.getArrearsDueAt().isAfter(LocalDateTime.now())) {
+            throw new BusinessException(409, "欠费账期已到期，新单收款已暂停");
+        }
+    }
+
+    /**
+     * T35：管理员确认店铺账期与信用额度。账期必须显式传 7/21/30，系统建议值不会自动落库。
+     */
+    @Transactional
+    public MerchantAccount configurePolicy(Long merchantId, BigDecimal creditLimit, Integer graceDays,
+                                           Long operatorId) {
+        if (creditLimit == null) {
+            throw new BusinessException(400, "信用额度不能为空");
+        }
+        BigDecimal limit = creditLimit.setScale(2, RoundingMode.HALF_UP);
+        if (limit.signum() < 0 || limit.compareTo(new BigDecimal("100000.00")) > 0) {
+            throw new BusinessException(400, "信用额度必须在 0~100000 元之间");
+        }
+        if (graceDays == null || (graceDays != 7 && graceDays != 21 && graceDays != 30)) {
+            throw new BusinessException(400, "账期只允许 7/21/30 天，且必须由管理员确认");
+        }
+        MerchantAccount account = lockOrCreate(merchantId);
+        account.setCreditLimit(limit);
+        account.setGraceDays(graceDays);
+        BigDecimal arrears = account.getArrears() == null ? BigDecimal.ZERO : account.getArrears();
+        account.setArrearsDueAt(arrears.signum() > 0 ? LocalDateTime.now().plusDays(graceDays) : null);
+        applyArrearsControl(account, operatorId);
+        insertAudit(account, "POLICY", "POLICY_CONFIRMED", operatorId);
+        account.setVersion((account.getVersion() == null ? 0 : account.getVersion()) + 1);
+        accountMapper.updateById(account);
+        return account;
+    }
+
+    /**
+     * T35：账期建议，仅返回建议值，不写入账户。近30天已支付订单越多建议账期越短。
+     */
+    public java.util.Map<String, Object> suggestGraceDays(Long merchantId) {
+        LocalDateTime to = LocalDateTime.now();
+        int paidOrders = orderMapper.countPaidOrdersByPeriod(merchantId, to.minusDays(30), to);
+        int suggested = paidOrders >= 1000 ? 7 : (paidOrders >= 200 ? 21 : 30);
+        MerchantAccount account = accountMapper.findByMerchantId(merchantId).orElse(null);
+        java.util.Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("merchantId", merchantId);
+        result.put("paidOrdersLast30Days", paidOrders);
+        result.put("suggestedGraceDays", suggested);
+        result.put("confirmedGraceDays", account == null ? null : account.getGraceDays());
+        result.put("creditLimit", account == null ? DEFAULT_CREDIT_LIMIT : account.getCreditLimit());
+        result.put("source", "SUGGESTION_ONLY");
+        return result;
+    }
+
+    public List<com.shop.b2b2c.entity.MerchantCollectionStatusAudit> auditOf(Long merchantId, int limit) {
+        return auditMapper.findByMerchant(merchantId, limit);
+    }
+
+    /**
+     * T35：到期任务扫描欠费账户，将已过账期账户置为停收并写审计；由定时任务或管理员手动触发。
+     */
+    @Transactional
+    public int evaluateDueArrears(int limit) {
+        List<MerchantAccount> candidates = accountMapper.findWithArrears(Math.min(Math.max(limit, 1), 500));
+        int changed = 0;
+        for (MerchantAccount candidate : candidates) {
+            MerchantAccount account = accountMapper.lockByMerchantId(candidate.getMerchantId());
+            if (account != null && applyArrearsControl(account, null)) {
+                account.setVersion((account.getVersion() == null ? 0 : account.getVersion()) + 1);
+                accountMapper.updateById(account);
+                changed++;
+            }
+        }
+        return changed;
     }
 
     public MerchantAccount view(Long merchantId) {
@@ -269,6 +382,57 @@ public class MerchantAccountService {
             throw new BusinessException(500, "服务费账户初始化失败");
         }
         return account;
+    }
+
+    /**
+     * 评估停收/恢复：欠费达到信用额度或欠费账期到期 -> 停收；欠费清零 -> 自动恢复。
+     * 只修改内存字段并写审计，由调用方统一 touch 保存，避免同一事务内重复更新。
+     */
+    private boolean applyArrearsControl(MerchantAccount account, Long operatorId) {
+        BigDecimal arrears = account.getArrears() == null ? BigDecimal.ZERO : account.getArrears();
+        BigDecimal credit = account.getCreditLimit() == null ? DEFAULT_CREDIT_LIMIT : account.getCreditLimit();
+        boolean stopped = Boolean.TRUE.equals(account.getCollectionStopped());
+
+        if (!stopped) {
+            String reason = null;
+            if (arrears.compareTo(credit) >= 0) {
+                reason = "ARREARS_LIMIT";
+            } else if (arrears.signum() > 0 && account.getArrearsDueAt() != null
+                    && !account.getArrearsDueAt().isAfter(LocalDateTime.now())) {
+                reason = "GRACE_EXPIRED";
+            }
+            if (reason != null) {
+                account.setCollectionStopped(true);
+                account.setStopReason(reason);
+                account.setStoppedAt(LocalDateTime.now());
+                insertAudit(account, "STOP", reason, operatorId);
+                return true;
+            }
+            return false;
+        }
+
+        if (arrears.signum() == 0) {
+            account.setCollectionStopped(false);
+            account.setStopReason(null);
+            account.setRecoveredAt(LocalDateTime.now());
+            insertAudit(account, "RECOVER", "ARREARS_CLEARED", operatorId);
+            return true;
+        }
+        return false;
+    }
+
+    private void insertAudit(MerchantAccount account, String action, String reason, Long operatorId) {
+        com.shop.b2b2c.entity.MerchantCollectionStatusAudit audit =
+                new com.shop.b2b2c.entity.MerchantCollectionStatusAudit();
+        audit.setMerchantId(account.getMerchantId());
+        audit.setAction(action);
+        audit.setReason(reason);
+        audit.setArrearsAtAction(account.getArrears() == null ? BigDecimal.ZERO : account.getArrears());
+        audit.setCreditLimit(account.getCreditLimit());
+        audit.setGraceDays(account.getGraceDays());
+        audit.setDueAt(account.getArrearsDueAt());
+        audit.setOperatorId(operatorId);
+        auditMapper.insert(audit);
     }
 
     private void markOrderFeeStatus(TradeOrder order, String status) {

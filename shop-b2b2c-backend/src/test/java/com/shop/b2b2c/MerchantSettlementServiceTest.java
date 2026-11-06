@@ -1,16 +1,18 @@
 /*
  * 文件：MerchantSettlementServiceTest.java
- * 用途：T34 服务费快照、账户扣费/欠费、退款冲正、线下充值确认与结算批次的契约用例。
+ * 用途：T34/T35 服务费快照、账户扣费/欠费、退款冲正、线下充值确认、结算批次与收款状态控制的契约用例。
  * 维护注意：
  *  1. 全部使用 Mockito 隔离，不启动 Spring、不连接数据库、不调用真实渠道。
- *  2. 金额口径与状态迁移是账本核心，修改快照公式、幂等键或欠费规则时必须同步更新本用例。
- *  3. 真实 MySQL 并发行锁、月度任务与人工核对仍由用户手动验证。
+ *  2. 金额口径与状态迁移是账本核心，修改快照公式、幂等键、欠费/停收规则时必须同步更新本用例。
+ *  3. T35 停收只影响新单收款；恢复必须由欠费清零触发，且每次状态变化写审计。
+ *  4. 真实 MySQL 并发行锁、月度任务与人工核对仍由用户手动验证。
  */
 package com.shop.b2b2c;
 
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.entity.MerchantAccount;
 import com.shop.b2b2c.entity.MerchantAccountLedger;
+import com.shop.b2b2c.entity.MerchantCollectionStatusAudit;
 import com.shop.b2b2c.entity.MerchantRechargeOrder;
 import com.shop.b2b2c.entity.MerchantSettlementBatch;
 import com.shop.b2b2c.entity.MerchantSettlementItem;
@@ -19,6 +21,7 @@ import com.shop.b2b2c.entity.TradeOrder;
 import com.shop.b2b2c.entity.TradeRefund;
 import com.shop.b2b2c.mapper.MerchantAccountLedgerMapper;
 import com.shop.b2b2c.mapper.MerchantAccountMapper;
+import com.shop.b2b2c.mapper.MerchantCollectionStatusAuditMapper;
 import com.shop.b2b2c.mapper.MerchantRechargeOrderMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementBatchMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementItemMapper;
@@ -60,10 +63,13 @@ class MerchantSettlementServiceTest {
     private final MerchantSettlementItemMapper itemMapper = mock(MerchantSettlementItemMapper.class);
     private final TradeRefundMapper refundMapper = mock(TradeRefundMapper.class);
     private final PaymentEventMapper eventMapper = mock(PaymentEventMapper.class);
+    private final MerchantCollectionStatusAuditMapper auditMapper =
+            mock(MerchantCollectionStatusAuditMapper.class);
     private final ServiceFeeSnapshotService snapshotService = new ServiceFeeSnapshotService();
 
     private MerchantAccountService accountService() {
-        return new MerchantAccountService(accountMapper, ledgerMapper, rechargeMapper, orderMapper, snapshotService);
+        return new MerchantAccountService(accountMapper, ledgerMapper, rechargeMapper, orderMapper, auditMapper,
+                snapshotService);
     }
 
     private SettlementService settlementService() {
@@ -296,6 +302,143 @@ class MerchantSettlementServiceTest {
         assertEquals(3L, result.getConfirmedBy());
         assertNotNull(result.getConfirmedAt());
         verify(batchMapper).updateById(batch);
+    }
+
+    @Test
+    void chargeReachingCreditLimitStopsCollectionAndWritesAudit() {
+        TradeOrder order = paidOrder("SN-A1", new BigDecimal("3.00"));
+        MerchantAccount account = account("0.00", "498.00");
+        when(accountMapper.lockByMerchantId(1L)).thenReturn(account);
+        when(ledgerMapper.findByIdempotencyKey("ORDER_FEE:SN-A1")).thenReturn(Optional.empty());
+
+        accountService().chargeOrderFee(order, 21L);
+
+        assertEquals(0, new BigDecimal("501.00").compareTo(account.getArrears()));
+        assertTrue(account.getCollectionStopped());
+        assertEquals("ARREARS_LIMIT", account.getStopReason());
+        assertNotNull(account.getStoppedAt());
+        verify(auditMapper).insert(any(MerchantCollectionStatusAudit.class));
+    }
+
+    @Test
+    void requireCollectionAllowedRejectsStoppedMerchant() {
+        MerchantAccount account = account("0.00", "501.00");
+        account.setCollectionStopped(true);
+        account.setStopReason("ARREARS_LIMIT");
+        when(accountMapper.findByMerchantId(1L)).thenReturn(Optional.of(account));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> accountService().requireCollectionAllowed(1L));
+
+        assertTrue(ex.getMessage().contains("暂停"));
+    }
+
+    @Test
+    void requireCollectionAllowedPermitsMerchantWithoutArrears() {
+        MerchantAccount account = account("100.00", "0.00");
+        when(accountMapper.findByMerchantId(1L)).thenReturn(Optional.of(account));
+
+        accountService().requireCollectionAllowed(1L);
+
+        verify(accountMapper, never()).updateById(any(MerchantAccount.class));
+    }
+
+    @Test
+    void rechargeOffsetClearingArrearsRecoversCollection() {
+        MerchantAccount account = account("0.00", "100.00");
+        account.setCollectionStopped(true);
+        account.setArrearsDueAt(LocalDateTime.now().plusDays(7));
+        when(accountMapper.lockByMerchantId(1L)).thenReturn(account);
+
+        MerchantRechargeOrder recharge = new MerchantRechargeOrder();
+        recharge.setId(30L);
+        recharge.setRechargeNo("RCH-30");
+        recharge.setMerchantId(1L);
+        recharge.setAmount(new BigDecimal("100.00"));
+        recharge.setVoucherNo("V-030");
+        recharge.setStatus("PENDING");
+        when(rechargeMapper.findByRechargeNo("RCH-30")).thenReturn(Optional.of(recharge));
+        when(rechargeMapper.lockById(30L)).thenReturn(recharge);
+        when(ledgerMapper.findByIdempotencyKey("RECHARGE:RCH-30")).thenReturn(Optional.empty());
+
+        accountService().confirmRecharge("RCH-30", null, 3L);
+
+        assertEquals(0, BigDecimal.ZERO.compareTo(account.getArrears()));
+        assertNull(account.getArrearsDueAt());
+        assertEquals(false, account.getCollectionStopped());
+        assertNotNull(account.getRecoveredAt());
+        assertEquals(0, BigDecimal.ZERO.compareTo(account.getBalanceAvailable()));
+        verify(auditMapper).insert(any(MerchantCollectionStatusAudit.class));
+    }
+
+    @Test
+    void policyRejectsGraceDaysOutsideConfirmedOptions() {
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> accountService().configurePolicy(1L, new BigDecimal("500.00"), 14, 3L));
+
+        assertTrue(ex.getMessage().contains("7/21/30"));
+        verify(accountMapper, never()).lockByMerchantId(anyLong());
+        verify(auditMapper, never()).insert(any(MerchantCollectionStatusAudit.class));
+    }
+
+    @Test
+    void policyConfirmationPersistsGraceDaysAndAudits() {
+        MerchantAccount account = account("0.00", "0.00");
+        when(accountMapper.lockByMerchantId(1L)).thenReturn(account);
+
+        MerchantAccount result = accountService()
+                .configurePolicy(1L, new BigDecimal("800.00"), 21, 3L);
+
+        assertEquals(new BigDecimal("800.00"), result.getCreditLimit());
+        assertEquals(Integer.valueOf(21), result.getGraceDays());
+        assertNull(result.getArrearsDueAt());
+        verify(auditMapper).insert(any(MerchantCollectionStatusAudit.class));
+    }
+
+    @Test
+    void graceDaysSuggestionDoesNotWriteAccount() {
+        MerchantAccount account = account("0.00", "0.00");
+        when(accountMapper.findByMerchantId(1L)).thenReturn(Optional.of(account));
+        when(orderMapper.countPaidOrdersByPeriod(eq(1L), any(), any())).thenReturn(50);
+
+        java.util.Map<String, Object> suggestion = accountService().suggestGraceDays(1L);
+
+        assertEquals(30, suggestion.get("suggestedGraceDays"));
+        assertNull(suggestion.get("confirmedGraceDays"));
+        assertEquals("SUGGESTION_ONLY", suggestion.get("source"));
+        verify(accountMapper, never()).updateById(any(MerchantAccount.class));
+    }
+
+    @Test
+    void evaluateDueArrearsStopsOverdueAccount() {
+        MerchantAccount candidate = account("0.00", "100.00");
+        candidate.setArrearsDueAt(LocalDateTime.now().minusDays(1));
+        candidate.setCollectionStopped(false);
+        when(accountMapper.findWithArrears(200)).thenReturn(List.of(candidate));
+        when(accountMapper.lockByMerchantId(1L)).thenReturn(candidate);
+
+        int changed = accountService().evaluateDueArrears(200);
+
+        assertEquals(1, changed);
+        assertTrue(candidate.getCollectionStopped());
+        assertEquals("GRACE_EXPIRED", candidate.getStopReason());
+        verify(accountMapper).updateById(candidate);
+        verify(auditMapper).insert(any(MerchantCollectionStatusAudit.class));
+    }
+
+    @Test
+    void evaluateDueArrearsSkipsAccountWithinGrace() {
+        MerchantAccount candidate = account("0.00", "100.00");
+        candidate.setArrearsDueAt(LocalDateTime.now().plusDays(3));
+        when(accountMapper.findWithArrears(200)).thenReturn(List.of(candidate));
+        when(accountMapper.lockByMerchantId(1L)).thenReturn(candidate);
+
+        int changed = accountService().evaluateDueArrears(200);
+
+        assertEquals(0, changed);
+        assertEquals(false, candidate.getCollectionStopped());
+        verify(accountMapper, never()).updateById(any(MerchantAccount.class));
+        verify(auditMapper, never()).insert(any(MerchantCollectionStatusAudit.class));
     }
 
     private TradeOrder paidOrder(String orderSn, BigDecimal fee) {
