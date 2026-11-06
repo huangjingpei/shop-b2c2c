@@ -111,9 +111,9 @@
 - 未运行 `mvn`、编译、测试或构建，未连接 MySQL；跑批并发、唯一键冲突与真实 CHECK 行为待用户手工验证。
 - 没有真实渠道 API/对账单文件，T+1 依赖管理端先导入流水；自动拉单仍是缺口。
 - 渠道退款流水的真实字段、币种精度、跨天结算规则未联调。
-- `success_at IS NULL` 的 `SUCCESS` 退款不会进入 T+1 窗口（缺口，未补数）：产生路径是上线前已成功的旧数据，或迁移/异常导致 `markSuccess` 未写入。跑批每次会统计 `status='SUCCESS' AND success_at IS NULL` 的数量并 `warn` 告警；补数方案为按渠道退款流水 `trade_time` 回填，无流水时按 `updated_at` 的人工核对值回填并留审计，补数脚本/人工 SQL 须单独评审，本卡不自动改写历史资金记录。
+- `success_at IS NULL` 的 `SUCCESS` 退款不会进入 T+1 窗口（缺口，未补数）：产生路径是上线前已成功的旧数据，或迁移/异常导致 `markSuccess` 未写入。跑批按商户每轮统计一次 `status='SUCCESS' AND success_at IS NULL` 的数量并 `warn` 告警（复用 `idx_refund_success` 的 `merchant_id` 前缀，不为巡检新增索引）；补数方案为按渠道退款流水 `trade_time` 回填，无流水时按 `updated_at` 的人工核对值回填并留审计，补数脚本/人工 SQL 须单独评审，本卡不自动改写历史资金记录。
 - 支付事件仍按 `payment_event.created_at`（回调受理时间）切日，不是渠道成功时间；跨日回调可能归属错误业务日，已登记缺口（G21），缓解手段是渠道流水侧按 `trade_time` 对账并标 `TIME_CROSS_DAY`。
-- 结算批次合计仅当对账窗口与批次开区间账期完全一致（`period_start = from`、`period_end = to`，月结/半年结的 `period_end` 均为期末次日）时校验；T+1 单日窗口不比对月结批次，避免恒不成立。
+- 结算批次合计仅当对账窗口与批次开区间账期完全一致（`period_start = from`、`period_end = to`）时校验；当前只有 `SettlementService.generateMonthly` 实现月结，`periodEnd` 为次月 1 日。半年度/季度结的账期规则属于**设计约定、尚未实现生成器**，后续实现时必须沿用同一开区间口径。T+1 单日窗口不比对月结批次，避免恒不成立。
 - 部署前提：`updated_at`/`finished_at` 等列的 `CURRENT_TIMESTAMP` 由数据库会话时区生成，必须与业务时区 `Asia/Shanghai` 对齐（连接串 `serverTimezone=Asia/Shanghai` 或库/会话 `time_zone='+08:00'`）。验收时执行 `SELECT @@global.time_zone, @@session.time_zone, NOW(), UTC_TIMESTAMP()`，确认 `NOW()` 与 `Asia/Shanghai` 当前时间偏差不超过 1 分钟；未对齐时 Java 截断时间与 DB 生成时间会漂移，`finishRun` 的 `started_at` 条件可能失配。
 - 平台代收结算的极端状态组合（部分结算、多次退款、批次重算）只做静态恒等式校验，未做资金演练。
 - 跑批回看窗口默认 3 天；超过窗口的历史失败需手动按业务日重跑。自动重试每店每次跑批只做一轮，`retry_failed` 已落库，但真实并发下的条件回写与接管行为仍待 MySQL 演练。
@@ -153,7 +153,7 @@
 
 ## 11. 第二轮回核返工（2026-11-06）
 
-第二轮确认 8 项中 5 项通过，以下 3 项继续返工，其中第 1 项为上一轮返工引入的回归。
+第二轮复核：**6 项通过、2 项不通过、1 项待定口径**；以下 3 项继续返工，其中第 1 项为上一轮返工引入的回归。第三轮又补 3 个边界问题，见第 12 节。
 
 | 返工项 | 错在哪 / 回归原因 | 返工落点 |
 | --- | --- | --- |
@@ -168,4 +168,16 @@
 
 ### 11.2 复核口径更正（`fk_statement_merchant`）
 
-第二轮复核曾写“上一轮报告的 `fk_statement_merchant` 重复外键不成立、特此撤回”，这是时空错位：首轮发现时 `schema.sql` L672 确实与 L324 同名，**重复属实**；该问题已由提交 `317cbce` 将 L672 改名为 `fk_payment_channel_statement_merchant` 修复。第二轮看到的是修复后的状态，不能据此认定首轮误报，也不能抹掉该修复记录。详见 [schema 吸收审计](2026-11-06-schema-absorption-audit.md) §5.2。
+**重复问题在 `317cbce` 修复，早于本卡基线 `d83e8db`；本卡基线时该重名已不存在。前一版本节“首轮发现属实、第二轮属时空错位”的表述有误，现更正：修复记录保留，但不能认为本卡基线仍存在重复。** 详见 [schema 吸收审计](2026-11-06-schema-absorption-audit.md) §5.2。
+
+## 12. 第三轮回核返工（2026-11-06）
+
+第三轮确认上一轮三条必修代码主体已修好，但改动带出 3 个边界问题。
+
+| 项 | 触发场景 | 处理 |
+| --- | --- | --- |
+| 必修一 空串渠道 | 收集本地单据渠道只排除 `null`，空串 `""` 被当成真实渠道；流水导入强制非空，`""` 永远不在流水渠道集合，该店每天 `PARTIAL`，三次后错误转 `MANUAL` 且永不消失 | 事件与退款两处收集渠道都改为 `!isBlank()`；空串不进入缺失渠道差集 |
+| 必修二 非成功事件污染差集 | 事件循环最前收集渠道时未筛状态；`PROCESSING`/`MANUAL_REVIEW`/`MERCHANT_MISMATCH`/`CURRENCY_MISMATCH` 等天然不会产生本商户流水，却被判“渠道未导入”，三次后永久错误升级 `MANUAL` | 仅 `SUCCESS`、`DUPLICATE_PAYMENT`、`LATE_PAYMENT` 计入差集；`PROCESSING`（未确认）、`MANUAL_REVIEW`（结果未知）、`MERCHANT_MISMATCH`（他人商户）、`CURRENCY_MISMATCH`（币种异常）、`AMOUNT_MISMATCH`（金额异常待核）、`FULFILLMENT_FAILED`（已支付后履约失败与“明确未支付/查无此单”语义混合）不参与该判定，但仍按各自逻辑参与原有对账/跳过处理 |
+| 必修三 `success_at` 巡检全局扫描 | `countSuccessWithoutSuccessAt` 没有 `merchant_id`，却在“店铺 × 业务日”循环内调用，回看 3 天即 `3 × 店铺数` 次全表扫描，且用不上 `(merchant_id, success_at)` 索引 | 采用方案①：按 `merchant_id` 统计，调用上移到 `runRange` 每店每轮一次；复用 `idx_refund_success` 前缀，不为巡检新增 `(merchant_id, status, success_at)` 索引 |
+
+新增反向用例：空串渠道不进入 `incompleteChannels` 且跑批不 `PARTIAL`；只有 `MERCHANT_MISMATCH`/`PROCESSING` 事件的渠道不判缺失；流水落在相邻业务日但已匹配的渠道不留下永久 `PARTIAL`；巡检按商户每轮只统计一次。

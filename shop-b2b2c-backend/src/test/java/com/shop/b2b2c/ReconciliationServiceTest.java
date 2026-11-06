@@ -183,6 +183,67 @@ class ReconciliationServiceTest {
     }
 
     @Test
+    void blankChannelIsNotTreatedAsMissingChannel() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        TradeRefund blankChannel = successfulRefund("RF-4", "", new BigDecimal("10.00"), BigDecimal.ZERO);
+        blankChannel.setChannel("");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(refundMapper.findSuccessfulRefundsByPeriod(1L, from, to)).thenReturn(List.of(blankChannel));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        // 空串渠道不是真实渠道：不能进入差集，否则该店每天 PARTIAL 并最终错误转 MANUAL。
+        assertEquals("", result.get("incompleteChannels"));
+    }
+
+    @Test
+    void nonStatementEventStatusesDoNotMarkChannelIncomplete() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PaymentEvent merchantMismatch = successEvent("SN-MM", new BigDecimal("10.00"));
+        merchantMismatch.setId(3L);
+        merchantMismatch.setChannel("ALIPAY");
+        merchantMismatch.setEventStatus("MERCHANT_MISMATCH");
+        PaymentEvent processing = successEvent("SN-PR", new BigDecimal("10.00"));
+        processing.setId(4L);
+        processing.setChannel("UNIONPAY");
+        processing.setEventStatus("PROCESSING");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to))
+                .thenReturn(List.of(merchantMismatch, processing));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        // 他人商户/未确认的事件天然不会产生本商户流水，不得据此判断渠道未导入。
+        assertEquals("", result.get("incompleteChannels"));
+    }
+
+    @Test
+    void crossWindowMatchedRefundChannelIsNotIncomplete() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        TradeRefund refund = successfulRefund("RF-5", "WX-R5", new BigDecimal("50.00"), BigDecimal.ZERO);
+        PaymentChannelStatement adjacent = statement("WECHAT", "WX-R5", "SN-R1", new BigDecimal("50.00"));
+        adjacent.setId(9L);
+        adjacent.setTradeStatus("REFUND");
+        adjacent.setTradeTime(LocalDateTime.of(2026, 10, 31, 23, 0));
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(refundMapper.findSuccessfulRefundsByPeriod(1L, from, to)).thenReturn(List.of(refund));
+        when(statementMapper.findByChannelAndTradeNo("WECHAT", "WX-R5"))
+                .thenReturn(Optional.of(adjacent));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        // 流水落在相邻业务日但已匹配：该渠道已导入，不能留下永久 PARTIAL。
+        assertEquals("", result.get("incompleteChannels"));
+    }
+
+    @Test
     void dailyWindowDoesNotValidateMonthlySettlementBatchTotals() {
         LocalDateTime from = LocalDateTime.of(2026, 10, 5, 0, 0);
         LocalDateTime to = LocalDateTime.of(2026, 10, 6, 0, 0);

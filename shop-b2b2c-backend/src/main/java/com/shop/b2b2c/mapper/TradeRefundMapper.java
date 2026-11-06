@@ -77,12 +77,14 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
     }
 
     /**
-     * 巡检：统计 status='SUCCESS' 但 success_at 缺失的退款。
+     * 巡检：统计指定商户 status='SUCCESS' 但 success_at 缺失的退款。
      * 产生路径为旧数据（本卡上线前已成功）或异常迁移；这类记录不会进入 T+1 success_at 窗口，
-     * 跑批必须告警并由人工按补数方案回填，不能当作“对账无差异”。
+     * 跑批必须在每店每轮只统计一次并告警，由人工按补数方案回填，不能当作“对账无差异”。
+     * 走 (merchant_id, success_at) 索引的 merchant_id 前缀；不为巡检额外加 status 前导索引。
      */
-    default long countSuccessWithoutSuccessAt() {
+    default long countSuccessWithoutSuccessAt(Long merchantId) {
         Long count = selectCount(new LambdaQueryWrapper<TradeRefund>()
+                .eq(TradeRefund::getMerchantId, merchantId)
                 .eq(TradeRefund::getStatus, "SUCCESS")
                 .isNull(TradeRefund::getSuccessAt));
         return count == null ? 0L : count;

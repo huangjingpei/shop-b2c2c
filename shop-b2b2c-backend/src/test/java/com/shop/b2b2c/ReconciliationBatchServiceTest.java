@@ -130,6 +130,24 @@ class ReconciliationBatchServiceTest {
     }
 
     @Test
+    void noMissingChannelsResultStaysSuccessEvenWithLocalDocs() {
+        singleStore();
+        ReconciliationBatchRun run = run("PENDING", 0, DATE, MERCHANT);
+        when(runMapper.findByDateAndMerchant(DATE, MERCHANT)).thenReturn(Optional.of(run));
+        when(runMapper.markRunning(any(), anyInt(), any(), any())).thenReturn(1);
+        stubFinish(1);
+        // 本地事件/退款存在且当期流水已导入，差集为空（空串渠道不计入），不得误标 PARTIAL。
+        when(reconciliationService.reconcile(eq(MERCHANT), any(), any(), eq(OPERATOR)))
+                .thenReturn(result(1, 2, 1, 0, 0));
+
+        Map<String, Object> outcome = service().runRange(DATE, DATE, OPERATOR, null);
+
+        assertEquals(1, outcome.get("success"));
+        assertEquals(0, outcome.get("partial"));
+        assertEquals("SUCCESS", run.getStatus());
+    }
+
+    @Test
     void reconcileFailureBelowLimitStaysFailedForRetry() {
         singleStore();
         ReconciliationBatchRun run = run("PENDING", 0, DATE, MERCHANT);
@@ -289,6 +307,8 @@ class ReconciliationBatchServiceTest {
         assertEquals(3, outcome.get("runs"));
         assertEquals(1, outcome.get("retryProcessed"));
         verify(reconciliationService, times(1)).retry(eq(10L), eq(OPERATOR), any());
+        // success_at 巡检按商户每轮只统计一次，不随 3 个业务日重复统计。
+        verify(reconciliationService, times(1)).countSuccessWithoutSuccessAt(MERCHANT);
         verify(runMapper).addRetryTally(eq(day3.getId()), eq(1), eq(0), eq(0), any());
     }
 

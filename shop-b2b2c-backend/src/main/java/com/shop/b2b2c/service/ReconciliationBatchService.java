@@ -97,6 +97,12 @@ public class ReconciliationBatchService {
         }
         LocalDate executionDate = LocalDate.now(BUSINESS_ZONE);
         for (Long storeId : merchants) {
+            // 巡检按商户每轮只统计一次，不能放进业务日循环重复全表统计。
+            long successAtMissing = reconciliationService.countSuccessWithoutSuccessAt(storeId);
+            if (successAtMissing > 0) {
+                log.warn("商户 {} 有 success_at 缺失的 SUCCESS 退款 {} 笔，T+1 不会扫描，需人工补数",
+                        storeId, successAtMissing);
+            }
             RetryResult retry = autoRetry(storeId, executionDate, operator, runStartedAt);
             summary.retryProcessed += retry.processed;
             summary.retryFailed += retry.failed;
@@ -167,11 +173,6 @@ public class ReconciliationBatchService {
             int refreshed = intOf(result, "refreshed");
             String incompleteChannels = String.valueOf(
                     result.getOrDefault("incompleteChannels", ""));
-            int successAtMissing = intOf(result, "successAtMissing");
-            if (successAtMissing > 0) {
-                // 巡检告警：这些成功退款不会进入 success_at 窗口，不能当作“对账无差异”。
-                log.warn("success_at 缺失的 SUCCESS 退款 {} 笔，T+1 不会扫描，需人工补数", successAtMissing);
-            }
             String status;
             String lastError = null;
             if (!incompleteChannels.isBlank()) {

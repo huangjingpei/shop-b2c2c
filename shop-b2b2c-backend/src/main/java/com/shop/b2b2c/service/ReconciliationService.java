@@ -90,6 +90,16 @@ public class ReconciliationService {
     public static final String PLATFORM_SETTLEMENT_MISMATCH = "PLATFORM_SETTLEMENT_MISMATCH";
     public static final String PLATFORM_SETTLEMENT_BATCH_MISSING = "PLATFORM_SETTLEMENT_BATCH_MISSING";
 
+    /**
+     * 应当产生本商户渠道流水的支付事件状态，仅用于“渠道是否已导入”判定。
+     * 保守取资金已到本商户渠道账户的三种：SUCCESS、DUPLICATE_PAYMENT、LATE_PAYMENT。
+     * 不参与该判定但仍按各自逻辑处理的：PROCESSING（结果未确认）、MANUAL_REVIEW（结果未知）、
+     * MERCHANT_MISMATCH（他人商户）、CURRENCY_MISMATCH（币种异常）、AMOUNT_MISMATCH（金额异常待核）、
+     * FULFILLMENT_FAILED（既可能是已支付后履约失败，也可能是明确未支付/查无此单，语义混合）。
+     */
+    private static final Set<String> STATEMENT_EXPECTED_EVENT_STATUSES =
+            Set.of("SUCCESS", DUPLICATE_PAYMENT, "LATE_PAYMENT");
+
     /** 财务基线：同一差异自动重试上限；达到上限仍不一致必须转人工，不得无限重试。 */
     public static final int MAX_RETRY_COUNT = 3;
     public static final long SYSTEM_OPERATOR_ID = 0L;
@@ -158,6 +168,14 @@ public class ReconciliationService {
         return reconcile(merchantId, from, to, null);
     }
 
+    /**
+     * T+1 巡检入口：按商户统计 success_at 缺失的成功退款。
+     * 调用方应在每店每轮跑批只调用一次，不能放进“店铺 × 业务日”循环重复统计。
+     */
+    public long countSuccessWithoutSuccessAt(Long merchantId) {
+        return refundMapper.countSuccessWithoutSuccessAt(merchantId);
+    }
+
     @Transactional
     public Map<String, Object> reconcile(Long merchantId, LocalDateTime from, LocalDateTime to, Long operatorId) {
         Counts counts = new Counts();
@@ -166,8 +184,9 @@ public class ReconciliationService {
         Set<String> pairedStatements = new HashSet<>();
         Set<String> channelsWithStatements = new HashSet<>();
         Set<String> channelsWithLocalDocs = new HashSet<>();
+        Set<String> channelsWithMatchedStatements = new HashSet<>();
         for (PaymentChannelStatement statement : statements) {
-            if (statement.getChannel() != null) {
+            if (statement.getChannel() != null && !statement.getChannel().isBlank()) {
                 channelsWithStatements.add(statement.getChannel());
             }
         }
@@ -191,7 +210,10 @@ public class ReconciliationService {
 
         List<PaymentEvent> events = eventMapper.findByMerchantAndPeriod(merchantId, from, to);
         for (PaymentEvent event : events) {
-            if (event.getChannel() != null) {
+            // 只把“应当产生本商户渠道流水”的事件计入缺失渠道判定；非成功/他人商户/结果未知事件
+            // 天然不会出现在本商户流水中，计入会导致永久 PARTIAL 并错误升级 MANUAL。
+            if (event.getChannel() != null && !event.getChannel().isBlank()
+                    && STATEMENT_EXPECTED_EVENT_STATUSES.contains(event.getEventStatus())) {
                 channelsWithLocalDocs.add(event.getChannel());
             }
             TradeOrder order = orderMapper.findByOrderSn(event.getOrderSn()).orElse(null);
@@ -242,7 +264,8 @@ public class ReconciliationService {
                 Optional<PaymentChannelStatement> statement = statementMapper.findByChannelAndTradeNo(
                         event.getChannel(), event.getPayTradeNo());
                 if (statement.isPresent()) {
-                    // 流水在相邻业务日：不按单边账处理，按跨天归属分类。
+                    // 流水在相邻业务日：不按单边账处理，按跨天归属分类；该渠道视为已导入。
+                    channelsWithMatchedStatements.add(event.getChannel());
                     compareStatementAndEvent(merchantId, statement.get(), event, businessDate, operatorId, counts);
                 } else if (statementMapper.countByMerchantChannelPeriod(merchantId, event.getChannel(), from, to) > 0) {
                     addDifference("EV|" + event.getId() + "|ST", merchantId, event.getChannel(),
@@ -257,11 +280,11 @@ public class ReconciliationService {
         List<TradeRefund> refunds = refundMapper.findSuccessfulRefundsByPeriod(merchantId, from, to);
         Set<String> pairedRefunds = new HashSet<>();
         for (TradeRefund refund : refunds) {
-            if (refund.getChannel() != null) {
+            if (refund.getChannel() != null && !refund.getChannel().isBlank()) {
                 channelsWithLocalDocs.add(refund.getChannel());
             }
             reconcileRefund(merchantId, refund, businessDate, operatorId, counts, pairedRefunds,
-                    channelsWithStatements);
+                    channelsWithStatements, channelsWithMatchedStatements);
         }
         for (PaymentChannelStatement statement : statements) {
             if (!"REFUND".equals(statement.getTradeStatus())) {
@@ -330,12 +353,11 @@ public class ReconciliationService {
         // 但必须把缺失渠道返回给跑批标记 PARTIAL，不能因为总流水数不为 0 就静默通过。
         List<String> incompleteChannels = new ArrayList<>();
         for (String channel : channelsWithLocalDocs) {
-            if (!channelsWithStatements.contains(channel)) {
+            if (!channelsWithStatements.contains(channel)
+                    && !channelsWithMatchedStatements.contains(channel)) {
                 incompleteChannels.add(channel);
             }
         }
-        // 巡检：success_at 缺失的成功退款不会进入本窗口，必须由跑批告警并人工补数。
-        long successAtMissing = refundMapper.countSuccessWithoutSuccessAt();
 
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("added", counts.added);
@@ -347,7 +369,6 @@ public class ReconciliationService {
         result.put("batches", batches.size());
         result.put("platformSettlements", settlements.size());
         result.put("incompleteChannels", String.join(",", incompleteChannels));
-        result.put("successAtMissing", successAtMissing);
         result.put("businessDate", businessDate.toString());
         return result;
     }
@@ -511,7 +532,8 @@ public class ReconciliationService {
     }
 
     private void reconcileRefund(Long merchantId, TradeRefund refund, LocalDate fallbackDate, Long operatorId,
-                                 Counts counts, Set<String> pairedRefunds, Set<String> channelsWithStatements) {
+                                 Counts counts, Set<String> pairedRefunds, Set<String> channelsWithStatements,
+                                 Set<String> channelsWithMatchedStatements) {
         String refundNo = refund.getChannelRefundNo();
         LocalDate refundDate = refundBusinessDate(refund, null, fallbackDate);
         // 与支付事件侧一致的流水门禁：只有该渠道当期已导入流水时才判退款单边账；
@@ -541,6 +563,8 @@ public class ReconciliationService {
             } else {
                 pairedRefunds.add(pairKey(refund.getChannel(), refundNo));
                 refundStatementFound = true;
+                // 流水落在相邻业务日：该渠道已导入，不能因本窗口无流水而永久 PARTIAL。
+                channelsWithMatchedStatements.add(refund.getChannel());
                 refundDate = refundBusinessDate(refund, statement.get(), fallbackDate);
                 compareRefundAndStatement(merchantId, refund, statement.get(), refundDate, operatorId, counts);
             }
