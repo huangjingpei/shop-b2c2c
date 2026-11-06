@@ -202,6 +202,78 @@ public class AlipayPaymentChannelAdapter implements PaymentChannelAdapter {
         }
     }
 
+    @Override
+    public PaymentChannelDTOs.RefundResult refundPayment(PaymentChannelDTOs.RefundCommand command) {
+        requireTradingConfig();
+        requireRefundMerchantChannelId(command);
+        Map<String, Object> biz = new LinkedHashMap<>();
+        if (command.getChannelTradeNo() != null && !command.getChannelTradeNo().isBlank()) {
+            biz.put("trade_no", command.getChannelTradeNo());
+        } else {
+            biz.put("out_trade_no", command.getOrderSn());
+        }
+        biz.put("refund_amount", command.getRefundAmount().setScale(2, RoundingMode.HALF_UP).toPlainString());
+        biz.put("out_request_no", command.getRefundNo());
+        if (command.getReason() != null && !command.getReason().isBlank()) {
+            biz.put("refund_reason", truncate(command.getReason(), 256));
+        }
+        Map<String, String> params = commonParams("alipay.trade.refund", null);
+        try {
+            params.put("biz_content", objectMapper.writeValueAsString(biz));
+        } catch (Exception e) {
+            throw new BusinessException(500, "支付宝退款报文生成失败");
+        }
+        JsonNode node = responseNode(postSigned(params), "alipay_trade_refund_response");
+        BigDecimal refundFee = node.hasNonNull("refund_fee")
+                ? new BigDecimal(node.get("refund_fee").asText()).setScale(2, RoundingMode.HALF_UP) : null;
+        return PaymentChannelDTOs.RefundResult.builder()
+                .channel(PayChannel.ALIPAY)
+                .refundNo(command.getRefundNo())
+                .channelRefundNo(text(node, "trade_no"))
+                .status("SUCCESS") // 支付宝退款接口同步返回成功即已受理并完成资金变更
+                .refundAmount(refundFee)
+                .rawPayload(node.toString())
+                .build();
+    }
+
+    @Override
+    public PaymentChannelDTOs.RefundResult queryRefund(PaymentChannelDTOs.RefundCommand command) {
+        requireTradingConfig();
+        requireRefundMerchantChannelId(command);
+        Map<String, Object> biz = new LinkedHashMap<>();
+        if (command.getChannelTradeNo() != null && !command.getChannelTradeNo().isBlank()) {
+            biz.put("trade_no", command.getChannelTradeNo());
+        } else {
+            biz.put("out_trade_no", command.getOrderSn());
+        }
+        biz.put("out_request_no", command.getRefundNo());
+        Map<String, String> params = commonParams("alipay.trade.fastpay.refund.query", null);
+        try {
+            params.put("biz_content", objectMapper.writeValueAsString(biz));
+        } catch (Exception e) {
+            throw new BusinessException(500, "支付宝退款查单报文生成失败");
+        }
+        JsonNode node = responseNode(postSigned(params), "alipay_trade_fastpay_refund_query_response");
+        String refundStatus = text(node, "refund_status");
+        String status = "REFUND_SUCCESS".equals(refundStatus) ? "SUCCESS" : "PROCESSING";
+        return PaymentChannelDTOs.RefundResult.builder()
+                .channel(PayChannel.ALIPAY)
+                .refundNo(command.getRefundNo())
+                .channelRefundNo(text(node, "trade_no"))
+                .status(status)
+                .refundAmount(node.hasNonNull("refund_amount")
+                        ? new BigDecimal(node.get("refund_amount").asText()).setScale(2, RoundingMode.HALF_UP) : null)
+                .rawPayload(node.toString())
+                .build();
+    }
+
+    private void requireRefundMerchantChannelId(PaymentChannelDTOs.RefundCommand command) {
+        String sellerId = command.getMerchantChannelId();
+        if (sellerId == null || sellerId.isBlank()) {
+            throw new BusinessException(409, "商家未登记支付宝收款账号，无法退款");
+        }
+    }
+
     private Map<String, String> commonParams(String method, String notifyUrl) {
         Map<String, String> params = new TreeMap<>();
         params.put("app_id", properties.getAlipay().getAppId());

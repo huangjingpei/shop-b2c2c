@@ -3,6 +3,7 @@
 用途：商家订单查询、推单、实物发货、定制服务履约及已存海报按需预览页面。
 维护注意：推单重试须保留幂等键，成功才重置；人工履约仅对类型3且PAID展示，类型2缺卡不能用人工交付替代；按钮可见性不替代服务端租户/状态验证。列表不再含海报正文；点击经本店接口读取，关闭/卸载使旧请求失效，修改规则同步工具单元测试。
 T28：卡密详情请求带序号，切换订单或关闭弹窗后迟到的旧响应不得覆盖当前弹窗内容。
+T33：新增店长/超管“退款”入口，调用 /merchant/refunds/orders/{orderSn} 并强制 Idempotency-Key；可退余额按 payAmount-refundedAmount 展示，但最终以服务端额度与服务费快照校验为准，“处理中”不等于已退款。
 -->
 <template>
   <div class="merchant-orders">
@@ -156,6 +157,13 @@ T28：卡密详情请求带序号，切换订单或关闭弹窗后迟到的旧�
             </span>
             <span v-else style="font-size: 12px; color: #94a3b8;">待付款</span>
 
+            <!-- T33 商家原路退款：仅店长/超管且订单可退时展示 -->
+            <div v-if="canRefundOrder(row.order)" style="margin-top: 4px;">
+              <el-button type="danger" link size="small" @click="openRefundDialog(row.order)">
+                退款
+              </el-button>
+            </div>
+
             <!-- 查看代付海报按钮 -->
             <div v-if="canPreviewPoster(row.order)" style="margin-top: 4px;">
               <el-button type="info" link size="small" @click="viewPoster(row.order)">
@@ -169,6 +177,24 @@ T28：卡密详情请求带序号，切换订单或关闭弹窗后迟到的旧�
         <el-button :loading="loading" @click="loadOrders(true)">加载更多（已显示 {{ orders.length }} / {{ total }}）</el-button>
       </div>
     </el-card>
+
+    <!-- T33 订单退款弹窗：商家用自己的渠道账户原路退回，平台只冲正技术服务费 -->
+    <el-dialog v-model="refundVisible" title="订单退款（原路退回）" width="460px">
+      <el-form label-width="90px">
+        <el-form-item label="订单号">{{ currentOrder?.orderSn }}</el-form-item>
+        <el-form-item label="可退金额">{{ refundRemaining.toFixed(2) }}</el-form-item>
+        <el-form-item label="退款金额" required>
+          <el-input v-model="refundForm.amount" placeholder="最多两位小数" />
+        </el-form-item>
+        <el-form-item label="退款原因">
+          <el-input v-model="refundForm.reason" type="textarea" :rows="2" placeholder="选填，最多256字" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="refundVisible = false">取消</el-button>
+        <el-button type="danger" :loading="refunding" :disabled="refunding" @click="handleRefund">确认退款</el-button>
+      </template>
+    </el-dialog>
 
     <!-- 1. 实物订单快递发货弹窗 -->
     <el-dialog v-model="deliverVisible" title="实物订单录入运单发货" width="440px">
@@ -403,6 +429,58 @@ const deliverForm = ref({
   logisticsCompany: '顺丰速运',
   trackingNumber: ''
 })
+
+// T33 退款：同一退款申请重试复用幂等键，不同金额或原因自动换新键
+const refundSubmission = createIdempotentSubmission()
+const refundVisible = ref(false)
+const refunding = ref(false)
+const refundRemaining = ref(0)
+const refundForm = ref({ amount: '', reason: '' })
+
+const canRefundOrder = (order) => {
+  if (!isManager.value) return false
+  if (!['PAID', 'SHIPPED', 'COMPLETED'].includes(order.orderStatus)) return false
+  const remaining = Number(order.payAmount || 0) - Number(order.refundedAmount || 0)
+  return remaining > 0
+}
+
+const openRefundDialog = (order) => {
+  currentOrder.value = order
+  refundRemaining.value = Math.max(0, Number(order.payAmount || 0) - Number(order.refundedAmount || 0))
+  refundForm.value = { amount: refundRemaining.value.toFixed(2), reason: '' }
+  refundVisible.value = true
+}
+
+const handleRefund = async () => {
+  if (refunding.value) return
+  const amountText = String(refundForm.value.amount || '').trim()
+  if (!/^\d+(\.\d{1,2})?$/.test(amountText) || Number(amountText) <= 0) {
+    ElMessage.warning('请输入大于0且最多两位小数的退款金额')
+    return
+  }
+  if (Number(amountText) > refundRemaining.value) {
+    ElMessage.warning(`退款金额不能超过可退余额 ${refundRemaining.value.toFixed(2)}`)
+    return
+  }
+  const prepared = refundSubmission.prepare({
+    amount: Number(amountText),
+    reason: refundForm.value.reason.trim()
+  })
+  refunding.value = true
+  try {
+    await request.post(`/merchant/refunds/orders/${currentOrder.value.orderSn}`, prepared.body, {
+      headers: prepared.headers
+    })
+    refundSubmission.complete()
+    ElMessage.success('退款已受理，状态为“处理中”时需等待渠道确认')
+    refundVisible.value = false
+    reloadOrders()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '退款失败，请稍后重试')
+  } finally {
+    refunding.value = false
+  }
+}
 
 // 线上服务凭证
 const virtualVoucherText = ref('')

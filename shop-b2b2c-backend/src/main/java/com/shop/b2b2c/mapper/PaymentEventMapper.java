@@ -32,6 +32,17 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
     }
 
     /**
+     * T33：查询重复付款补偿队列。merchantId 为空时（平台超管）返回全部商户记录。
+     */
+    @Select("<script>"
+            + "SELECT * FROM payment_event WHERE event_status = 'DUPLICATE_PAYMENT' "
+            + "<if test='merchantId != null'>AND merchant_id = #{merchantId} </if>"
+            + "ORDER BY id DESC LIMIT #{limit}"
+            + "</script>")
+    List<PaymentEvent> findDuplicatePayments(@Param("merchantId") Long merchantId,
+                                             @Param("limit") int limit);
+
+    /**
      * T05 补偿扫描：事件已 SUCCESS，但关联订单仍不是 PAID/COMPLETED/SHIPPED。
      * INNER JOIN 排除订单缺失的历史脏数据，避免自动任务无休止重试。
      */

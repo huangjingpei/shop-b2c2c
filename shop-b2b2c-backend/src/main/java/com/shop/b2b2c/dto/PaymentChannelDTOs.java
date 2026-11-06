@@ -93,4 +93,43 @@ public class PaymentChannelDTOs {
         private String accessToken;
         private String payChannel;
     }
+
+    /**
+     * 渠道退款命令：source=ORDER 时按订单原交易退款；source=DUPLICATE_PAYMENT 时按重复付款流水号退款。
+     */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class RefundCommand {
+        private String orderSn;
+        private String refundNo;
+        private String channelTradeNo; // 重复付款补偿时必须传渠道原流水号；普通退款可为空
+        private String merchantChannelId;
+        private BigDecimal payAmount;
+        private BigDecimal refundAmount;
+        private String reason;
+    }
+
+    /** 渠道退款结果；PROCESSING 需后续查单确认，不能直接标记订单已退款。 */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class RefundResult {
+        private String channel;
+        private String refundNo;
+        private String channelRefundNo;
+        private String status; // SUCCESS / PROCESSING / FAILED
+        private BigDecimal refundAmount;
+        private String rawPayload;
+
+        public boolean isSuccess() {
+            return "SUCCESS".equals(status);
+        }
+
+        public boolean isProcessing() {
+            return "PROCESSING".equals(status);
+        }
+    }
 }

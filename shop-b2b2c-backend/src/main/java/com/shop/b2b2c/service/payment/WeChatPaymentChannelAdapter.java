@@ -260,6 +260,103 @@ public class WeChatPaymentChannelAdapter implements PaymentChannelAdapter {
         }
     }
 
+    @Override
+    public PaymentChannelDTOs.RefundResult refundPayment(PaymentChannelDTOs.RefundCommand command) {
+        requireTradingConfig();
+        String mchid = requireRefundMerchantChannelId(command);
+        Map<String, Object> amount = new LinkedHashMap<>();
+        amount.put("refund", toFen(command.getRefundAmount()));
+        amount.put("total", toFen(command.getPayAmount()));
+        amount.put("currency", "CNY");
+        Map<String, Object> body = new LinkedHashMap<>();
+        if (command.getChannelTradeNo() != null && !command.getChannelTradeNo().isBlank()) {
+            body.put("transaction_id", command.getChannelTradeNo());
+        } else {
+            body.put("out_trade_no", command.getOrderSn());
+        }
+        body.put("out_refund_no", command.getRefundNo());
+        if (command.getReason() != null && !command.getReason().isBlank()) {
+            body.put("reason", truncate(command.getReason(), 80));
+        }
+        body.put("amount", amount);
+        String payload;
+        try {
+            payload = objectMapper.writeValueAsString(body);
+        } catch (Exception e) {
+            throw new BusinessException(500, "微信退款报文生成失败");
+        }
+        String path = "/v3/refund/domestic/refunds";
+        HttpHeaders headers = signedHeaders(HttpMethod.POST, path, payload, mchid);
+        try {
+            String response = restTemplate.postForObject(properties.getWechat().getApiBase() + path,
+                    new HttpEntity<>(payload, headers), String.class);
+            return parseRefundResponse(response, command.getRefundNo());
+        } catch (BusinessException e) {
+            throw e;
+        } catch (RestClientException e) {
+            ChannelHttpClient.handleRestFailure("微信支付", e);
+            return null;
+        } catch (Exception e) {
+            throw new BusinessException(502, "微信退款响应解析失败");
+        }
+    }
+
+    @Override
+    public PaymentChannelDTOs.RefundResult queryRefund(PaymentChannelDTOs.RefundCommand command) {
+        requireTradingConfig();
+        String mchid = requireRefundMerchantChannelId(command);
+        String path = "/v3/refund/domestic/refunds/"
+                + UriUtils.encodePathSegment(command.getRefundNo(), StandardCharsets.UTF_8);
+        HttpHeaders headers = signedHeaders(HttpMethod.GET, path, "", mchid);
+        try {
+            String response = restTemplate.exchange(properties.getWechat().getApiBase() + path,
+                    HttpMethod.GET, new HttpEntity<>(headers), String.class).getBody();
+            return parseRefundResponse(response, command.getRefundNo());
+        } catch (BusinessException e) {
+            throw e;
+        } catch (RestClientException e) {
+            ChannelHttpClient.handleRestFailure("微信支付", e);
+            return null;
+        } catch (Exception e) {
+            throw new BusinessException(502, "微信退款查单响应解析失败");
+        }
+    }
+
+    private PaymentChannelDTOs.RefundResult parseRefundResponse(String response, String refundNo) {
+        try {
+            JsonNode node = objectMapper.readTree(response == null ? "{}" : response);
+            String channelStatus = text(node, "status");
+            String status = "SUCCESS".equals(channelStatus) ? "SUCCESS"
+                    : "PROCESSING".equals(channelStatus) ? "PROCESSING" : "FAILED";
+            BigDecimal refundAmount = null;
+            JsonNode amount = node.get("amount");
+            if (amount != null && amount.get("refund") != null) {
+                refundAmount = new BigDecimal(amount.get("refund").asLong())
+                        .divide(new BigDecimal("100"), 2, RoundingMode.UNNECESSARY);
+            }
+            return PaymentChannelDTOs.RefundResult.builder()
+                    .channel(PayChannel.WECHAT)
+                    .refundNo(text(node, "out_refund_no") == null ? refundNo : text(node, "out_refund_no"))
+                    .channelRefundNo(text(node, "refund_id"))
+                    .status(status)
+                    .refundAmount(refundAmount)
+                    .rawPayload(response)
+                    .build();
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException(502, "微信退款响应解析失败");
+        }
+    }
+
+    private String requireRefundMerchantChannelId(PaymentChannelDTOs.RefundCommand command) {
+        String mchid = command.getMerchantChannelId();
+        if (mchid == null || mchid.isBlank()) {
+            throw new BusinessException(409, "商家未登记微信支付商户号，无法退款");
+        }
+        return mchid.trim();
+    }
+
     private void requireTradingConfig() {
         ChannelHttpClient.ensureConfigured(enabled(), "微信支付渠道未启用");
         PaymentChannelProperties.WeChat cfg = properties.getWechat();

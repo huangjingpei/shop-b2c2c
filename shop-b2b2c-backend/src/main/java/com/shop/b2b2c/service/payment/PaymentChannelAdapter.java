@@ -5,6 +5,7 @@
  *  1. parseCallback 必须先完成验签与报文解密，再返回渠道事实；任何未验签数据不得进入落账链路。
  *  2. create/query/close 在渠道未启用或凭据缺失时必须明确拒绝，不得返回伪造成功。
  *  3. 适配器不写订单、不写 payment_event；本地状态只由 PaymentGatewayService + PaymentEventService 变更。
+ *  4. T33：refund/queryRefund 只返回渠道事实，不冲正费用、不改订单；PROCESSING 必须由退款对账任务再确认。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -31,4 +32,8 @@ public interface PaymentChannelAdapter {
     PaymentChannelDTOs.ChannelQueryResult queryPayment(PaymentChannelDTOs.PaymentCreateCommand command);
 
     void closePayment(PaymentChannelDTOs.PaymentCreateCommand command);
+
+    PaymentChannelDTOs.RefundResult refundPayment(PaymentChannelDTOs.RefundCommand command);
+
+    PaymentChannelDTOs.RefundResult queryRefund(PaymentChannelDTOs.RefundCommand command);
 }

@@ -150,6 +150,9 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `commission_rate` DECIMAL(5,2) NOT NULL DEFAULT 3.00 COMMENT '抽佣比率(%)',
   `commission_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '平台抽佣服务费',
   `merchant_settle_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '商户应收净货款',
+  `refunded_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T33 已退款商品金额（含处理中预占）',
+  `fee_refunded_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T33 已冲正/预占技术服务费（含处理中预占）',
+  `fee_status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'T33 服务费状态 PENDING/PARTIAL_REVERSED/REVERSED',
   `order_status` VARCHAR(32) NOT NULL DEFAULT 'UNPAID' COMMENT 'UNPAID, PAID, SHIPPED, COMPLETED, REFUNDED, CLOSED',
   `sharing_status` VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING, PROCESSING, FINISHED, FAILED',
   `payment_channel` VARCHAR(32) DEFAULT 'WECHAT' COMMENT 'WECHAT, ALIPAY; T32 起只写真实渠道',
@@ -191,6 +194,36 @@ CREATE TABLE IF NOT EXISTS `trade_order_item` (
   PRIMARY KEY (`id`),
   KEY `idx_order_sn` (`order_sn`),
   CONSTRAINT `chk_item_quantity` CHECK (`quantity` > 0 AND `price` >= 0.00 AND `subtotal` >= 0.00)
+);
+
+-- 9.1 订单退款与重复付款补偿记录表（T33）
+CREATE TABLE IF NOT EXISTS `trade_refund` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `refund_no` VARCHAR(64) NOT NULL,
+  `order_id` BIGINT NOT NULL,
+  `order_sn` VARCHAR(64) NOT NULL,
+  `merchant_id` BIGINT NOT NULL,
+  `collection_mode` VARCHAR(24) NOT NULL DEFAULT 'MERCHANT_DIRECT',
+  `channel` VARCHAR(32) NOT NULL,
+  `source` VARCHAR(24) NOT NULL DEFAULT 'ORDER',
+  `source_event_id` BIGINT DEFAULT NULL,
+  `idempotency_key` VARCHAR(64) NOT NULL,
+  `refund_amount` DECIMAL(10,2) NOT NULL,
+  `fee_refund_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+  `status` VARCHAR(24) NOT NULL DEFAULT 'PROCESSING',
+  `channel_trade_no` VARCHAR(128) DEFAULT NULL,
+  `channel_refund_no` VARCHAR(128) DEFAULT NULL,
+  `reason` VARCHAR(256) DEFAULT NULL,
+  `failure_reason` VARCHAR(256) DEFAULT NULL,
+  `requested_by` BIGINT DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_refund_no` (`refund_no`),
+  UNIQUE KEY `uk_refund_order_key` (`order_id`, `idempotency_key`),
+  UNIQUE KEY `uk_refund_source_event` (`source_event_id`),
+  KEY `idx_refund_order` (`order_id`),
+  KEY `idx_refund_status` (`status`)
 );
 
 -- 10. 代付成功页【我也想开店】平台运营广告配置表

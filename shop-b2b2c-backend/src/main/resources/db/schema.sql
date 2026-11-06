@@ -173,6 +173,9 @@ CREATE TABLE IF NOT EXISTS `trade_order` (
   `commission_rate` DECIMAL(5,2) NOT NULL DEFAULT 3.00 COMMENT '抽佣比率(%)',
   `commission_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '平台抽佣服务费',
   `merchant_settle_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '商户应收净货款',
+  `refunded_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T33 已退款商品金额（含渠道处理中预占）',
+  `fee_refunded_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT 'T33 已冲正/预占技术服务费（含处理中预占）',
+  `fee_status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'T33 服务费状态 PENDING/PARTIAL_REVERSED/REVERSED',
   `order_status` VARCHAR(32) NOT NULL DEFAULT 'UNPAID' COMMENT 'UNPAID, PAID, SHIPPED, COMPLETED, REFUNDED, CLOSED',
   `sharing_status` VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING, PROCESSING, FINISHED, FAILED',
   `payment_channel` VARCHAR(32) NOT NULL DEFAULT 'WECHAT' COMMENT 'WECHAT, ALIPAY; T32 起只写真实渠道，不再写 A/B/C',
@@ -228,6 +231,39 @@ CREATE TABLE IF NOT EXISTS `trade_order_item` (
   CONSTRAINT fk_item_product FOREIGN KEY (`product_id`) REFERENCES `product` (`id`),
   CONSTRAINT fk_item_sku FOREIGN KEY (`sku_id`) REFERENCES `product_sku` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单明细表';
+
+-- 9.1 订单退款与重复付款补偿记录表（T33）
+CREATE TABLE IF NOT EXISTS `trade_refund` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `refund_no` VARCHAR(64) NOT NULL COMMENT '平台退款单号',
+  `order_id` BIGINT UNSIGNED NOT NULL,
+  `order_sn` VARCHAR(64) NOT NULL,
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `collection_mode` VARCHAR(24) NOT NULL DEFAULT 'MERCHANT_DIRECT' COMMENT 'MERCHANT_DIRECT/PLATFORM_COLLECT',
+  `channel` VARCHAR(32) NOT NULL COMMENT 'WECHAT/ALIPAY',
+  `source` VARCHAR(24) NOT NULL DEFAULT 'ORDER' COMMENT 'ORDER=商品退款; DUPLICATE_PAYMENT=重复付款补偿',
+  `source_event_id` BIGINT UNSIGNED DEFAULT NULL COMMENT '重复付款事件ID；普通退款为空',
+  `idempotency_key` VARCHAR(64) NOT NULL COMMENT '同一订单内的退款幂等键',
+  `refund_amount` DECIMAL(10,2) NOT NULL COMMENT '本次退款金额',
+  `fee_refund_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '本次按订单快照比例冲正的服务费',
+  `status` VARCHAR(24) NOT NULL DEFAULT 'PROCESSING' COMMENT 'PROCESSING/SUCCESS/FAILED',
+  `channel_trade_no` VARCHAR(128) DEFAULT NULL COMMENT '被退款的渠道原流水号',
+  `channel_refund_no` VARCHAR(128) DEFAULT NULL COMMENT '渠道退款流水号',
+  `reason` VARCHAR(256) DEFAULT NULL,
+  `failure_reason` VARCHAR(256) DEFAULT NULL,
+  `requested_by` BIGINT UNSIGNED DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_refund_no` (`refund_no`),
+  UNIQUE KEY `uk_refund_order_key` (`order_id`, `idempotency_key`),
+  UNIQUE KEY `uk_refund_source_event` (`source_event_id`),
+  KEY `idx_refund_order` (`order_id`),
+  KEY `idx_refund_status` (`status`),
+  KEY `idx_refund_merchant` (`merchant_id`, `created_at`),
+  CONSTRAINT `fk_refund_order` FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
+  CONSTRAINT `chk_refund_amount` CHECK (`refund_amount` > 0.00 AND `fee_refund_amount` >= 0.00)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单退款与重复付款补偿记录';
 
 -- 10. 代付成功页【我也想开店】平台运营广告配置表
 CREATE TABLE IF NOT EXISTS `platform_ad_config` (

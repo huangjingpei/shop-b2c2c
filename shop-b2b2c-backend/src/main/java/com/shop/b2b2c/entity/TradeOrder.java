@@ -2,6 +2,7 @@
  * 文件：TradeOrder.java
  * 用途：交易订单主表模型，保存金额、交易/代付状态及交付快照。
  * 维护注意：支付、取消、超时及履约写路径须共用订单行锁与事务；不能仅凭普通save实现幂等。peerStatus默认INIT并复用PeerStatus编码；未知旧值不自动转换或视作已预占，状态字段保持String兼容API。
+ * T33：refundedAmount/feeRefundedAmount 含处理中预占，不能据此单独把订单视为已退款；订单是否 REFUNDED 由 trade_refund 成功记录累计判断。
  */
 package com.shop.b2b2c.entity;
 
@@ -30,6 +31,9 @@ public class TradeOrder {
     private BigDecimal commissionRate;
     private BigDecimal commissionAmount;
     private BigDecimal merchantSettleAmount;
+    private BigDecimal refundedAmount; // T33 已退款商品金额（含处理中预占）
+    private BigDecimal feeRefundedAmount; // T33 已冲正/预占技术服务费
+    private String feeStatus = "PENDING"; // T33 PENDING/PARTIAL_REVERSED/REVERSED
     private String orderStatus = "UNPAID"; // UNPAID, PAID, SHIPPED, COMPLETED, REFUNDED, CLOSED
     private String sharingStatus = "PENDING"; // PENDING, PROCESSING, FINISHED, FAILED
     private String paymentChannel = "WECHAT";
