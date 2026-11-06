@@ -274,6 +274,7 @@ CREATE TABLE IF NOT EXISTS `trade_refund` (
   `fee_refund_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '本次按订单快照比例冲正的服务费',
   `fee_rounding_adjustment` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '尾差归属：本次退款吸收的服务费舍入差，正数表示比比例值多冲正、负数表示少冲正',
   `status` VARCHAR(24) NOT NULL DEFAULT 'PROCESSING' COMMENT 'PROCESSING/SUCCESS/FAILED',
+  `success_at` DATETIME NULL COMMENT '退款成功时点（不可变，仅 PROCESSING→SUCCESS 时写一次）；T+1 切日与结算冲正按此列，不能用会被改写的 updated_at',
   `channel_trade_no` VARCHAR(128) DEFAULT NULL COMMENT '被退款的渠道原流水号',
   `channel_refund_no` VARCHAR(128) DEFAULT NULL COMMENT '渠道退款流水号',
   `reason` VARCHAR(256) DEFAULT NULL,
@@ -288,6 +289,7 @@ CREATE TABLE IF NOT EXISTS `trade_refund` (
   KEY `idx_refund_order` (`order_id`),
   KEY `idx_refund_status` (`status`),
   KEY `idx_refund_merchant` (`merchant_id`, `created_at`),
+  KEY `idx_refund_success` (`merchant_id`, `success_at`),
   CONSTRAINT `fk_refund_order` FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
   CONSTRAINT `chk_refund_amount` CHECK (`refund_amount` > 0.00 AND `fee_refund_amount` >= 0.00)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单退款与重复付款补偿记录';
@@ -724,6 +726,7 @@ CREATE TABLE IF NOT EXISTS `reconciliation_batch_run` (
   `difference_added` INT NOT NULL DEFAULT 0 COMMENT '新增差异数',
   `difference_refreshed` INT NOT NULL DEFAULT 0 COMMENT '刷新已有未关闭差异数',
   `retry_processed` INT NOT NULL DEFAULT 0 COMMENT '自动重试处理数',
+  `retry_failed` INT NOT NULL DEFAULT 0 COMMENT '自动重试异常数；异常摘要追加到 last_error',
   `manual_escalated` INT NOT NULL DEFAULT 0 COMMENT '本次转人工数',
   `last_error` VARCHAR(512) NULL COMMENT '失败/部分完成原因；渠道流水未导入等缺口在此可见',
   `started_at` DATETIME NULL,

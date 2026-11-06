@@ -6,10 +6,12 @@
  *  2. 差异键稳定唯一，重复对账不重复入队；已 RESOLVED/IGNORED 的差异不再被自动改写。
  *  3. 渠道流水缺失只标记差异，不据此扣款或补记收入；重复付款沿用 T33 补偿流程。
  *  4. 金额统一 BigDecimal、scale=2，比较用 compareTo；分类由 ReconciliationClassifier 统一计算。
- *  5. T+1 以 Asia/Shanghai 业务日切日：渠道 trade_time、支付事件/平台代收 created_at、退款 updated_at；
- *     两侧存在但日期不同记 TIME_CROSS_DAY，不按单边账处理。
- *  6. 差异处理动作全部写 reconciliation_difference_audit；自动重试同一业务日只允许一次。
- *  7. 导出使用管理员/本店归属校验后的数据，CSV 转义逗号、引号与换行，避免公式注入。
+ *  5. T+1 以 Asia/Shanghai 业务日切日：渠道 trade_time、支付事件/平台代收 created_at、退款 success_at；
+ *     两侧存在但日期不同记 TIME_CROSS_DAY，不按单边账处理。success_at 不可变，禁止改用 updated_at。
+ *  6. 退款侧与支付事件侧共用“该渠道当日有流水”门禁：0 条流水时不批量生成单边账，交给跑批 PARTIAL。
+ *  7. 差异处理动作全部写 reconciliation_difference_audit；自动重试同一执行日只允许一次，且刷新不覆盖已定业务日。
+ *  8. 导出使用管理员/本店归属校验后的数据，CSV 转义逗号、引号与换行，避免公式注入。
+ *  9. 时间记录统一使用 Asia/Shanghai 墙上时间，不依赖 JVM 默认时区。
  */
 package com.shop.b2b2c.service;
 
@@ -126,7 +128,8 @@ public class ReconciliationService {
             statement.setAmount(source.getAmount().setScale(2, RoundingMode.HALF_UP));
             statement.setCurrency(normalizeCurrency(source.getCurrency()));
             statement.setTradeStatus(source.getTradeStatus() == null ? "SUCCESS" : source.getTradeStatus());
-            statement.setTradeTime(source.getTradeTime() == null ? LocalDateTime.now() : source.getTradeTime());
+            statement.setTradeTime(source.getTradeTime() == null
+                    ? LocalDateTime.now(BUSINESS_ZONE) : source.getTradeTime());
             statement.setImportedBy(operatorId);
             String orderSn = source.getOrderSn();
             if ((orderSn == null || orderSn.isBlank()) && source.getOutTradeNo() != null) {
@@ -161,6 +164,12 @@ public class ReconciliationService {
         LocalDate businessDate = from.toLocalDate();
         List<PaymentChannelStatement> statements = statementMapper.findByMerchantAndPeriod(merchantId, from, to);
         Set<String> pairedStatements = new HashSet<>();
+        Set<String> channelsWithStatements = new HashSet<>();
+        for (PaymentChannelStatement statement : statements) {
+            if (statement.getChannel() != null) {
+                channelsWithStatements.add(statement.getChannel());
+            }
+        }
         for (PaymentChannelStatement statement : statements) {
             if (!"SUCCESS".equals(statement.getTradeStatus())) {
                 continue;
@@ -244,7 +253,8 @@ public class ReconciliationService {
         List<TradeRefund> refunds = refundMapper.findSuccessfulRefundsByPeriod(merchantId, from, to);
         Set<String> pairedRefunds = new HashSet<>();
         for (TradeRefund refund : refunds) {
-            reconcileRefund(merchantId, refund, businessDate, operatorId, counts, pairedRefunds);
+            reconcileRefund(merchantId, refund, businessDate, operatorId, counts, pairedRefunds,
+                    channelsWithStatements);
         }
         for (PaymentChannelStatement statement : statements) {
             if (!"REFUND".equals(statement.getTradeStatus())) {
@@ -256,19 +266,31 @@ public class ReconciliationService {
             }
             Optional<TradeRefund> local = refundMapper.findByChannelRefundNo(statement.getChannelTradeNo());
             if (local.isEmpty()) {
+                // 渠道有退款流水但本地无退款：归属日取流水 trade_time，取不到再退回窗口业务日。
                 addDifference("REFST|" + statement.getChannel() + "|" + statement.getChannelTradeNo(),
                         merchantId, statement.getChannel(), REFUND_STATEMENT_WITHOUT_REFUND, "STATEMENT",
                         statement.getId(), statement.getOrderSn(), statement.getChannelTradeNo(), null,
                         statement.getAmount(), "渠道退款流水无对应本地退款记录",
-                        ReconciliationClassifier.ONE_SIDED_CHANNEL, businessDate, operatorId, counts);
+                        ReconciliationClassifier.ONE_SIDED_CHANNEL,
+                        statement.getTradeTime() == null ? businessDate : statement.getTradeTime().toLocalDate(),
+                        operatorId, counts);
             } else {
-                compareRefundAndStatement(merchantId, local.get(), statement, businessDate, operatorId, counts);
+                compareRefundAndStatement(merchantId, local.get(), statement,
+                        refundBusinessDate(local.get(), statement, businessDate), operatorId, counts);
             }
         }
 
         List<MerchantSettlementBatch> batches = batchMapper.findConfirmedByPeriod(merchantId,
                 from.toLocalDate(), to.toLocalDate());
+        LocalDate windowStart = from.toLocalDate();
+        LocalDate windowEnd = to.toLocalDate().minusDays(1);
         for (MerchantSettlementBatch batch : batches) {
+            // T+1 单日窗口不能与月结批次合计比较：只有对账窗口完整覆盖批次账期时才校验，避免把月结盘成单日。
+            if (batch.getPeriodStart() == null || batch.getPeriodEnd() == null
+                    || !batch.getPeriodStart().equals(windowStart)
+                    || !batch.getPeriodEnd().equals(windowEnd)) {
+                continue;
+            }
             List<MerchantSettlementItem> items = itemMapper.findByBatchId(batch.getId());
             BigDecimal feeTotal = ZERO;
             BigDecimal adjustment = ZERO;
@@ -341,7 +363,7 @@ public class ReconciliationService {
         difference.setRetryCount(retryCount);
         difference.setLastRetryDate(retryDate);
         difference.setHandledBy(operatorId);
-        difference.setHandledAt(LocalDateTime.now());
+        difference.setHandledAt(LocalDateTime.now(BUSINESS_ZONE));
         boolean resolved = stillConsistent(difference);
         String action;
         if (resolved) {
@@ -374,7 +396,7 @@ public class ReconciliationService {
         String fromStatus = difference.getStatus();
         difference.setStatus(ignore ? "IGNORED" : "RESOLVED");
         difference.setHandledBy(operatorId);
-        difference.setHandledAt(LocalDateTime.now());
+        difference.setHandledAt(LocalDateTime.now(BUSINESS_ZONE));
         difference.setHandleNote(note.trim());
         differenceMapper.updateById(difference);
         audit(difference, ignore ? "IGNORE" : "RESOLVE", fromStatus, difference.getStatus(), operatorId,
@@ -468,26 +490,31 @@ public class ReconciliationService {
         }
     }
 
-    private void reconcileRefund(Long merchantId, TradeRefund refund, LocalDate businessDate, Long operatorId,
-                                 Counts counts, Set<String> pairedRefunds) {
+    private void reconcileRefund(Long merchantId, TradeRefund refund, LocalDate fallbackDate, Long operatorId,
+                                 Counts counts, Set<String> pairedRefunds, Set<String> channelsWithStatements) {
         String refundNo = refund.getChannelRefundNo();
+        LocalDate refundDate = refundBusinessDate(refund, null, fallbackDate);
         if (refund.getChannel() == null || refund.getChannel().isBlank()
                 || refundNo == null || refundNo.isBlank()) {
             addDifference("REF|" + refund.getId() + "|NO", merchantId, refund.getChannel(),
                     REFUND_WITHOUT_STATEMENT, "REFUND", refund.getId(), refund.getOrderSn(), null,
                     refund.getRefundAmount(), null, "退款成功但缺少渠道退款流水号/渠道",
-                    ReconciliationClassifier.ONE_SIDED_LOCAL, businessDate, operatorId, counts);
+                    ReconciliationClassifier.ONE_SIDED_LOCAL, refundDate, operatorId, counts);
         } else {
-            pairedRefunds.add(pairKey(refund.getChannel(), refundNo));
             Optional<PaymentChannelStatement> statement =
                     statementMapper.findByChannelAndTradeNo(refund.getChannel(), refundNo);
             if (statement.isEmpty()) {
-                addDifference("REF|" + refund.getId() + "|ST", merchantId, refund.getChannel(),
-                        REFUND_WITHOUT_STATEMENT, "REFUND", refund.getId(), refund.getOrderSn(), refundNo,
-                        refund.getRefundAmount(), null, "退款成功但渠道无对应退款流水",
-                        ReconciliationClassifier.ONE_SIDED_LOCAL, businessDate, operatorId, counts);
+                // 与支付事件侧一致的流水门禁：该渠道当日 0 条流水时属于“未导入”，不批量误判单边账。
+                if (channelsWithStatements.contains(refund.getChannel())) {
+                    addDifference("REF|" + refund.getId() + "|ST", merchantId, refund.getChannel(),
+                            REFUND_WITHOUT_STATEMENT, "REFUND", refund.getId(), refund.getOrderSn(), refundNo,
+                            refund.getRefundAmount(), null, "退款成功但渠道无对应退款流水",
+                            ReconciliationClassifier.ONE_SIDED_LOCAL, refundDate, operatorId, counts);
+                }
             } else {
-                compareRefundAndStatement(merchantId, refund, statement.get(), businessDate, operatorId, counts);
+                pairedRefunds.add(pairKey(refund.getChannel(), refundNo));
+                refundDate = refundBusinessDate(refund, statement.get(), fallbackDate);
+                compareRefundAndStatement(merchantId, refund, statement.get(), refundDate, operatorId, counts);
             }
         }
         BigDecimal feeRefund = refund.getFeeRefundAmount() == null ? ZERO : refund.getFeeRefundAmount();
@@ -498,14 +525,14 @@ public class ReconciliationService {
                 addDifference("REFFEE|" + refund.getRefundNo(), merchantId, refund.getChannel(),
                         REFUND_FEE_LEDGER_MISSING, "REFUND", refund.getId(), refund.getOrderSn(),
                         refundNo, feeRefund, null, "退款成功但缺少服务费冲正账本",
-                        ReconciliationClassifier.ONE_SIDED_LOCAL, businessDate, operatorId, counts);
+                        ReconciliationClassifier.ONE_SIDED_LOCAL, refundDate, operatorId, counts);
             } else if (!ReconciliationClassifier.amountEquals(feeRefund, reversal.get().getAmount())) {
                 addDifference("REFFEE|" + refund.getRefundNo() + "|AMT", merchantId, refund.getChannel(),
                         REFUND_FEE_AMOUNT_MISMATCH, "LEDGER", reversal.get().getId(), refund.getOrderSn(),
                         refundNo, feeRefund, reversal.get().getAmount(),
                         "退款服务费冲正与账本金额不一致",
                         ReconciliationClassifier.classifyInternal(feeRefund, reversal.get().getAmount()),
-                        businessDate, operatorId, counts);
+                        refundDate, operatorId, counts);
             }
         }
     }
@@ -514,21 +541,34 @@ public class ReconciliationService {
                                            LocalDate businessDate, Long operatorId, Counts counts) {
         String base = "REF|" + refund.getId() + "|" + statement.getChannel() + "|"
                 + statement.getChannelTradeNo();
+        LocalDateTime localSuccessTime = refund.getSuccessAt();
         if (!ReconciliationClassifier.amountEquals(refund.getRefundAmount(), statement.getAmount())) {
             addDifference(base + "|AMT", merchantId, statement.getChannel(), REFUND_AMOUNT_MISMATCH, "REFUND",
                     refund.getId(), refund.getOrderSn(), statement.getChannelTradeNo(),
                     refund.getRefundAmount(), statement.getAmount(),
                     "退款金额与渠道退款流水金额不一致",
-                    ReconciliationClassifier.classify(refund.getRefundAmount(), null, refund.getUpdatedAt(),
+                    ReconciliationClassifier.classify(refund.getRefundAmount(), null, localSuccessTime,
                             statement.getAmount(), statement.getCurrency(), statement.getTradeTime()),
                     businessDate, operatorId, counts);
-        } else if (ReconciliationClassifier.dateMismatch(refund.getUpdatedAt(), statement.getTradeTime())) {
+        } else if (ReconciliationClassifier.dateMismatch(localSuccessTime, statement.getTradeTime())) {
             addDifference(base + "|DAY", merchantId, statement.getChannel(), TIME_CROSS_DAY, "REFUND",
                     refund.getId(), refund.getOrderSn(), statement.getChannelTradeNo(),
                     refund.getRefundAmount(), statement.getAmount(),
                     "金额一致但退款与渠道退款流水业务日不同，按渠道交易时间归属",
                     ReconciliationClassifier.TIME_CROSS_DAY, businessDate, operatorId, counts);
         }
+    }
+
+    /** 退款归属业务日：优先渠道退款流水的 trade_time；无流水时退回不可变的 success_at；再退回对账窗口起始日。 */
+    private LocalDate refundBusinessDate(TradeRefund refund, PaymentChannelStatement statement,
+                                         LocalDate fallbackDate) {
+        if (statement != null && statement.getTradeTime() != null) {
+            return statement.getTradeTime().toLocalDate();
+        }
+        if (refund.getSuccessAt() != null) {
+            return refund.getSuccessAt().toLocalDate();
+        }
+        return fallbackDate;
     }
 
     private void reconcilePlatformSettlement(Long merchantId, PlatformCollectionSettlement settlement,
@@ -723,7 +763,10 @@ public class ReconciliationService {
             existing.setActualAmount(actual);
             existing.setDetail(detail);
             existing.setDiffCategory(category);
-            existing.setBusinessDate(businessDate);
+            // 业务日一旦确定不再覆盖：跨天退款/相邻流水重跑时避免归属日来回翻转。
+            if (existing.getBusinessDate() == null) {
+                existing.setBusinessDate(businessDate);
+            }
             differenceMapper.updateById(existing);
             counts.refreshed++;
             return;
@@ -762,6 +805,7 @@ public class ReconciliationService {
         entry.setToStatus(toStatus);
         entry.setOperatorId(operatorId);
         entry.setNote(note);
+        entry.setCreatedAt(LocalDateTime.now(BUSINESS_ZONE));
         auditMapper.insert(entry);
     }
 

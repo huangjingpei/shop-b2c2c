@@ -174,7 +174,7 @@ class RefundServiceTest {
         item.setSkuId(31L);
         item.setQuantity(2);
         when(refundMapper.selectById(7L)).thenReturn(refund);
-        when(refundMapper.markSuccess(eq(7L), eq("WX-RF-1"))).thenReturn(1);
+        when(refundMapper.markSuccess(eq(7L), eq("WX-RF-1"), any())).thenReturn(1);
         when(refundMapper.markOrderRefundedIfFullyRefunded(11L)).thenReturn(1);
         when(itemMapper.findByOrderId(11L)).thenReturn(List.of(item));
 
@@ -187,7 +187,7 @@ class RefundServiceTest {
     void alreadyFinalizedRefundDoesNotRestockAgain() {
         TradeRefund refund = orderRefund(7L);
         when(refundMapper.selectById(7L)).thenReturn(refund);
-        when(refundMapper.markSuccess(eq(7L), any())).thenReturn(0);
+        when(refundMapper.markSuccess(eq(7L), any(), any())).thenReturn(0);
 
         transactionService().finalizeSuccess(7L, "WX-RF-1");
 
@@ -202,7 +202,7 @@ class RefundServiceTest {
         order.setGoodsType(2);
         TradeRefund refund = orderRefund(7L);
         when(refundMapper.selectById(7L)).thenReturn(refund);
-        when(refundMapper.markSuccess(eq(7L), any())).thenReturn(1);
+        when(refundMapper.markSuccess(eq(7L), any(), any())).thenReturn(1);
         when(orderMapper.selectById(11L)).thenReturn(order);
         when(refundMapper.markOrderRefundedIfFullyRefunded(11L)).thenReturn(1);
 
@@ -219,7 +219,7 @@ class RefundServiceTest {
         order.setGoodsType(2);
         TradeRefund refund = orderRefund(7L);
         when(refundMapper.selectById(7L)).thenReturn(refund);
-        when(refundMapper.markSuccess(eq(7L), any())).thenReturn(1);
+        when(refundMapper.markSuccess(eq(7L), any(), any())).thenReturn(1);
         when(orderMapper.selectById(11L)).thenReturn(order);
         when(refundMapper.markOrderRefundedIfFullyRefunded(11L)).thenReturn(0);
 

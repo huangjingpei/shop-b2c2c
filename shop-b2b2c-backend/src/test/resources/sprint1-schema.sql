@@ -235,6 +235,7 @@ CREATE TABLE IF NOT EXISTS `trade_refund` (
   `fee_refund_amount` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   `fee_rounding_adjustment` DECIMAL(10,2) NOT NULL DEFAULT 0.00,
   `status` VARCHAR(24) NOT NULL DEFAULT 'PROCESSING',
+  `success_at` DATETIME DEFAULT NULL, -- 不可变成功时点：T+1 按此切日，不能用会被改写的 updated_at
   `channel_trade_no` VARCHAR(128) DEFAULT NULL,
   `channel_refund_no` VARCHAR(128) DEFAULT NULL,
   `reason` VARCHAR(256) DEFAULT NULL,

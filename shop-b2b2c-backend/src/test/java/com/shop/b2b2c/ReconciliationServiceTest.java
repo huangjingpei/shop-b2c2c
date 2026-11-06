@@ -160,6 +160,9 @@ class ReconciliationServiceTest {
         batch.setId(10L);
         batch.setMerchantId(1L);
         batch.setStatus("CONFIRMED");
+        // 只有对账窗口完整覆盖批次账期时才校验合计；这里窗口 10-01~10-31 与批次账期一致。
+        batch.setPeriodStart(LocalDate.of(2026, 10, 1));
+        batch.setPeriodEnd(LocalDate.of(2026, 10, 31));
         batch.setFeeAmount(new BigDecimal("4.00"));
         batch.setAdjustmentAmount(BigDecimal.ZERO);
         batch.setNetFeeAmount(new BigDecimal("5.00"));
@@ -177,6 +180,37 @@ class ReconciliationServiceTest {
         service().reconcile(1L, from, to);
 
         verify(differenceMapper).insert(any(ReconciliationDifference.class));
+    }
+
+    @Test
+    void dailyWindowDoesNotValidateMonthlySettlementBatchTotals() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 5, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 10, 6, 0, 0);
+        MerchantSettlementBatch batch = new MerchantSettlementBatch();
+        batch.setId(11L);
+        batch.setMerchantId(1L);
+        batch.setStatus("CONFIRMED");
+        // 月结批次账期 10-01~10-31，与 T+1 单日窗口 10-05 不重叠完整，不得把月结合计盘成单日差异。
+        batch.setPeriodStart(LocalDate.of(2026, 10, 1));
+        batch.setPeriodEnd(LocalDate.of(2026, 10, 31));
+        batch.setFeeAmount(new BigDecimal("4.00"));
+        batch.setAdjustmentAmount(BigDecimal.ZERO);
+        batch.setNetFeeAmount(new BigDecimal("5.00"));
+        MerchantSettlementItem item = new MerchantSettlementItem();
+        item.setItemType("ORDER_FEE");
+        item.setFeeAmount(new BigDecimal("4.00"));
+        item.setNetFee(new BigDecimal("4.00"));
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(batchMapper.findConfirmedByPeriod(1L, from.toLocalDate(), to.toLocalDate()))
+                .thenReturn(List.of(batch));
+        when(itemMapper.findByBatchId(11L)).thenReturn(List.of(item));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals(0, result.get("added"));
+        verify(differenceMapper, never()).insert(any(ReconciliationDifference.class));
     }
 
     @Test
@@ -362,11 +396,14 @@ class ReconciliationServiceTest {
     }
 
     @Test
-    void reconcileFlagsRefundWithoutChannelStatement() {
+    void reconcileFlagsRefundWithoutChannelStatementOnlyWhenChannelHasStatements() {
         LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
         LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
         TradeRefund refund = successfulRefund("RF-1", "WX-R1", new BigDecimal("50.00"), BigDecimal.ZERO);
-        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        // 该渠道当日已导入流水（非退款状态），门禁通过后才允许判退款单边账。
+        PaymentChannelStatement gate = statement("WECHAT", "WX-OTHER", "SN-OTHER", new BigDecimal("10.00"));
+        gate.setTradeStatus("FAILED");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(gate));
         when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
         when(refundMapper.findSuccessfulRefundsByPeriod(1L, from, to)).thenReturn(List.of(refund));
         when(statementMapper.findByChannelAndTradeNo("WECHAT", "WX-R1")).thenReturn(Optional.empty());
@@ -380,6 +417,77 @@ class ReconciliationServiceTest {
         verify(differenceMapper).insert(captor.capture());
         assertEquals(ReconciliationService.REFUND_WITHOUT_STATEMENT, captor.getValue().getDiffType());
         assertEquals(ReconciliationClassifier.ONE_SIDED_LOCAL, captor.getValue().getDiffCategory());
+    }
+
+    @Test
+    void zeroChannelStatementsDoesNotCreateRefundWithoutStatement() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        TradeRefund refund = successfulRefund("RF-2", "WX-R2", new BigDecimal("50.00"), BigDecimal.ZERO);
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(refundMapper.findSuccessfulRefundsByPeriod(1L, from, to)).thenReturn(List.of(refund));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals(0, result.get("added"));
+        verify(differenceMapper, never()).insert(any(ReconciliationDifference.class));
+    }
+
+    @Test
+    void crossDayRefundUsesChannelTradeDateAndRefreshKeepsSettledBusinessDate() {
+        LocalDateTime from = LocalDateTime.of(2026, 11, 4, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 6, 0, 0);
+        TradeRefund refund = successfulRefund("RF-3", "WX-R3", new BigDecimal("50.00"), BigDecimal.ZERO);
+        refund.setSuccessAt(LocalDateTime.of(2026, 11, 4, 23, 30));
+        PaymentChannelStatement channelRefund = statement("WECHAT", "WX-R3", "SN-R1",
+                new BigDecimal("50.00"));
+        channelRefund.setTradeStatus("REFUND");
+        channelRefund.setTradeTime(LocalDateTime.of(2026, 11, 5, 0, 10));
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(channelRefund));
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(refundMapper.findSuccessfulRefundsByPeriod(1L, from, to)).thenReturn(List.of(refund));
+        when(statementMapper.findByChannelAndTradeNo("WECHAT", "WX-R3"))
+                .thenReturn(Optional.of(channelRefund));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.TIME_CROSS_DAY, captor.getValue().getDiffType());
+        // 归属日优先渠道 trade_time（11-05），不是本地 success_at（11-04）。
+        assertEquals(LocalDate.of(2026, 11, 5), captor.getValue().getBusinessDate());
+    }
+
+    @Test
+    void refreshingOpenDifferenceDoesNotOverwriteEstablishedBusinessDate() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        TradeRefund refund = successfulRefund("RF-4", "WX-R4", new BigDecimal("50.00"), BigDecimal.ZERO);
+        PaymentChannelStatement gate = statement("WECHAT", "WX-OTHER", "SN-OTHER", new BigDecimal("10.00"));
+        gate.setTradeStatus("FAILED");
+        ReconciliationDifference existing = new ReconciliationDifference();
+        existing.setId(60L);
+        existing.setDifferenceKey("REF|40|ST");
+        existing.setStatus("DISPUTED");
+        existing.setBusinessDate(LocalDate.of(2026, 11, 5));
+        existing.setExpectedAmount(new BigDecimal("50.00"));
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(gate));
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(refundMapper.findSuccessfulRefundsByPeriod(1L, from, to)).thenReturn(List.of(refund));
+        when(statementMapper.findByChannelAndTradeNo("WECHAT", "WX-R4")).thenReturn(Optional.empty());
+        when(differenceMapper.findByKey("REF|40|ST")).thenReturn(Optional.of(existing));
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals(1, result.get("refreshed"));
+        assertEquals(LocalDate.of(2026, 11, 5), existing.getBusinessDate());
+        verify(differenceMapper).updateById(existing);
+        verify(differenceMapper, never()).insert(any(ReconciliationDifference.class));
     }
 
     @Test
@@ -472,7 +580,9 @@ class ReconciliationServiceTest {
         refund.setRefundAmount(amount);
         refund.setFeeRefundAmount(feeRefund);
         refund.setStatus("SUCCESS");
-        refund.setUpdatedAt(LocalDateTime.of(2026, 10, 5, 10, 0));
+        // updated_at 会被后续同步改写，测试故意设成不同日期，确保对账只用 success_at。
+        refund.setSuccessAt(LocalDateTime.of(2026, 10, 5, 10, 0));
+        refund.setUpdatedAt(LocalDateTime.of(2026, 11, 20, 10, 0));
         return refund;
     }
 

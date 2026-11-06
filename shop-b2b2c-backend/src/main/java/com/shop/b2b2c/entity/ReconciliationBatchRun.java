@@ -34,6 +34,8 @@ public class ReconciliationBatchRun {
     private Integer differenceAdded = 0;
     private Integer differenceRefreshed = 0;
     private Integer retryProcessed = 0;
+    /** 自动重试异常数；异常摘要必须写入 lastError，不得只留日志。 */
+    private Integer retryFailed = 0;
     private Integer manualEscalated = 0;
     private String lastError;
     private LocalDateTime startedAt;

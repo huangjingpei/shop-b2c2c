@@ -10,6 +10,8 @@
  *  6. T34：退款成功迁移后接服务费账本红字/冲减欠费；本类不重建退款状态机与额度预占逻辑。
  *  7. T40 默认口径：goods_type=2 的虚拟卡密订单全额退款成功后作废该订单已售卡密（status 1→2），
  *     且不恢复 SKU 库存；卡密可能已交付，恢复库存会造成“库存数大于可用卡密数”。
+ *  8. 成功迁移必须同时写不可变的 success_at（Asia/Shanghai 墙上时间），供 T+1 与结算冲正切日；
+ *     updated_at 会被后续同步改写，不能作为切日依据。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -176,7 +178,8 @@ public class RefundTransactionService {
     @Transactional
     public void finalizeSuccess(Long refundId, String channelRefundNo) {
         TradeRefund refund = tradeRefundMapper.selectById(refundId);
-        if (refund == null || tradeRefundMapper.markSuccess(refundId, channelRefundNo) != 1) {
+        if (refund == null || tradeRefundMapper.markSuccess(refundId, channelRefundNo,
+                LocalDateTime.now(java.time.ZoneId.of("Asia/Shanghai"))) != 1) {
             return;
         }
         if (!SOURCE_ORDER.equals(refund.getSource())) {

@@ -5,7 +5,8 @@
  *  1. 预占与冲正必须用条件 UPDATE（订单必须已支付且累计退款不超过实付），禁止先查后改的无锁写法。
  *  2. 成功/失败状态迁移都以 status=PROCESSING 为条件，保证重复回调或并发同步只生效一次。
  *  3. 不提供删除接口；退款记录是资金证据，失败记录也保留。
- *  4. T+1 对账按 updated_at 读取成功退款，并可通过渠道退款流水号反查，用于退款↔渠道退款比对。
+ *  4. T+1 对账与结算冲正按不可变的 success_at 读取成功退款；updated_at 带 ON UPDATE，重复同步会改写，
+ *     不能用于切日。退款↔渠道退款仍需通过渠道退款流水号反查，覆盖跨天退款。
  */
 package com.shop.b2b2c.mapper;
 
@@ -49,10 +50,10 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
 
     /**
      * T+1 对账：读取业务日窗口内成功退款（含 ORDER 与 DUPLICATE_PAYMENT）。
-     * 以 updated_at 作为本地记账时间，渠道侧以流水 trade_time 比对；跨天由分类器标记。
+     * 以不可变的 success_at 作为本地成功时间，渠道侧以流水 trade_time 比对；跨天由分类器标记。
      */
     @Select("SELECT * FROM trade_refund WHERE merchant_id = #{merchantId} AND status = 'SUCCESS' "
-            + "AND updated_at >= #{from} AND updated_at < #{to} ORDER BY id ASC")
+            + "AND success_at IS NOT NULL AND success_at >= #{from} AND success_at < #{to} ORDER BY id ASC")
     List<TradeRefund> findSuccessfulRefundsByPeriod(@Param("merchantId") Long merchantId,
                                                     @Param("from") LocalDateTime from,
                                                     @Param("to") LocalDateTime to);
@@ -104,11 +105,13 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
 
     /**
      * 退款成功：仅当仍是 PROCESSING 才迁移，返回 1 表示本次调用完成了状态迁移（用于库存回退去重）。
+     * success_at 只在本次迁移写入一次，后续任何重试/同步不得改写。
      */
     @Update("UPDATE trade_refund SET status = 'SUCCESS', channel_refund_no = #{channelRefundNo}, "
-            + "failure_reason = NULL, updated_at = CURRENT_TIMESTAMP "
+            + "success_at = #{successAt}, failure_reason = NULL, updated_at = CURRENT_TIMESTAMP "
             + "WHERE id = #{id} AND status = 'PROCESSING'")
-    int markSuccess(@Param("id") Long id, @Param("channelRefundNo") String channelRefundNo);
+    int markSuccess(@Param("id") Long id, @Param("channelRefundNo") String channelRefundNo,
+                    @Param("successAt") LocalDateTime successAt);
 
     @Update("UPDATE trade_refund SET status = 'FAILED', failure_reason = #{reason}, "
             + "updated_at = CURRENT_TIMESTAMP WHERE id = #{id} AND status = 'PROCESSING'")
@@ -133,7 +136,7 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
      */
     @org.apache.ibatis.annotations.Select("SELECT * FROM trade_refund WHERE merchant_id = #{merchantId} "
             + "AND source = 'ORDER' AND status = 'SUCCESS' "
-            + "AND updated_at >= #{from} AND updated_at < #{to} "
+            + "AND success_at IS NOT NULL AND success_at >= #{from} AND success_at < #{to} "
             + "AND fee_refund_amount > 0 ORDER BY id")
     java.util.List<TradeRefund> findSuccessfulOrderRefundsByPeriod(@Param("merchantId") Long merchantId,
                                                                     @Param("from") java.time.LocalDateTime from,

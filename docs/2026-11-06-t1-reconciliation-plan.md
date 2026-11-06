@@ -83,18 +83,18 @@
 
 | ID | 问题 | 影响 | 本卡处理 | 当前状态 |
 | --- | --- | --- | --- | --- |
-| R1 | 没有按天自动跑批 | 只能人工按月触发，T+1 失效 | 新增每日任务与业务日跑批记录 | 已实现·待人工验证 |
-| R2 | 退款完全没有与渠道退款流水对账 | 退款成功但渠道未退/金额不符无法发现 | 新增退款对账 | 已实现·待人工验证 |
+| R1 | 没有按天自动跑批 | 只能人工按月触发，T+1 失效 | 新增每日任务与业务日跑批记录 | 已返工·待人工验证 |
+| R2 | 退款完全没有与渠道退款流水对账 | 退款成功但渠道未退/金额不符无法发现 | 新增退款对账 | 已返工·待人工验证 |
 | R3 | 服务费只查账本缺失，不查金额 | 账本金额写错仍显示通过 | 新增金额不一致差异 | 已实现·待人工验证 |
 | R4 | 退款冲正账本缺失/金额不符未检查 | 退款成功但服务费未冲正 | 新增退款冲正账本比对 | 已实现·待人工验证 |
 | R5 | 平台代收分账未对账 | 代收金额、结算批次、已结算金额可能不一致 | 新增平台代收对账 | 已实现·待人工验证 |
-| R6 | 差异没有长/短/单边/精度/币种/跨天分类 | 运营无法按口径处理 | 新增 `diff_category` 与分类器 | 已实现·待人工验证 |
-| R7 | 切日字段与时区未定义 | 跨天重复或漏对 | 明确 `Asia/Shanghai` 与各侧切日字段 | 已实现·待人工验证 |
-| R8 | 同一天重复跑批会重复刷新/重复重试 | 差异噪声、重试次数虚高 | 跑批唯一键 + 状态机 + `last_retry_date` | 已实现·待人工验证 |
+| R6 | 差异没有长/短/单边/精度/币种/跨天分类 | 运营无法按口径处理 | 新增 `diff_category` 与分类器 | 已返工·待人工验证 |
+| R7 | 切日字段与时区未定义 | 跨天重复或漏对 | 明确 `Asia/Shanghai` 与各侧切日字段 | 已返工·待人工验证 |
+| R8 | 同一天重复跑批会重复刷新/重复重试 | 差异噪声、重试次数虚高 | 跑批唯一键 + 状态机 + `last_retry_date` | 已返工·待人工验证 |
 | R9 | 差异只保留最后一次处理人/说明 | 无法追责与复盘 | 新增审计表 | 已实现·待人工验证 |
-| R10 | 自动重试到上限后仅改状态，无独立留痕 | 转人工不可追溯 | 写 `ESCALATE` 审计 | 已实现·待人工验证 |
-| R11 | 渠道流水未导入时可能把本地事件全判单边 | 误报淹没真实问题 | 跑批标记 `PARTIAL`，不生成全量单边差异 | 已实现·待人工验证 |
-| R12 | 跑批结果不可见 | 失败静默 | 新增跑批记录查询接口 | 已实现·待人工验证 |
+| R10 | 自动重试到上限后仅改状态，无独立留痕 | 转人工不可追溯 | 写 `ESCALATE` 审计 | 已返工·待人工验证 |
+| R11 | 渠道流水未导入时可能把本地事件全判单边 | 误报淹没真实问题 | 跑批标记 `PARTIAL`，不生成全量单边差异 | 已返工·待人工验证 |
+| R12 | 跑批结果不可见 | 失败静默 | 新增跑批记录查询接口 | 已返工·待人工验证 |
 | R13 | 渠道账单来源只有手工 JSON 导入 | 无法真正 T+1 自动拉单 | 明确缺口，不假装完成 | 登记缺口 |
 | R14 | 平台代收结算的退款/结算状态组合未穷举 | 极端组合可能漏判 | 只校验可证明的恒等式，其余人工 | 登记缺口 |
 | R15 | 渠道退款流水字段格式未经真实渠道验证 | 匹配可能失配 | 以 `channel_refund_no ↔ channel_trade_no` 为基线，真实渠道待联调 | 登记缺口 |
@@ -110,19 +110,21 @@
 
 - 未运行 `mvn`、编译、测试或构建，未连接 MySQL；跑批并发、唯一键冲突与真实 CHECK 行为待用户手工验证。
 - 没有真实渠道 API/对账单文件，T+1 依赖管理端先导入流水；自动拉单仍是缺口。
-- 渠道退款流水的真实字段、币种精度、跨天结算规则未联调。
+- 渠道退款流水的真实字段、币种精度、跨天结算规则未联调；`success_at` 的历史数据未回填（本卡只对新迁移写入，旧 SUCCESS 记录 `success_at` 为空，不会进入 T+1 窗口，需人工确认补数方案）。
+- 支付事件仍按 `payment_event.created_at`（回调受理时间）切日，不是渠道成功时间；跨日回调可能归属错误业务日，已登记缺口（G21），缓解手段是渠道流水侧按 `trade_time` 对账并标 `TIME_CROSS_DAY`。
+- 结算批次合计只在“对账窗口完整等于 `period_start/period_end`”时校验；T+1 单日窗口不对月结批次做合计比对，避免恒不成立。
 - 平台代收结算的极端状态组合（部分结算、多次退款、批次重算）只做静态恒等式校验，未做资金演练。
-- 跑批回看窗口默认 3 天；超过窗口的历史失败需手动按业务日重跑。
+- 跑批回看窗口默认 3 天；超过窗口的历史失败需手动按业务日重跑。自动重试每店每次跑批只做一轮，`retry_failed` 已落库，但真实并发下的条件回写与接管行为仍待 MySQL 演练。
 
 ## 9. 实现落点（本卡）
 
 - 对账主逻辑：`ReconciliationService`，新增退款↔渠道退款、服务费金额、退款冲正账本、平台代收、币种、跨天与分类写入。
 - 分类规则：`ReconciliationClassifier`（纯静态，无数据库依赖）。
 - 跑批：`ReconciliationBatchService` + `ReconciliationDailyJob`；手动入口与记录查询在 `AdminSettlementController`。
-- 表结构：`reconciliation_batch_run`、`reconciliation_difference_audit`，差异表新增 `diff_category`、`business_date`、`last_retry_date`，渠道流水新增 `currency`。
+- 表结构：`reconciliation_batch_run`、`reconciliation_difference_audit`，差异表新增 `diff_category`、`business_date`、`last_retry_date`，渠道流水新增 `currency`；返工补充 `trade_refund.success_at`（不可变成功时点，含 `idx_refund_success` 索引）与 `reconciliation_batch_run.retry_failed`。
 - 用例：`ReconciliationClassifierTest`、`ReconciliationBatchServiceTest`、`ReconciliationServiceTest` 增补与 `SchemaConsistencyConstraintTest` 基线更新。
 
-状态：**已实现·待人工验证**。本卡提交说明记录范围、幂等保证手段与未验证项；未运行编译/测试/构建、未连接数据库。
+状态：**已返工·待人工验证**。本卡提交说明记录返工范围、幂等保证手段与未验证项；未运行编译/测试/构建、未连接数据库。
 
 ### 9.1 人工验证入口
 
@@ -130,3 +132,19 @@
 - 后端单测：`mvn -f shop-b2b2c-backend/pom.xml test`；预期新增/更新用例通过，且不连接业务数据库（H2 隔离）。
 - 接口验证（启动后端后）：`POST /api/v1/admin/settlement/reconciliation/runs?businessDate=2026-11-05` 触发单日跑批；`GET /api/v1/admin/settlement/reconciliation/runs?businessDate=2026-11-05` 查看状态、`attempts`、`last_error` 与计数。
 - 未验证项：真实 MySQL 的唯一键/CHECK/并发抢占、调度实际触发、渠道账单导入后的分类结果、前端管理页展示。
+
+## 10. 复核返工记录（2026-11-06）
+
+复核结论：基线提交 `d83e8db` **不能算实现完成**，以下逐项返工。原状态统一由“已实现”改为“已返工·待人工验证”。
+
+| 返工项 | 原判断错在哪 | 返工落点 |
+| --- | --- | --- |
+| 必修一 退款切日 | 原按 `trade_refund.updated_at` 取窗口，但该列 `ON UPDATE CURRENT_TIMESTAMP`，`markSuccess` 会改写；同一条跨天退款被 D/D+1 两次扫到，`business_date` 被后一次覆盖，按月对账还会被统一盖成月初 | `trade_refund` 新增不可变 `success_at`，仅 `markSuccess` 写一次；窗口改按 `success_at`，新增 `idx_refund_success`；归属日优先匹配流水 `trade_time`，否则 `success_at`；刷新差异不再覆盖已定 `business_date`；保留渠道流水反查本地退款路径；T34 退款明细同改用 `success_at` |
+| 必修二 PARTIAL 转人工 | 原 `markManual` 只允许 `FAILED/PENDING/僵尸RUNNING`，`PARTIAL` 达上限命中 0 行，记录永远停留 `PARTIAL`，汇总却照常 `manual++` | `markManual` 前置状态加入 `PARTIAL`；服务仅在实际更新 >0 时 `manual++`，否则计 `skipped`；补“连续 `PARTIAL` 达上限真转 `MANUAL`”与“命中 0 不虚报”用例 |
+| 必修三 退款单边账门禁 | 支付事件侧有“该渠道当日流水 >0”门禁，退款侧没有；0 流水时每笔成功退款都生成 `REFUND_WITHOUT_STATEMENT`，与 `last_error` 文案“单边账暂不生成”自相矛盾 | 退款侧复用当期流水渠道集合做门禁，0 流水不生成该差异、交由跑批标记 `PARTIAL`；删除把“0 流水仍生成单边账”写成期望的旧用例，改为门禁用例 + 0 流水不生成用例 |
+| 必修四 回看与重试冲突 | 原 `last_retry_date` 存跑批业务日，且同一次夜间任务对 `[今日-3, 今日-1]` 逐日调用 `autoRetry`，一条旧差异一夜被拆成 3 次重试计数 | 每店每次跑批只调用一次 `autoRetry`，`last_retry_date` 改用实际执行日；跳过 `createdAt >= runStartedAt` 的新建差异与未来业务日 |
+| 必修五 重试异常不可见 | 原 `autoRetry` 只 `failed++` 与 warn，`RetryResult.failed` 未写入跑批记录与 Summary | 新增 `reconciliation_batch_run.retry_failed` 与 `addRetryTally`，异常摘要写 `last_error`，`failed` 计入汇总 |
+| 支付事件切日 | 原按 `payment_event.created_at`（回调受理时间）切日，不是渠道成功时间 | 本卡未新增 `paid_at`，作为缺口登记于 `docs/2026-11-06-dev-gap-log.md` G21，风险：跨日回调可能归属错误业务日 |
+| 结算批次合计 | 原声明“覆盖结算批次合计校验”，但 T+1 单日窗口与月结批次账期不重叠，校验恒不成立 | 改为仅当对账窗口完整等于 `period_start/period_end` 时才校验；补“日窗口不校验月结批次”用例 |
+| 时区混用 | 原多处 `LocalDateTime.now()` 用 JVM 默认时区，业务日按 `Asia/Shanghai` | 统一 `BUSINESS_ZONE`（`Asia/Shanghai`）取记录时间、审计时间与兜底时间 |
+| 僵尸接管无租约 | 原超时任务被接管后，原节点结束时无条件 `updateById` 覆盖接管方结果 | 完成回写改 `finishRun` 条件更新（`status='RUNNING' AND attempts AND started_at`）；`updated==0` 计 `skipped`，不覆盖接管方。`started_at` 按 DATETIME 秒级精度截断，避免纳秒被库截断导致条件永不命中 |

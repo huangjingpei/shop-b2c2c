@@ -295,6 +295,15 @@ class SchemaConsistencyConstraintTest {
         assertNotNull(run.get("merchant_id"), "跑批记录缺少店铺");
         assertNotNull(run.get("attempts"), "跑批记录缺少尝试次数");
         assertNotNull(run.get("last_error"), "跑批记录缺少失败/部分完成原因");
+        assertNotNull(run.get("retry_failed"),
+                "跑批记录缺少 retry_failed；自动重试异常必须落库可见，不能只打日志");
+
+        Map<String, ColumnDef> refund = columns.get("trade_refund");
+        assertNotNull(refund, "schema.sql 缺少 trade_refund");
+        assertNotNull(refund.get("success_at"),
+                "退款缺少不可变成功时点 success_at；T+1 切日不能用会被 ON UPDATE 改写的 updated_at");
+        assertTrue(normalized(schemaText()).contains("KEY `idx_refund_success` (`merchant_id`, `success_at`)"),
+                "退款切日必须由 (merchant_id, success_at) 索引支撑，否则跨日窗口会全表扫描");
 
         Map<String, ColumnDef> audit = columns.get("reconciliation_difference_audit");
         assertNotNull(audit, "schema.sql 缺少 reconciliation_difference_audit");

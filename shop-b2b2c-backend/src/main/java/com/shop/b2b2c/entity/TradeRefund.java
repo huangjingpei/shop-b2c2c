@@ -5,6 +5,8 @@
  *  1. source=ORDER 的退款会预占 trade_order.refunded_amount/fee_refunded_amount；source=DUPLICATE_PAYMENT 不占用商品退款额度。
  *  2. status 只有 PROCESSING/SUCCESS/FAILED；PROCESSING 不能视为已退款，必须由渠道查单再确认。
  *  3. refund_no 与 (order_id, idempotency_key) 唯一；同一重复付款事件只允许一条补偿记录。
+ *  4. success_at 只在 PROCESSING→SUCCESS 时写一次且不再改写；T+1 与结算冲正按它切日，
+ *     不得用带 ON UPDATE 的 updated_at（重复同步会改写该列并导致跨天重复扫描）。
  */
 package com.shop.b2b2c.entity;
 
@@ -36,6 +38,8 @@ public class TradeRefund {
     /** 尾差归属：本次退款吸收的服务费舍入差；正数=多冲正，负数=少冲正。 */
     private BigDecimal feeRoundingAdjustment;
     private String status;          // PROCESSING / SUCCESS / FAILED
+    /** 成功时点；仅 PROCESSING→SUCCESS 写一次，后续同步不得改写。 */
+    private LocalDateTime successAt;
     private String channelTradeNo;
     private String channelRefundNo;
     private String reason;
