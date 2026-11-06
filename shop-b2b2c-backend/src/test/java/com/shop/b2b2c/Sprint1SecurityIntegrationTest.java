@@ -1987,6 +1987,12 @@ class Sprint1SecurityIntegrationTest {
         assertEquals("COMPLETED", orders.findByPeerPayToken("replay").orElseThrow().getOrderStatus());
         verify(cards, times(1)).claimCard(anyLong(), anyLong(), anyLong(), anyString());
         assertEquals("ORD-replay", cards.selectById(1).getOrderSn());
+        // G34：并发同单只允许一条支付事件；race() 会在任一线程抛出 UnexpectedRollbackException 时失败。
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM payment_event WHERE channel='WECHAT' AND pay_trade_no='trade-replay'",
+                Integer.class).intValue());
+        assertEquals("SUCCESS", jdbc.queryForObject(
+                "SELECT event_status FROM payment_event WHERE channel='WECHAT' AND pay_trade_no='trade-replay'", String.class));
     }
 
     @Test

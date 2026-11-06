@@ -1,11 +1,13 @@
 /*
  * 文件：PaymentEventRecorder.java
- * 用途：支付流水状态记录器；正常情况下与业务事务同生共死，避免“事件 SUCCESS 先于订单提交”造成资损假成功 (R13/T05)。
+ * 用途：支付流水状态记录器；正常状态推进与业务事务同生共死，避免“事件 SUCCESS 先于订单提交”造成资损假成功 (R13/T05)。
  * 维护注意：
- *  1. recordInitialEvent/recordEventStatus 使用默认传播，加入调用方事务；外层回滚时事件不会残留 SUCCESS。
- *  2. 只有业务事务失败后的补偿审计 recordFailureAudit 使用独立事务，保证失败态可见；它只应在事务完成回滚后调用。
- *  3. 失败审计不得把其他订单的事件改写，也不得把已完成支付的事件降级；重复冲突由调用方跳过审计。
- *  4. 事件状态与订单状态必须保持一致，禁止在业务事务内另开事件表或第二套状态机。
+ *  1. 事件初始占位由 PaymentEventServiceImpl.claimEvent 在业务事务之外的独立事务完成；本类不提供初始写入，
+ *     避免参与主事务的方法抛出唯一键异常而把主事务标记为 rollback-only (G34)。
+ *  2. recordEventStatus 使用默认传播，加入调用方事务；外层回滚时事件不会残留 SUCCESS。
+ *  3. 只有业务事务失败后的补偿审计 recordFailureAudit 使用独立事务，保证失败态可见；它只应在事务完成回滚后调用。
+ *  4. 失败审计不得把其他订单的事件改写，也不得把已完成支付的事件降级；重复冲突由调用方跳过审计。
+ *  5. 事件状态与订单状态必须保持一致，禁止在业务事务内另开事件表或第二套状态机。
  */
 package com.shop.b2b2c.service;
 
@@ -27,16 +29,6 @@ public class PaymentEventRecorder {
     private static final int ERROR_MESSAGE_LIMIT = 512;
 
     private final PaymentEventMapper paymentEventMapper;
-
-    @Transactional(rollbackFor = Exception.class)
-    public PaymentEvent recordInitialEvent(PaymentEvent pe) {
-        if (pe.getId() == null) {
-            paymentEventMapper.insert(pe);
-        } else {
-            paymentEventMapper.updateById(pe);
-        }
-        return pe;
-    }
 
     @Transactional(rollbackFor = Exception.class)
     public void recordEventStatus(Long eventId, String status, String errorMessage) {

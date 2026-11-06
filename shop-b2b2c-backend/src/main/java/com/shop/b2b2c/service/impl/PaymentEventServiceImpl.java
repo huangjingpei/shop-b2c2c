@@ -2,14 +2,17 @@
  * 文件：PaymentEventServiceImpl.java
  * 用途：实现支付渠道到账事件持久化、资金要素自证、重复支付补偿与本地履约解耦 (R13/T05/T06/T07)。
  * 维护注意：
- *  1. processPaymentEvent 自身不是声明式事务入口，而由 TransactionTemplate 明确开启业务事务；
- *     事件初始写入、订单 CAS、库存/卡密交付、SUCCESS 标记在同一事务提交，外层回滚不会留下 SUCCESS。
- *  2. 失败审计只在事务结束并回滚后由 recordFailureAudit 独立写入，避免主连接池自锁；事件不得停在 PROCESSING。
- *  3. 重放短路必须回查订单真实状态与卡密交付结果；事件 SUCCESS 但订单 UNPAID 时以同一事件重新驱动。
- *  4. 实收金额/币种必须来自渠道事件，禁止从订单 payAmount 反填；缺失或不等即拒绝，不得交付资产。
- *  5. 已支付订单收到不同流水号时必须落 DUPLICATE_PAYMENT 事件，不得静默返回；退款动作由后续补偿/退款任务处理。
- *  6. 不新建第二套支付事件表，不恢复公开 Mock/未验签到账入口。
- *  7. T34：首次支付成功时在同一事务内扣减/挂账服务费；重放不重复扣费，扣费失败不得让事件停在 SUCCESS。
+ *  1. processPaymentEvent 自身不是声明式事务入口：先由 claimEvent 在事务前预检并以独立事务占位事件行，
+ *     再由 TransactionTemplate 开启业务事务完成订单 CAS、库存/卡密交付与 SUCCESS 标记；外层回滚不会留下 SUCCESS。
+ *  2. 唯一键冲突只在业务事务之外回查处理（同单幂等重放、跨单归属拒绝）；禁止在主事务内捕获唯一键异常，
+ *     以免参与主事务的 @Transactional 方法把事务标记为 rollback-only 并抛 UnexpectedRollbackException (G34)。
+ *  3. 占位提交与主事务之间进程崩溃可能残留 PROCESSING 事件；正常异常路径由 recordFailureAudit 在事务回滚后收敛，
+ *     残留需由后续对账/补偿任务处理，不得把 PROCESSING 当作已履约。
+ *  4. 重放短路必须回查订单真实状态与卡密交付结果；事件 SUCCESS 但订单 UNPAID 时以同一事件重新驱动。
+ *  5. 实收金额/币种必须来自渠道事件，禁止从订单 payAmount 反填；缺失或不等即拒绝，不得交付资产。
+ *  6. 已支付订单收到不同流水号时必须落 DUPLICATE_PAYMENT 事件，不得静默返回；退款动作由后续补偿/退款任务处理。
+ *  7. 不新建第二套支付事件表，不恢复公开 Mock/未验签到账入口。
+ *  8. T34：首次支付成功时在同一事务内扣减/挂账服务费；重放不重复扣费，扣费失败不得让事件停在 SUCCESS。
  */
 package com.shop.b2b2c.service.impl;
 
@@ -64,10 +67,16 @@ public class PaymentEventServiceImpl implements PaymentEventService {
         String payTradeNo = event.getPayTradeNo().trim();
         String orderSn = event.getOrderSn().trim();
 
+        // 唯一键占位必须先于业务事务完成：并发同单只有一个线程能插入，其余线程在独立事务冲突后回查重放。
+        // 禁止在主业务事务内捕获唯一键异常——参与主事务的 @Transactional 方法抛出后会把主事务标为
+        // rollback-only，外层继续提交即抛 UnexpectedRollbackException（G34）。
+        ClaimedEvent claim = claimEvent(event, channel, payTradeNo, orderSn);
+
         AtomicReference<PaymentEvent> auditSnapshot = new AtomicReference<>();
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         try {
-            return transaction.execute(status -> processInTransaction(event, channel, payTradeNo, orderSn, auditSnapshot));
+            return transaction.execute(status -> processInTransaction(
+                    event, channel, payTradeNo, orderSn, claim.event, claim.freshlyClaimed, auditSnapshot));
         } catch (PaymentEventOwnershipConflict conflict) {
             // 流水号属于其他订单：不得改写对方事件，也不得把错误记到本单。
             throw conflict;
@@ -80,6 +89,69 @@ public class PaymentEventServiceImpl implements PaymentEventService {
         } catch (RuntimeException unexpected) {
             auditFailure(auditSnapshot.get(), STATUS_FULFILLMENT_FAILED, unexpected.getMessage());
             throw unexpected;
+        }
+    }
+
+    /**
+     * 在业务事务之外完成事件占位（事务前预检 + 独立事务插入）。
+     * freshlyClaimed=true 表示本次调用新建了事件，用于区分“订单已支付后的第二笔资金”与“同单幂等重放”。
+     */
+    private ClaimedEvent claimEvent(PaymentEventDTOs.IncomingPaymentEvent event, String channel,
+                                    String payTradeNo, String orderSn) {
+        // 事务前预检：已存在的事件直接判定归属，不进入主事务，也不写任何业务数据。
+        PaymentEvent existing = paymentEventMapper.findByChannelAndTradeNo(channel, payTradeNo);
+        if (existing != null) {
+            if (!orderSn.equals(existing.getOrderSn())) {
+                throw new PaymentEventOwnershipConflict(400, "渠道流水号已被其他订单使用");
+            }
+            return new ClaimedEvent(existing, false);
+        }
+
+        TransactionTemplate claimTransaction = new TransactionTemplate(transactionManager);
+        try {
+            PaymentEvent created = claimTransaction.execute(status -> {
+                TradeOrder order = orderMapper.findByOrderSn(orderSn)
+                        .orElseThrow(() -> new BusinessException("关联订单不存在: " + orderSn));
+                PaymentEvent pe = new PaymentEvent();
+                pe.setChannel(channel);
+                pe.setPayTradeNo(payTradeNo);
+                pe.setOrderSn(orderSn);
+                pe.setMerchantId(order.getMerchantId());
+                // T32：货款归集模式取订单快照；渠道商户号只作审计与核验，不能替换平台内部商户ID。
+                pe.setCollectionMode(order.getCollectionMode());
+                pe.setChannelMerchantId(event.getChannelMerchantId());
+                pe.setPlatformTradeNo(null); // 阶段一平台不代收，平台流水号为空
+                pe.setPayAmount(event.getPayAmount());
+                pe.setCurrency(event.getCurrency().trim().toUpperCase());
+                pe.setPayerId(event.getPayerId());
+                pe.setRawPayload(event.getRawPayload());
+                pe.setEventStatus(STATUS_PROCESSING);
+                paymentEventMapper.insert(pe);
+                return pe;
+            });
+            if (created == null) throw new BusinessException(500, "支付事件占位失败");
+            return new ClaimedEvent(created, true);
+        } catch (DuplicateKeyException duplicate) {
+            // 占位事务已完整回滚，当前不在任何业务事务内；回查并发方结果后再决定重放或拒绝。
+            PaymentEvent concurrent = paymentEventMapper.findByChannelAndTradeNo(channel, payTradeNo);
+            if (concurrent == null) {
+                throw new BusinessException(409, "支付事件并发占位冲突，请重试");
+            }
+            if (!orderSn.equals(concurrent.getOrderSn())) {
+                throw new PaymentEventOwnershipConflict(400, "渠道流水号已被其他订单使用");
+            }
+            return new ClaimedEvent(concurrent, false);
+        }
+    }
+
+    /** 事件占位结果：event 为本次要处理的事件行，freshlyClaimed 表示该行由本次请求新建。 */
+    private static final class ClaimedEvent {
+        private final PaymentEvent event;
+        private final boolean freshlyClaimed;
+
+        private ClaimedEvent(PaymentEvent event, boolean freshlyClaimed) {
+            this.event = event;
+            this.freshlyClaimed = freshlyClaimed;
         }
     }
 
@@ -98,15 +170,10 @@ public class PaymentEventServiceImpl implements PaymentEventService {
 
     private PaymentEventDTOs.PaymentProcessingResult processInTransaction(
             PaymentEventDTOs.IncomingPaymentEvent event, String channel, String payTradeNo,
-            String orderSn, AtomicReference<PaymentEvent> auditSnapshot) {
+            String orderSn, PaymentEvent pe, boolean freshlyClaimed,
+            AtomicReference<PaymentEvent> auditSnapshot) {
 
-        // 1. 唯一性排重检查 (防止同一渠道交易号被多笔订单盗用或重复履约)
-        PaymentEvent existing = paymentEventMapper.findByChannelAndTradeNo(channel, payTradeNo);
-        if (existing != null && !orderSn.equals(existing.getOrderSn())) {
-            throw new PaymentEventOwnershipConflict(400, "渠道流水号已被其他订单使用");
-        }
-
-        // 2. 查单并加排他行锁
+        // 1. 查单并加排他行锁
         TradeOrder order = orderMapper.findByOrderSn(orderSn)
                 .orElseThrow(() -> new BusinessException("关联订单不存在: " + orderSn));
         order = orderMapper.lockById(order.getId());
@@ -118,37 +185,10 @@ public class PaymentEventServiceImpl implements PaymentEventService {
             throw new BusinessException("订单未包含明细商品");
         }
 
-        // 3. 支付到账事件与业务写入共用同一事务；外层回滚时不会残留 SUCCESS
-        PaymentEvent pe = existing != null ? existing : new PaymentEvent();
-        pe.setChannel(channel);
-        pe.setPayTradeNo(payTradeNo);
-        pe.setOrderSn(orderSn);
-        pe.setMerchantId(order.getMerchantId());
-        // T32：货款归集模式取订单快照；渠道商户号只作审计与核验，不能替换平台内部商户ID。
-        pe.setCollectionMode(order.getCollectionMode());
-        pe.setChannelMerchantId(event.getChannelMerchantId());
-        pe.setPlatformTradeNo(null); // 阶段一平台不代收，平台流水号为空
-        pe.setPayAmount(event.getPayAmount());
-        pe.setCurrency(event.getCurrency().trim().toUpperCase());
-        pe.setPayerId(event.getPayerId());
-        pe.setRawPayload(event.getRawPayload());
-        pe.setEventStatus(STATUS_PROCESSING);
-
-        try {
-            pe = eventRecorder.recordInitialEvent(pe);
-        } catch (DuplicateKeyException dke) {
-            // 并发通知下唯一键冲突可能来自同一订单：重新读取已存在事件，同一订单按幂等重放继续，
-            // 只有流水号确实属于其他订单时才判定归属冲突，不能把同单重试误报为盗用。
-            PaymentEvent concurrent = paymentEventMapper.findByChannelAndTradeNo(channel, payTradeNo);
-            if (concurrent == null || !orderSn.equals(concurrent.getOrderSn())) {
-                throw new PaymentEventOwnershipConflict(400, "渠道流水号已被其他订单使用");
-            }
-            existing = concurrent;
-            pe = concurrent;
-        }
+        // 2. 事件行已由 claimEvent 在业务事务外占位；本事务只做核验与履约，成功态仍随本事务提交。
         auditSnapshot.set(pe);
 
-        // 4. 资金要素严格核验 (商户、实收金额、币种)，禁止从订单反填
+        // 3. 资金要素严格核验 (商户、实收金额、币种)，禁止从订单反填
         if (event.getMerchantId() != null && !event.getMerchantId().equals(order.getMerchantId())) {
             reject(pe.getId(), "MERCHANT_MISMATCH",
                     "支付事件商户与订单商户不一致: 事件=" + event.getMerchantId() + ", 订单=" + order.getMerchantId());
@@ -161,17 +201,21 @@ public class PaymentEventServiceImpl implements PaymentEventService {
             reject(pe.getId(), "CURRENCY_MISMATCH", "交易币种不符: " + event.getCurrency());
         }
 
-        // 5. 订单生命周期与迟到款处理 (超期已关单不得自动交付数字资产，必须转入补偿/退款流水)
+        // 4. 订单生命周期与迟到款处理 (超期已关单不得自动交付数字资产，必须转入补偿/退款流水)
         if (Set.of("CLOSED", "REFUNDED").contains(order.getOrderStatus())
                 || PeerStatus.EXPIRED.equals(order.getPeerStatus())
                 || PeerStatus.CANCELLED.equals(order.getPeerStatus())) {
             reject(pe.getId(), "LATE_PAYMENT", "订单已超时关闭，支付资金已进入自动退款与补偿流程");
         }
 
-        // 6. 已支付单据：回查交付结果，不盲目短路
+        // 5. 已支付单据：回查交付结果，不盲目短路
         boolean alreadyPaid = Set.of("PAID", "COMPLETED", "SHIPPED").contains(order.getOrderStatus());
         if (alreadyPaid) {
-            if (existing == null) {
+            // 第二笔资金的判定必须看订单实际使用的渠道流水号：占位线程可能在主事务前被并发重放线程抢先履约，
+            // 此时 same payTradeNo 仍属同单重放，不能误记 DUPLICATE_PAYMENT。
+            boolean sameChannelTrade = payTradeNo.equals(order.getPayTradeNo())
+                    && (order.getPaymentChannel() == null || channel.equals(order.getPaymentChannel()));
+            if (freshlyClaimed && !sameChannelTrade) {
                 // T07：订单已支付但出现不同渠道流水号，第二笔资金必须留痕并进入重复支付补偿队列，
                 // 不能因为订单已履约就把它标成 SUCCESS 而静默吞掉资金。
                 eventRecorder.recordEventStatus(pe.getId(), STATUS_DUPLICATE_PAYMENT,
@@ -201,7 +245,7 @@ public class PaymentEventServiceImpl implements PaymentEventService {
                 reject(pe.getId(), "LATE_PAYMENT", "订单已超过 15 分钟支付截止时间，资金进入迟到支付处理");
             }
 
-            // 7. CAS原子更新订单为PAID
+            // 6. CAS原子更新订单为PAID
             int updated;
             if (order.getPeerPayToken() != null && !order.getPeerPayToken().isBlank()) {
                 // 代付两段式订单：严格要求持有有效 RESERVED_LOCK 且预占未过期
@@ -221,8 +265,8 @@ public class PaymentEventServiceImpl implements PaymentEventService {
             order.setLockExpireTime(null);
         }
 
-        // 8. 本地履约发货/发卡（商品可购性已在 CAS 前校验）
-        // 9. 首次落账核销库存预占/扣减物理库存；补交付重放不得重复扣减
+        // 7. 本地履约发货/发卡（商品可购性已在 CAS 前校验）
+        // 8. 首次落账核销库存预占/扣减物理库存；补交付重放不得重复扣减
         if (!alreadyPaid) {
             InventoryReservation held = reservationMapper.find(order.getId());
             if (held != null) {
@@ -244,7 +288,7 @@ public class PaymentEventServiceImpl implements PaymentEventService {
             }
         }
 
-        // 10. 针对商品交付类型执行具体交付
+        // 9. 针对商品交付类型执行具体交付
         if (order.getGoodsType() == 2) {
             // 虚拟卡密自动分配
             TradeOrderItem firstItem = items.get(0);
