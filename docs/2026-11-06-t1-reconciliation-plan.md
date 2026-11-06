@@ -110,9 +110,11 @@
 
 - 未运行 `mvn`、编译、测试或构建，未连接 MySQL；跑批并发、唯一键冲突与真实 CHECK 行为待用户手工验证。
 - 没有真实渠道 API/对账单文件，T+1 依赖管理端先导入流水；自动拉单仍是缺口。
-- 渠道退款流水的真实字段、币种精度、跨天结算规则未联调；`success_at` 的历史数据未回填（本卡只对新迁移写入，旧 SUCCESS 记录 `success_at` 为空，不会进入 T+1 窗口，需人工确认补数方案）。
+- 渠道退款流水的真实字段、币种精度、跨天结算规则未联调。
+- `success_at IS NULL` 的 `SUCCESS` 退款不会进入 T+1 窗口（缺口，未补数）：产生路径是上线前已成功的旧数据，或迁移/异常导致 `markSuccess` 未写入。跑批每次会统计 `status='SUCCESS' AND success_at IS NULL` 的数量并 `warn` 告警；补数方案为按渠道退款流水 `trade_time` 回填，无流水时按 `updated_at` 的人工核对值回填并留审计，补数脚本/人工 SQL 须单独评审，本卡不自动改写历史资金记录。
 - 支付事件仍按 `payment_event.created_at`（回调受理时间）切日，不是渠道成功时间；跨日回调可能归属错误业务日，已登记缺口（G21），缓解手段是渠道流水侧按 `trade_time` 对账并标 `TIME_CROSS_DAY`。
-- 结算批次合计只在“对账窗口完整等于 `period_start/period_end`”时校验；T+1 单日窗口不对月结批次做合计比对，避免恒不成立。
+- 结算批次合计仅当对账窗口与批次开区间账期完全一致（`period_start = from`、`period_end = to`，月结/半年结的 `period_end` 均为期末次日）时校验；T+1 单日窗口不比对月结批次，避免恒不成立。
+- 部署前提：`updated_at`/`finished_at` 等列的 `CURRENT_TIMESTAMP` 由数据库会话时区生成，必须与业务时区 `Asia/Shanghai` 对齐（连接串 `serverTimezone=Asia/Shanghai` 或库/会话 `time_zone='+08:00'`）。验收时执行 `SELECT @@global.time_zone, @@session.time_zone, NOW(), UTC_TIMESTAMP()`，确认 `NOW()` 与 `Asia/Shanghai` 当前时间偏差不超过 1 分钟；未对齐时 Java 截断时间与 DB 生成时间会漂移，`finishRun` 的 `started_at` 条件可能失配。
 - 平台代收结算的极端状态组合（部分结算、多次退款、批次重算）只做静态恒等式校验，未做资金演练。
 - 跑批回看窗口默认 3 天；超过窗口的历史失败需手动按业务日重跑。自动重试每店每次跑批只做一轮，`retry_failed` 已落库，但真实并发下的条件回写与接管行为仍待 MySQL 演练。
 
@@ -145,6 +147,25 @@
 | 必修四 回看与重试冲突 | 原 `last_retry_date` 存跑批业务日，且同一次夜间任务对 `[今日-3, 今日-1]` 逐日调用 `autoRetry`，一条旧差异一夜被拆成 3 次重试计数 | 每店每次跑批只调用一次 `autoRetry`，`last_retry_date` 改用实际执行日；跳过 `createdAt >= runStartedAt` 的新建差异与未来业务日 |
 | 必修五 重试异常不可见 | 原 `autoRetry` 只 `failed++` 与 warn，`RetryResult.failed` 未写入跑批记录与 Summary | 新增 `reconciliation_batch_run.retry_failed` 与 `addRetryTally`，异常摘要写 `last_error`，`failed` 计入汇总 |
 | 支付事件切日 | 原按 `payment_event.created_at`（回调受理时间）切日，不是渠道成功时间 | 本卡未新增 `paid_at`，作为缺口登记于 `docs/2026-11-06-dev-gap-log.md` G21，风险：跨日回调可能归属错误业务日 |
-| 结算批次合计 | 原声明“覆盖结算批次合计校验”，但 T+1 单日窗口与月结批次账期不重叠，校验恒不成立 | 改为仅当对账窗口完整等于 `period_start/period_end` 时才校验；补“日窗口不校验月结批次”用例 |
+| 结算批次合计 | 原声明“覆盖结算批次合计校验”，但 T+1 单日窗口与月结批次账期不重叠，校验恒不成立 | 第一轮改为“窗口完整等于 `period_start/period_end` 才校验”；第二轮发现该口径把开区间 `periodEnd` 误当闭区间，已回归修正，见第 11 节 |
 | 时区混用 | 原多处 `LocalDateTime.now()` 用 JVM 默认时区，业务日按 `Asia/Shanghai` | 统一 `BUSINESS_ZONE`（`Asia/Shanghai`）取记录时间、审计时间与兜底时间 |
 | 僵尸接管无租约 | 原超时任务被接管后，原节点结束时无条件 `updateById` 覆盖接管方结果 | 完成回写改 `finishRun` 条件更新（`status='RUNNING' AND attempts AND started_at`）；`updated==0` 计 `skipped`，不覆盖接管方。`started_at` 按 DATETIME 秒级精度截断，避免纳秒被库截断导致条件永不命中 |
+
+## 11. 第二轮回核返工（2026-11-06）
+
+第二轮确认 8 项中 5 项通过，以下 3 项继续返工，其中第 1 项为上一轮返工引入的回归。
+
+| 返工项 | 错在哪 / 回归原因 | 返工落点 |
+| --- | --- | --- |
+| 必修一 结算批次合计（回归） | 上一轮把 `windowEnd` 定义成 `to.minusDays(1)`，再要求 `batch.periodEnd.equals(windowEnd)`；但批次账期是开区间，`SettlementService.generateMonthly` 与手工按月入口的 `periodEnd` 都是次月 1 日，导致原本可用的手工按月对账被判为“窗口不完整”，任何入口都不再校验合计 | 改为 `batch.getPeriodEnd().equals(to.toLocalDate())`（等价于 `windowEnd.plusDays(1)`）；用例改用真实账期形状 `periodStart=10-01, periodEnd=11-01`，删除 `periodEnd=10-31` 的假数据 |
+| 必修二 退款单边账门禁只修一半 | 上一轮只给“带渠道号 + 渠道有流水”的 `REF|id|ST` 加了门禁，`REF|id|NO`（无渠道/无渠道退款号）与 `REFFEE`（服务费冲正）仍不受约束，0 流水时照旧生成 `REFUND_WITHOUT_STATEMENT`，与 `last_error` 文案矛盾 | 三条路径统一按“该退款渠道当期是否有流水”判断（渠道为空时退化为窗口内是否有任何流水）；0 流水全部推迟到流水导入后再判；跑批文案改为“相关单边账暂不生成” |
+| 必修三 多渠道部分导入静默漏对 | 门禁与 `PARTIAL` 判定都按窗口总流水数：A 渠道已导入、B 渠道未导入时，B 的单边账被压住但总流水不为 0，跑批记 `SUCCESS`，既不报差异也不标不完整 | `reconcile` 按“本地单据实际使用的渠道”与“有流水的渠道”求差集，返回 `incompleteChannels`；跑标记 `PARTIAL` 并把缺失渠道写入 `last_error` |
+
+### 11.1 登记缺口（本卡不修）
+
+- `success_at IS NULL` 的成功退款不进 T+1 窗口：产生路径与补数方案见第 8 节；跑批已加数量巡检 `warn`，需人工按补数方案回填，不能当作无差异。
+- DB `CURRENT_TIMESTAMP` 与 `Asia/Shanghai` 的会话时区对齐：作为部署前提写入第 8 节，验收时用 `SELECT @@session.time_zone, NOW(), UTC_TIMESTAMP()` 校验。
+
+### 11.2 复核口径更正（`fk_statement_merchant`）
+
+第二轮复核曾写“上一轮报告的 `fk_statement_merchant` 重复外键不成立、特此撤回”，这是时空错位：首轮发现时 `schema.sql` L672 确实与 L324 同名，**重复属实**；该问题已由提交 `317cbce` 将 L672 改名为 `fk_payment_channel_statement_merchant` 修复。第二轮看到的是修复后的状态，不能据此认定首轮误报，也不能抹掉该修复记录。详见 [schema 吸收审计](2026-11-06-schema-absorption-audit.md) §5.2。

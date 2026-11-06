@@ -77,6 +77,18 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
     }
 
     /**
+     * 巡检：统计 status='SUCCESS' 但 success_at 缺失的退款。
+     * 产生路径为旧数据（本卡上线前已成功）或异常迁移；这类记录不会进入 T+1 success_at 窗口，
+     * 跑批必须告警并由人工按补数方案回填，不能当作“对账无差异”。
+     */
+    default long countSuccessWithoutSuccessAt() {
+        Long count = selectCount(new LambdaQueryWrapper<TradeRefund>()
+                .eq(TradeRefund::getStatus, "SUCCESS")
+                .isNull(TradeRefund::getSuccessAt));
+        return count == null ? 0L : count;
+    }
+
+    /**
      * T33：退款前预占商品退款额度与按快照比例的服务费冲正额。
      * 返回 0 表示订单状态不允许或累计退款超过实付/服务费快照，调用方必须拒绝本次退款。
      */

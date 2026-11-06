@@ -214,6 +214,10 @@ V1 的 `attempt_key`、`reissue_count` 在 V 与 S 中均无注释；两者是 T
 
 改后重复数为 0。以上为静态文本结论，真实 MySQL 建库仍须用户演练验证。
 
+### 5.2 复核口径更正（`fk_statement_merchant`）
+
+第二轮复核曾写“上一轮报告的 `fk_statement_merchant` 重复外键不成立、特此撤回”，属于**时空错位**：首轮发现时 `schema.sql` L672 确实与 L324（`billing_statement.shop_id`）同名，**重复属实**；该问题已由提交 `317cbce` 将 L672 改名为 `fk_payment_channel_statement_merchant` 修复。第二轮看到的是修复后的状态，不能据此认定首轮误报，也不能抹掉 §5 的修复记录。结论：**发现属实，已修复，改后静态扫描重复 0；真实 MySQL 建库仍待演练**。
+
 ## 6. 删除状态
 
 V1–V6 脚本**保留未删**，等待用户复核本清单。按用户要求，删除必须单独一步、单独提交；在真实 MySQL 演练前不宣称等价已验证。

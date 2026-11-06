@@ -160,9 +160,9 @@ class ReconciliationServiceTest {
         batch.setId(10L);
         batch.setMerchantId(1L);
         batch.setStatus("CONFIRMED");
-        // 只有对账窗口完整覆盖批次账期时才校验合计；这里窗口 10-01~10-31 与批次账期一致。
+        // 批次账期是开区间：月结生成器与手工按月入口的 periodEnd 都是次月 1 日。
         batch.setPeriodStart(LocalDate.of(2026, 10, 1));
-        batch.setPeriodEnd(LocalDate.of(2026, 10, 31));
+        batch.setPeriodEnd(LocalDate.of(2026, 11, 1));
         batch.setFeeAmount(new BigDecimal("4.00"));
         batch.setAdjustmentAmount(BigDecimal.ZERO);
         batch.setNetFeeAmount(new BigDecimal("5.00"));
@@ -190,9 +190,10 @@ class ReconciliationServiceTest {
         batch.setId(11L);
         batch.setMerchantId(1L);
         batch.setStatus("CONFIRMED");
-        // 月结批次账期 10-01~10-31，与 T+1 单日窗口 10-05 不重叠完整，不得把月结合计盘成单日差异。
+        // 真实月结批次账期 10-01~11-01（次月 1 日），与 T+1 单日窗口 10-05~10-06 不一致，
+        // 不得把月结合计盘成单日差异。
         batch.setPeriodStart(LocalDate.of(2026, 10, 1));
-        batch.setPeriodEnd(LocalDate.of(2026, 10, 31));
+        batch.setPeriodEnd(LocalDate.of(2026, 11, 1));
         batch.setFeeAmount(new BigDecimal("4.00"));
         batch.setAdjustmentAmount(BigDecimal.ZERO);
         batch.setNetFeeAmount(new BigDecimal("5.00"));
@@ -420,19 +421,47 @@ class ReconciliationServiceTest {
     }
 
     @Test
-    void zeroChannelStatementsDoesNotCreateRefundWithoutStatement() {
+    void zeroChannelStatementsDoesNotCreateAnyRefundSideDifference() {
         LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
         LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
-        TradeRefund refund = successfulRefund("RF-2", "WX-R2", new BigDecimal("50.00"), BigDecimal.ZERO);
+        // 无渠道/无渠道退款号（REF|id|NO）与服务费冲正（REFFEE）也必须受流水门禁约束。
+        TradeRefund noChannel = successfulRefund("RF-2", null, new BigDecimal("50.00"),
+                new BigDecimal("2.00"));
+        noChannel.setChannel(null);
+        TradeRefund channelNoStatement = successfulRefund("RF-3", "WX-R2", new BigDecimal("50.00"),
+                new BigDecimal("3.00"));
+        channelNoStatement.setId(41L);
         when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
         when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
-        when(refundMapper.findSuccessfulRefundsByPeriod(1L, from, to)).thenReturn(List.of(refund));
+        when(refundMapper.findSuccessfulRefundsByPeriod(1L, from, to))
+                .thenReturn(List.of(noChannel, channelNoStatement));
         when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
 
         Map<String, Object> result = service().reconcile(1L, from, to);
 
         assertEquals(0, result.get("added"));
         verify(differenceMapper, never()).insert(any(ReconciliationDifference.class));
+    }
+
+    @Test
+    void partiallyImportedMultiChannelLocalDocsAreReportedIncomplete() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        // WECHAT 当日有流水，ALIPAY 只有本地支付事件、没有导入流水。
+        PaymentChannelStatement gate = statement("WECHAT", "WX-OTHER", "SN-OTHER", new BigDecimal("10.00"));
+        gate.setTradeStatus("FAILED");
+        PaymentEvent alipayEvent = successEvent("SN-AP", new BigDecimal("20.00"));
+        alipayEvent.setId(2L);
+        alipayEvent.setChannel("ALIPAY");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(gate));
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(alipayEvent));
+        when(statementMapper.countByMerchantChannelPeriod(1L, "ALIPAY", from, to)).thenReturn(0);
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        // 总流水数不为 0，但 ALIPAY 必须被标记为未导入，跑批据此转 PARTIAL 而不是静默成功。
+        assertEquals("ALIPAY", result.get("incompleteChannels"));
     }
 
     @Test

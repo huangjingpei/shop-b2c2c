@@ -165,10 +165,22 @@ public class ReconciliationBatchService {
             int refunds = intOf(result, "refunds");
             int added = intOf(result, "added");
             int refreshed = intOf(result, "refreshed");
+            String incompleteChannels = String.valueOf(
+                    result.getOrDefault("incompleteChannels", ""));
+            int successAtMissing = intOf(result, "successAtMissing");
+            if (successAtMissing > 0) {
+                // 巡检告警：这些成功退款不会进入 success_at 窗口，不能当作“对账无差异”。
+                log.warn("success_at 缺失的 SUCCESS 退款 {} 笔，T+1 不会扫描，需人工补数", successAtMissing);
+            }
             String status;
             String lastError = null;
-            if (statements == 0 && (events > 0 || refunds > 0)) {
-                // 本地有单据但渠道流水未导入：标记 PARTIAL；支付事件与退款单边账均不批量生成。
+            if (!incompleteChannels.isBlank()) {
+                // 多渠道只导入一部分：按渠道维度标记 PARTIAL，避免总流水数不为 0 时静默通过。
+                status = "PARTIAL";
+                lastError = "渠道流水未完整导入：渠道" + incompleteChannels
+                        + "有本地单据但当期流水0笔，相关单边账暂不生成";
+            } else if (statements == 0 && (events > 0 || refunds > 0)) {
+                // 本地有单据但渠道流水完全未导入：标记 PARTIAL；支付事件与退款单边账均不批量生成。
                 status = "PARTIAL";
                 lastError = "渠道流水未导入：本地事件" + events + "笔、退款" + refunds
                         + "笔，渠道流水0笔，单边账暂不生成";

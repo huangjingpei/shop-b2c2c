@@ -109,6 +109,27 @@ class ReconciliationBatchServiceTest {
     }
 
     @Test
+    void partiallyImportedMultiChannelMarksRunPartialInsteadOfSuccess() {
+        singleStore();
+        ReconciliationBatchRun run = run("PENDING", 0, DATE, MERCHANT);
+        when(runMapper.findByDateAndMerchant(DATE, MERCHANT)).thenReturn(Optional.of(run));
+        when(runMapper.markRunning(any(), anyInt(), any(), any())).thenReturn(1);
+        stubFinish(1);
+        Map<String, Object> partial = result(1, 3, 1, 0, 0);
+        // 总流水数不为 0，但 ALIPAY 渠道有本地单据且当日未导入流水。
+        partial.put("incompleteChannels", "ALIPAY");
+        when(reconciliationService.reconcile(eq(MERCHANT), any(), any(), eq(OPERATOR)))
+                .thenReturn(partial);
+
+        Map<String, Object> outcome = service().runRange(DATE, DATE, OPERATOR, null);
+
+        assertEquals(1, outcome.get("partial"));
+        assertEquals("PARTIAL", run.getStatus());
+        assertTrue(run.getLastError().contains("ALIPAY"));
+        assertTrue(run.getLastError().contains("未完整导入"));
+    }
+
+    @Test
     void reconcileFailureBelowLimitStaysFailedForRetry() {
         singleStore();
         ReconciliationBatchRun run = run("PENDING", 0, DATE, MERCHANT);
@@ -362,6 +383,7 @@ class ReconciliationBatchServiceTest {
         result.put("refunds", refunds);
         result.put("batches", 0);
         result.put("platformSettlements", 0);
+        result.put("incompleteChannels", "");
         result.put("businessDate", DATE.toString());
         return result;
     }

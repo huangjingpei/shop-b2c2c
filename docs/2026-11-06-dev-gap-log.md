@@ -201,7 +201,10 @@
 - 原现象：有手工 `reconcile` 入口与差异队列，但无 T+1 调度、无长款/短款分类、无处理时限与超时升级。
 - 本卡已补：每日跑批与按业务日逐店记录、`(business_date, merchant_id)` 唯一键与状态机续跑、退款/服务费金额/退款冲正/平台代收对账、长短款/单边/精度/币种/跨天分类、差异审计与 `MANUAL` 升级、`PARTIAL` 标记流水未导入。
 - 复核返工（原判断错误已修正）：退款切日改用不可变 `success_at`、`PARTIAL` 纳入转人工前置状态、退款单边账加流水门禁、每店每次跑批只做一轮自动重试（`last_retry_date` 用执行日）、重试异常落 `retry_failed`、完成回写改条件更新防接管覆盖、结算批次合计只在完整账期校验、时间统一 `Asia/Shanghai`。详见 [2026-11-06-t1-reconciliation-plan.md](2026-11-06-t1-reconciliation-plan.md) 第 10 节。
+- 第二轮回核返工：结算批次合计改按开区间 `periodEnd = to`（原 `to.minusDays(1)` 把月结/手工按月入口全关掉）；退款三条单边路径（`REF|id|NO`、`REF|id|ST`、`REFFEE`）统一受流水门禁；按渠道求差集返回 `incompleteChannels`，多渠道部分导入不再静默 `SUCCESS` 而是 `PARTIAL`。详见同一文档第 11 节。
 - 登记缺口（未做）：支付事件仍按 `payment_event.created_at`（回调受理时间）切日，不是渠道成功时间；跨日回调可能归属错误业务日，缓解手段是渠道流水侧按 `trade_time` 对账并在差异中标注 `TIME_CROSS_DAY`。补齐需新增 `paid_at`/渠道成功时间字段并回填历史数据。
+- 登记缺口（未补数）：`success_at IS NULL` 的成功退款不进 T+1 窗口（旧数据或异常迁移）。跑批会统计数量并 `warn`，补数需按渠道流水 `trade_time`（无流水时按人工核对值）回填，方案见 t1 方案第 8 节，不得自动改写历史资金记录。
+- 部署前提：DB 会话时区必须与 `Asia/Shanghai` 对齐（`serverTimezone` 或 `time_zone='+08:00'`），否则 `CURRENT_TIMESTAMP` 与 Java 截断时间漂移；验收用 `SELECT @@session.time_zone, NOW(), UTC_TIMESTAMP()` 校验。
 - 仍缺：渠道对账单自动拉取（当前只能管理端导入）、对账差异处理时限与超时升级策略；未运行构建/测试、未连库，待人工验证。
 
 ## G22 支付事件/充值/对账差异状态迁移未统一 CAS（已登记未做）
