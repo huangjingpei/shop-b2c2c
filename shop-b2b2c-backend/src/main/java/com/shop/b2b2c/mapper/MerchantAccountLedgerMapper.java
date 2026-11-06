@@ -1,7 +1,10 @@
 /*
  * 文件：MerchantAccountLedgerMapper.java
- * 用途：服务费账本查询（T34），按幂等键判重并汇总账期实收/欠费。
- * 维护注意：账本只追加；查询汇总必须限定商户与时间区间，禁止全表扫描。
+ * 用途：服务费账本查询（T34），按幂等键判重并汇总账期实收/欠费；账本只允许追加，不提供业务更新/删除入口。
+ * 维护注意：
+ * 1. 查询汇总必须限定商户与时间区间，禁止全表扫描。
+ * 2. 账本是资金证据，只能追加；更正必须新增反向/红冲分录，禁止用 BaseMapper 的 update/delete 改历史。
+ * 3. schema.sql 用 trg_ledger_no_update/trg_ledger_no_delete 兜底；H2 夹具不建触发器，真实 MySQL 行为须人工验证。
  */
 package com.shop.b2b2c.mapper;
 

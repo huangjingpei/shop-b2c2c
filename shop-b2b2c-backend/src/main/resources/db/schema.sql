@@ -540,6 +540,16 @@ CREATE TABLE IF NOT EXISTS `merchant_account_ledger` (
   CONSTRAINT `chk_ledger_amount` CHECK (`amount` >= 0.00)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='服务费账本';
 
+-- 21.1 服务费账本 append-only 兜底（财务基线 7）：账本只允许 INSERT，更正必须追加红冲分录，禁止 UPDATE/DELETE。
+-- 说明：触发器是 MySQL 运行时约束；H2 单测夹具不复制触发器，真实 MySQL 行为须由用户在手工验证时确认。
+DROP TRIGGER IF EXISTS `trg_ledger_no_update`;
+CREATE TRIGGER `trg_ledger_no_update` BEFORE UPDATE ON `merchant_account_ledger`
+FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'merchant_account_ledger is append-only: update forbidden';
+
+DROP TRIGGER IF EXISTS `trg_ledger_no_delete`;
+CREATE TRIGGER `trg_ledger_no_delete` BEFORE DELETE ON `merchant_account_ledger`
+FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'merchant_account_ledger is append-only: delete forbidden';
+
 -- 22. 商家充值单（T34）：线下转账 + 人工确认入账；凭证号唯一幂等
 CREATE TABLE IF NOT EXISTS `merchant_recharge_order` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
