@@ -12,6 +12,8 @@
  *  6. 自动重试异常数与异常摘要必须落库（retry_failed / last_error），不能只写日志。
  *  7. 业务日与记录时间统一 Asia/Shanghai，窗口 [业务日 00:00, 业务日+1 00:00)。
  *  8. 跑批只写差异与跑批记录，不修改订单、退款、账本、结算单或平台代收台账。
+ *  9. 非成功支付事件不得静默：已收款拒绝状态与悬挂 PROCESSING 由对账侧生成差异，
+ *     未超悬挂阈值的 PROCESSING 计入 processingPending 汇总（只在跑批结果可见，不逐笔入队）。
  */
 package com.shop.b2b2c.service;
 
@@ -211,6 +213,7 @@ public class ReconciliationBatchService {
             }
             summary.added += added;
             summary.refreshed += refreshed;
+            summary.processingPending += intOf(result, "processingPending");
             return run;
         } catch (Exception e) {
             String status = attempts >= MAX_RUN_ATTEMPTS ? "MANUAL" : "FAILED";
@@ -357,6 +360,8 @@ public class ReconciliationBatchService {
         private int retryProcessed;
         private int retryFailed;
         private int escalated;
+        /** 未超悬挂阈值的 PROCESSING 笔数汇总；超过阈值的已转为差异入队。 */
+        private int processingPending;
 
         private Map<String, Object> toMap() {
             Map<String, Object> result = new LinkedHashMap<>();
@@ -371,6 +376,7 @@ public class ReconciliationBatchService {
             result.put("retryProcessed", retryProcessed);
             result.put("retryFailed", retryFailed);
             result.put("manualEscalated", escalated);
+            result.put("processingPending", processingPending);
             return result;
         }
     }

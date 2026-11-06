@@ -12,6 +12,9 @@
  *  7. 差异处理动作全部写 reconciliation_difference_audit；自动重试同一执行日只允许一次，且刷新不覆盖已定业务日。
  *  8. 导出使用管理员/本店归属校验后的数据，CSV 转义逗号、引号与换行，避免公式注入。
  *  9. 时间记录统一使用 Asia/Shanghai 墙上时间，不依赖 JVM 默认时区。
+ * 10. 非成功支付事件不得静默：七个“已收款”状态（含 reject 写入的四个拒绝状态）生成
+ *     PAYMENT_EVENT_REJECTED 差异；悬挂超过 5 分钟的 PROCESSING 生成 PAYMENT_EVENT_REVIEW 差异；
+ *     未悬挂 PROCESSING 计入 processingPending 汇总；其它未知状态生成 REVIEW 差异。
  */
 package com.shop.b2b2c.service;
 
@@ -43,6 +46,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
@@ -82,6 +86,8 @@ public class ReconciliationService {
     public static final String SETTLEMENT_ITEM_MISMATCH = "SETTLEMENT_ITEM_MISMATCH";
     public static final String REFUND_WITHOUT_STATEMENT = "REFUND_WITHOUT_STATEMENT";
     public static final String REFUND_AMOUNT_MISMATCH = "REFUND_AMOUNT_MISMATCH";
+    public static final String PAYMENT_EVENT_REJECTED = "PAYMENT_EVENT_REJECTED";
+    public static final String PAYMENT_EVENT_REVIEW = "PAYMENT_EVENT_REVIEW";
     public static final String REFUND_STATEMENT_WITHOUT_REFUND = "REFUND_STATEMENT_WITHOUT_REFUND";
     public static final String REFUND_FEE_LEDGER_MISSING = "REFUND_FEE_LEDGER_MISSING";
     public static final String REFUND_FEE_AMOUNT_MISMATCH = "REFUND_FEE_AMOUNT_MISMATCH";
@@ -91,14 +97,20 @@ public class ReconciliationService {
     public static final String PLATFORM_SETTLEMENT_BATCH_MISSING = "PLATFORM_SETTLEMENT_BATCH_MISSING";
 
     /**
-     * 应当产生本商户渠道流水的支付事件状态，仅用于“渠道是否已导入”判定。
-     * 保守取资金已到本商户渠道账户的三种：SUCCESS、DUPLICATE_PAYMENT、LATE_PAYMENT。
-     * 不参与该判定但仍按各自逻辑处理的：PROCESSING（结果未确认）、MANUAL_REVIEW（结果未知）、
-     * MERCHANT_MISMATCH（他人商户）、CURRENCY_MISMATCH（币种异常）、AMOUNT_MISMATCH（金额异常待核）、
-     * FULFILLMENT_FAILED（既可能是已支付后履约失败，也可能是明确未支付/查无此单，语义混合）。
+     * 预期会在本商户渠道账户产生流水的支付事件状态（第四轮口径，覆盖第三轮“仅三种状态”的错误判断）。
+     * SUCCESS、DUPLICATE_PAYMENT、LATE_PAYMENT 之外，PaymentEventServiceImpl 在收到渠道回调后通过
+     * reject(...) 写入的 MERCHANT_MISMATCH、AMOUNT_MISMATCH、CURRENCY_MISMATCH、FULFILLMENT_FAILED
+     * 也计入该判定：漏计会让“渠道流水未导入、当日只有拒绝事件”的店铺被静默跳过。
+     * FULFILLMENT_FAILED 另有一个写入方：G34 PaymentEventReconcileService 在渠道明确未支付时也会写该状态；
+     * 本轮按既定口径仍计入，该路径可能带来多余 PARTIAL，已登记于方案 §13.4 待确认。
+     * 不计入：PROCESSING（结果未确认，单独按悬挂阈值给差异信号）及其它未知/人工队列状态。
      */
-    private static final Set<String> STATEMENT_EXPECTED_EVENT_STATUSES =
-            Set.of("SUCCESS", DUPLICATE_PAYMENT, "LATE_PAYMENT");
+    private static final Set<String> STATEMENT_EXPECTED_EVENT_STATUSES = Set.of(
+            "SUCCESS", DUPLICATE_PAYMENT, "LATE_PAYMENT", "MERCHANT_MISMATCH",
+            "AMOUNT_MISMATCH", "CURRENCY_MISMATCH", "FULFILLMENT_FAILED");
+
+    /** 陈旧 PROCESSING 判定阈值：与 G34 补偿扫描默认阈值一致，避免两套口径。 */
+    private static final Duration PROCESSING_STALE_AFTER = Duration.ofMinutes(5);
 
     /** 财务基线：同一差异自动重试上限；达到上限仍不一致必须转人工，不得无限重试。 */
     public static final int MAX_RETRY_COUNT = 3;
@@ -210,9 +222,11 @@ public class ReconciliationService {
 
         List<PaymentEvent> events = eventMapper.findByMerchantAndPeriod(merchantId, from, to);
         for (PaymentEvent event : events) {
-            // 只把“应当产生本商户渠道流水”的事件计入缺失渠道判定；非成功/他人商户/结果未知事件
-            // 天然不会出现在本商户流水中，计入会导致永久 PARTIAL 并错误升级 MANUAL。
+            // 只有“已收到渠道回调、资金已进本商户渠道账户”的事件才计入缺失渠道判定：
+            // SUCCESS / DUPLICATE_PAYMENT / LATE_PAYMENT 与 reject(...) 写入的四个拒绝状态。
+            // PROCESSING 结果未确认（另按悬挂阈值给信号），未知/内部队列状态也不计入，避免永久 PARTIAL。
             if (event.getChannel() != null && !event.getChannel().isBlank()
+                    && event.getEventStatus() != null
                     && STATEMENT_EXPECTED_EVENT_STATUSES.contains(event.getEventStatus())) {
                 channelsWithLocalDocs.add(event.getChannel());
             }
@@ -225,6 +239,8 @@ public class ReconciliationService {
                 continue;
             }
             if (!"SUCCESS".equals(event.getEventStatus())) {
+                // 非成功事件不能静默跳过：渠道已收款后被拒绝的必须留差异，悬挂 PROCESSING 也必须有信号。
+                signalNonSuccessEvent(merchantId, event, businessDate, operatorId, counts);
                 continue;
             }
             if (order == null) {
@@ -369,8 +385,70 @@ public class ReconciliationService {
         result.put("batches", batches.size());
         result.put("platformSettlements", settlements.size());
         result.put("incompleteChannels", String.join(",", incompleteChannels));
+        // 未超悬挂阈值的 PROCESSING 不生成差异（渠道回查仍在进行，逐笔入队会制造噪音），
+        // 但必须在跑批汇总里可见，不能静默。悬挂超阈值的 PROCESSING 已转为 PAYMENT_EVENT_REVIEW 差异。
+        result.put("processingPending", counts.processingPending);
         result.put("businessDate", businessDate.toString());
         return result;
+    }
+
+    /**
+     * 非 SUCCESS 支付事件的对账信号（DUPLICATE_PAYMENT 已在主循环单独入队）。
+     * 选择“生成差异”而不是只做汇总计数：差异可分派、可审计、可按单据定位，纯计数无法定位是哪一笔。
+     *  - 七个“已收款”状态（SUCCESS 之外即四个 reject 状态与 LATE_PAYMENT）：生成 PAYMENT_EVENT_REJECTED；
+     *  - PROCESSING 超过 {@link #PROCESSING_STALE_AFTER} 视为悬挂：生成 PAYMENT_EVENT_REVIEW；
+     *  - PROCESSING 未超阈值：只计入 processingPending，随跑批汇总返回；
+     *  - 其它未知/内部队列状态（如 ORDER_STATUS_INVALID）：生成 PAYMENT_EVENT_REVIEW，避免静默。
+     */
+    private void signalNonSuccessEvent(Long merchantId, PaymentEvent event, LocalDate businessDate,
+                                       Long operatorId, Counts counts) {
+        String status = event.getEventStatus();
+        String tradeNo = event.getPayTradeNo();
+        if ("PROCESSING".equals(status)) {
+            if (!isStaleProcessing(event)) {
+                counts.processingPending++;
+                return;
+            }
+            addDifference("EV|" + event.getId() + "|PROCESSING", merchantId, event.getChannel(),
+                    PAYMENT_EVENT_REVIEW, "EVENT", event.getId(), event.getOrderSn(), tradeNo,
+                    event.getPayAmount(), null,
+                    "支付事件 PROCESSING 悬挂超过" + PROCESSING_STALE_AFTER.toMinutes()
+                            + "分钟（业务时区 Asia/Shanghai），渠道结果未回写，需人工核对",
+                    ReconciliationClassifier.INTERNAL, businessDate, operatorId, counts);
+            return;
+        }
+        if (status != null && STATEMENT_EXPECTED_EVENT_STATUSES.contains(status)) {
+            String detail;
+            if ("FULFILLMENT_FAILED".equals(status)) {
+                // 该状态有两个写入方：回调后 reject(...) 履约失败，以及 G34 渠道明确未支付。
+                // 文案不能断言“已收款”，避免对 G34 明确未支付的事件误导运营。
+                detail = "支付事件状态 FULFILLMENT_FAILED：履约失败或渠道明确未支付，需人工核对资金到账与渠道结果";
+            } else {
+                detail = "支付事件状态 " + status + "：渠道已收款但履约/校验被拒绝，需人工核对资金与履行结果";
+            }
+            addDifference("EV|" + event.getId() + "|" + status, merchantId, event.getChannel(),
+                    PAYMENT_EVENT_REJECTED, "EVENT", event.getId(), event.getOrderSn(), tradeNo,
+                    event.getPayAmount(), null, detail,
+                    ReconciliationClassifier.INTERNAL, businessDate, operatorId, counts);
+            return;
+        }
+        String statusKey = status == null || status.isBlank() ? "UNKNOWN" : status;
+        addDifference("EV|" + event.getId() + "|" + statusKey, merchantId, event.getChannel(),
+                PAYMENT_EVENT_REVIEW, "EVENT", event.getId(), event.getOrderSn(), tradeNo,
+                event.getPayAmount(), null,
+                "支付事件状态 " + statusKey + " 未进入预期流水状态，需人工确认真实结果",
+                ReconciliationClassifier.INTERNAL, businessDate, operatorId, counts);
+    }
+
+    /**
+     * 陈旧 PROCESSING 判定：created_at 早于当前时间 5 分钟。
+     * 阈值与 G34 补偿扫描默认值一致，避免对账侧与补扫侧形成两套“悬挂”口径。
+     * created_at 缺失时无法判龄，按未悬挂处理，交给 G34 回查补写。
+     */
+    private boolean isStaleProcessing(PaymentEvent event) {
+        LocalDateTime createdAt = event.getCreatedAt();
+        return createdAt != null
+                && createdAt.isBefore(LocalDateTime.now(BUSINESS_ZONE).minus(PROCESSING_STALE_AFTER));
     }
 
     public List<ReconciliationDifference> list(Long merchantId, String status, int limit) {
@@ -749,6 +827,14 @@ public class ReconciliationService {
                     || ReconciliationClassifier.amountEquals(difference.getExpectedAmount(),
                     reversal.get().getAmount());
         }
+        if (PAYMENT_EVENT_REJECTED.equals(type) || PAYMENT_EVENT_REVIEW.equals(type)) {
+            // 事件最终回写为 SUCCESS 才说明资金与履约已闭环；否则保持人工队列。
+            if (difference.getBizId() == null) {
+                return false;
+            }
+            PaymentEvent event = eventMapper.selectById(difference.getBizId());
+            return event != null && "SUCCESS".equals(event.getEventStatus());
+        }
         if (PLATFORM_SETTLEMENT_BATCH_MISSING.equals(type)) {
             PlatformCollectionSettlement settlement = platformSettlementMapper.selectById(difference.getBizId());
             if (settlement == null || settlement.getSettleBatchId() == null) {
@@ -889,5 +975,7 @@ public class ReconciliationService {
         private int added;
         private int refreshed;
         private int skipped;
+        /** 未超悬挂阈值的 PROCESSING 笔数：只在跑批汇总可见，不逐笔入队。 */
+        private int processingPending;
     }
 }

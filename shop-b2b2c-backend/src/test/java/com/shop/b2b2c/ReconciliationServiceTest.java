@@ -7,6 +7,8 @@
  *  3. CSV 用例覆盖公式注入防护和逗号/引号转义，避免导出打开即执行公式。
  *  4. 真实渠道流水导入与 MySQL 并发对账仍由用户手动验证。
  *  5. T+1 用例覆盖退款↔渠道退款、服务费金额、平台代收、同日重试防重复与审计留痕。
+ *  6. 非成功支付事件不得静默：四个 reject 状态与悬挂 PROCESSING 必须生成差异，
+ *     未悬挂 PROCESSING 只在 processingPending 汇总可见；断言使用具体差异条数/类型。
  */
 package com.shop.b2b2c;
 
@@ -40,6 +42,7 @@ import org.mockito.ArgumentCaptor;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -200,26 +203,185 @@ class ReconciliationServiceTest {
     }
 
     @Test
-    void nonStatementEventStatusesDoNotMarkChannelIncomplete() {
+    void amountMismatchOnlyChannelIsIncompleteAndQueuesRejectionDifference() {
         LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
         LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
-        PaymentEvent merchantMismatch = successEvent("SN-MM", new BigDecimal("10.00"));
-        merchantMismatch.setId(3L);
-        merchantMismatch.setChannel("ALIPAY");
-        merchantMismatch.setEventStatus("MERCHANT_MISMATCH");
-        PaymentEvent processing = successEvent("SN-PR", new BigDecimal("10.00"));
-        processing.setId(4L);
-        processing.setChannel("UNIONPAY");
-        processing.setEventStatus("PROCESSING");
-        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
-        when(eventMapper.findByMerchantAndPeriod(1L, from, to))
-                .thenReturn(List.of(merchantMismatch, processing));
+        // A 渠道（WECHAT）当日有流水；B 渠道（ALIPAY）未导入流水，只有一笔已收款的 AMOUNT_MISMATCH 事件。
+        PaymentChannelStatement wechatGate = statement("WECHAT", "WX-GATE", "SN-GATE", new BigDecimal("10.00"));
+        wechatGate.setTradeStatus("FAILED");
+        PaymentEvent alipay = successEvent("SN-AP", new BigDecimal("20.00"));
+        alipay.setId(2L);
+        alipay.setChannel("ALIPAY");
+        alipay.setEventStatus("AMOUNT_MISMATCH");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(wechatGate));
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(alipay));
         when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
 
         Map<String, Object> result = service().reconcile(1L, from, to);
 
-        // 他人商户/未确认的事件天然不会产生本商户流水，不得据此判断渠道未导入。
+        // 总流水数不为 0 也不能掩盖 B 未导入：差集必须标出 ALIPAY，跑批据此 PARTIAL 而不是 SUCCESS。
+        assertEquals("ALIPAY", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        assertEquals(0, result.get("processingPending"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REJECTED, captor.getValue().getDiffType());
+        assertEquals("ALIPAY", captor.getValue().getChannel());
+        assertEquals(new BigDecimal("20.00"), captor.getValue().getExpectedAmount());
+        assertTrue(captor.getValue().getDetail().contains("AMOUNT_MISMATCH"));
+    }
+
+    @Test
+    void fulfillmentFailedEventIsIncompleteAndQueuesRejectionDifference() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PaymentChannelStatement wechatGate = statement("WECHAT", "WX-GATE", "SN-GATE", new BigDecimal("10.00"));
+        wechatGate.setTradeStatus("FAILED");
+        PaymentEvent unionPay = successEvent("SN-FF", new BigDecimal("30.00"));
+        unionPay.setId(3L);
+        unionPay.setChannel("UNIONPAY");
+        unionPay.setEventStatus("FULFILLMENT_FAILED");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(wechatGate));
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(unionPay));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals("UNIONPAY", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REJECTED, captor.getValue().getDiffType());
+        assertTrue(captor.getValue().getDetail().contains("FULFILLMENT_FAILED"));
+    }
+
+    @Test
+    void currencyMismatchEventIsIncompleteAndQueuesRejectionDifference() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PaymentChannelStatement wechatGate = statement("WECHAT", "WX-GATE", "SN-GATE", new BigDecimal("10.00"));
+        wechatGate.setTradeStatus("FAILED");
+        PaymentEvent alipay = successEvent("SN-CUR", new BigDecimal("40.00"));
+        alipay.setId(4L);
+        alipay.setChannel("ALIPAY");
+        alipay.setEventStatus("CURRENCY_MISMATCH");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(wechatGate));
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(alipay));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals("ALIPAY", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REJECTED, captor.getValue().getDiffType());
+        assertTrue(captor.getValue().getDetail().contains("CURRENCY_MISMATCH"));
+    }
+
+    @Test
+    void staleProcessingIsVisibleEvenWhenOtherChannelHasStatements() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PaymentChannelStatement wechatGate = statement("WECHAT", "WX-GATE", "SN-GATE", new BigDecimal("10.00"));
+        wechatGate.setTradeStatus("FAILED");
+        PaymentEvent hung = successEvent("SN-PR", new BigDecimal("50.00"));
+        hung.setId(5L);
+        hung.setChannel("UNIONPAY");
+        hung.setEventStatus("PROCESSING");
+        // 悬挂阈值与 G34 一致：created_at 早于当前时间 5 分钟。
+        hung.setCreatedAt(LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMinutes(10));
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(wechatGate));
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(hung));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        // PROCESSING 结果未确认，不据此判渠道未导入；但悬挂必须落差异，不能只写日志。
         assertEquals("", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        assertEquals(0, result.get("processingPending"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REVIEW, captor.getValue().getDiffType());
+        assertTrue(captor.getValue().getDetail().contains("PROCESSING"));
+        assertTrue(captor.getValue().getDetail().contains("5分钟"));
+    }
+
+    @Test
+    void freshProcessingIsCountedInSummaryWithoutNoiseDifference() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PaymentChannelStatement wechatGate = statement("WECHAT", "WX-GATE", "SN-GATE", new BigDecimal("10.00"));
+        wechatGate.setTradeStatus("FAILED");
+        PaymentEvent inFlight = successEvent("SN-PR2", new BigDecimal("50.00"));
+        inFlight.setId(6L);
+        inFlight.setChannel("UNIONPAY");
+        inFlight.setEventStatus("PROCESSING");
+        inFlight.setCreatedAt(LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusMinutes(1));
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(wechatGate));
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(inFlight));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        // 未悬挂 PROCESSING 不逐笔入队，但必须在跑批汇总计数，不能静默。
+        assertEquals(0, result.get("added"));
+        assertEquals(1, result.get("processingPending"));
+        assertEquals("", result.get("incompleteChannels"));
+        verify(differenceMapper, never()).insert(any(ReconciliationDifference.class));
+    }
+
+    @Test
+    void unknownEventStatusStillQueuesReviewDifference() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PaymentEvent unknown = successEvent("SN-UK", new BigDecimal("60.00"));
+        unknown.setId(7L);
+        unknown.setChannel("ALIPAY");
+        // PaymentEventServiceImpl 在收款后还会写 ORDER_STATUS_INVALID，不在七个“预期流水”状态内。
+        unknown.setEventStatus("ORDER_STATUS_INVALID");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(unknown));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals(1, result.get("added"));
+        assertEquals(0, result.get("processingPending"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REVIEW, captor.getValue().getDiffType());
+        assertTrue(captor.getValue().getDetail().contains("ORDER_STATUS_INVALID"));
+    }
+
+    @Test
+    void nonStatementUnknownChannelDoesNotMarkChannelIncomplete() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        // 结果未确认或渠道未知的事件天然不能证明“本地已收款”，不进入缺失渠道差集。
+        PaymentEvent merchantMismatch = successEvent("SN-MM", new BigDecimal("10.00"));
+        merchantMismatch.setId(8L);
+        merchantMismatch.setChannel("");
+        merchantMismatch.setEventStatus("MERCHANT_MISMATCH");
+        PaymentEvent unknown = successEvent("SN-UK2", new BigDecimal("10.00"));
+        unknown.setId(9L);
+        unknown.setChannel("ALIPAY");
+        unknown.setEventStatus("ORDER_STATUS_INVALID");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(merchantMismatch, unknown));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        // 空串渠道与未知状态不计入差集；但两者仍分别生成 PAYMENT_EVENT_REJECTED / REVIEW 差异，不静默。
+        assertEquals("", result.get("incompleteChannels"));
+        assertEquals(2, result.get("added"));
     }
 
     @Test

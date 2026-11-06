@@ -6,6 +6,8 @@
  *  2. 完成回写断言 finishRun 的条件参数，不用 updateById；转人工计数只在 markManual 实际命中时增加。
  *  3. 自动重试用例覆盖“多业务日回看只重试一轮”“今天已重试跳过”“本次新建跳过”“异常落库可见”。
  *  4. 真实 MySQL 唯一键冲突、并发接管与调度触发仍由用户手动验证。
+ *  5. 非成功支付事件不得静默：拒绝状态/悬挂 PROCESSING 差异计数与未悬挂 PROCESSING 汇总
+ *     必须在跑批结果中可见，且多渠道路径不得记 SUCCESS。
  */
 package com.shop.b2b2c;
 
@@ -127,6 +129,68 @@ class ReconciliationBatchServiceTest {
         assertEquals("PARTIAL", run.getStatus());
         assertTrue(run.getLastError().contains("ALIPAY"));
         assertTrue(run.getLastError().contains("未完整导入"));
+    }
+
+    @Test
+    void onlyAmountMismatchChannelIsNeverReportedAsSuccess() {
+        singleStore();
+        ReconciliationBatchRun run = run("PENDING", 0, DATE, MERCHANT);
+        when(runMapper.findByDateAndMerchant(DATE, MERCHANT)).thenReturn(Optional.of(run));
+        when(runMapper.markRunning(any(), anyInt(), any(), any())).thenReturn(1);
+        stubFinish(1);
+        // A 渠道有流水，B 渠道只有 AMOUNT_MISMATCH 事件且当日未导入流水：总流水数非 0 也不得记 SUCCESS。
+        Map<String, Object> reconcileResult = result(2, 2, 0, 1, 0);
+        reconcileResult.put("incompleteChannels", "ALIPAY");
+        when(reconciliationService.reconcile(eq(MERCHANT), any(), any(), eq(OPERATOR)))
+                .thenReturn(reconcileResult);
+
+        Map<String, Object> outcome = service().runRange(DATE, DATE, OPERATOR, null);
+
+        assertEquals(0, outcome.get("success"));
+        assertEquals(1, outcome.get("partial"));
+        assertEquals(1, outcome.get("differencesAdded"));
+        assertEquals("PARTIAL", run.getStatus());
+        assertTrue(run.getLastError().contains("ALIPAY"));
+    }
+
+    @Test
+    void fulfillmentAndCurrencyMismatchChannelsAreNeverReportedAsSuccess() {
+        singleStore();
+        ReconciliationBatchRun run = run("PENDING", 0, DATE, MERCHANT);
+        when(runMapper.findByDateAndMerchant(DATE, MERCHANT)).thenReturn(Optional.of(run));
+        when(runMapper.markRunning(any(), anyInt(), any(), any())).thenReturn(1);
+        stubFinish(1);
+        Map<String, Object> reconcileResult = result(2, 2, 0, 2, 0);
+        reconcileResult.put("incompleteChannels", "ALIPAY,UNIONPAY");
+        when(reconciliationService.reconcile(eq(MERCHANT), any(), any(), eq(OPERATOR)))
+                .thenReturn(reconcileResult);
+
+        Map<String, Object> outcome = service().runRange(DATE, DATE, OPERATOR, null);
+
+        assertEquals(0, outcome.get("success"));
+        assertEquals(1, outcome.get("partial"));
+        assertEquals(2, outcome.get("differencesAdded"));
+        assertEquals("PARTIAL", run.getStatus());
+        assertTrue(run.getLastError().contains("ALIPAY,UNIONPAY"));
+    }
+
+    @Test
+    void freshProcessingIsVisibleInRunSummaryCount() {
+        singleStore();
+        ReconciliationBatchRun run = run("PENDING", 0, DATE, MERCHANT);
+        when(runMapper.findByDateAndMerchant(DATE, MERCHANT)).thenReturn(Optional.of(run));
+        when(runMapper.markRunning(any(), anyInt(), any(), any())).thenReturn(1);
+        stubFinish(1);
+        // 未悬挂 PROCESSING 不入队，但必须在跑批汇总里可见，不能静默。
+        Map<String, Object> reconcileResult = result(2, 3, 0, 0, 0);
+        reconcileResult.put("processingPending", 2);
+        when(reconciliationService.reconcile(eq(MERCHANT), any(), any(), eq(OPERATOR)))
+                .thenReturn(reconcileResult);
+
+        Map<String, Object> outcome = service().runRange(DATE, DATE, OPERATOR, null);
+
+        assertEquals(1, outcome.get("success"));
+        assertEquals(2, outcome.get("processingPending"));
     }
 
     @Test
@@ -404,6 +468,7 @@ class ReconciliationBatchServiceTest {
         result.put("batches", 0);
         result.put("platformSettlements", 0);
         result.put("incompleteChannels", "");
+        result.put("processingPending", 0);
         result.put("businessDate", DATE.toString());
         return result;
     }

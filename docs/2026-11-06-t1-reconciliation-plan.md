@@ -177,7 +177,70 @@
 | 项 | 触发场景 | 处理 |
 | --- | --- | --- |
 | 必修一 空串渠道 | 收集本地单据渠道只排除 `null`，空串 `""` 被当成真实渠道；流水导入强制非空，`""` 永远不在流水渠道集合，该店每天 `PARTIAL`，三次后错误转 `MANUAL` 且永不消失 | 事件与退款两处收集渠道都改为 `!isBlank()`；空串不进入缺失渠道差集 |
-| 必修二 非成功事件污染差集 | 事件循环最前收集渠道时未筛状态；`PROCESSING`/`MANUAL_REVIEW`/`MERCHANT_MISMATCH`/`CURRENCY_MISMATCH` 等天然不会产生本商户流水，却被判“渠道未导入”，三次后永久错误升级 `MANUAL` | 仅 `SUCCESS`、`DUPLICATE_PAYMENT`、`LATE_PAYMENT` 计入差集；`PROCESSING`（未确认）、`MANUAL_REVIEW`（结果未知）、`MERCHANT_MISMATCH`（他人商户）、`CURRENCY_MISMATCH`（币种异常）、`AMOUNT_MISMATCH`（金额异常待核）、`FULFILLMENT_FAILED`（已支付后履约失败与“明确未支付/查无此单”语义混合）不参与该判定，但仍按各自逻辑参与原有对账/跳过处理 |
+| 必修二 非成功事件污染差集 | 事件循环最前收集渠道时未筛状态；`PROCESSING`/`MANUAL_REVIEW` 等结果未知或被拒绝的事件也被判“渠道未导入”，三次后永久错误升级 `MANUAL` | 改为按“是否已收到渠道回调、资金是否已进本商户渠道账户”筛状态；**本卡第三轮曾写成“仅 `SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT` 三种”，该口径是错误判断（见第 13 节更正）**，现为七个状态，见 §13.1 |
 | 必修三 `success_at` 巡检全局扫描 | `countSuccessWithoutSuccessAt` 没有 `merchant_id`，却在“店铺 × 业务日”循环内调用，回看 3 天即 `3 × 店铺数` 次全表扫描，且用不上 `(merchant_id, success_at)` 索引 | 采用方案①：按 `merchant_id` 统计，调用上移到 `runRange` 每店每轮一次；复用 `idx_refund_success` 前缀，不为巡检新增 `(merchant_id, status, success_at)` 索引 |
 
-新增反向用例：空串渠道不进入 `incompleteChannels` 且跑批不 `PARTIAL`；只有 `MERCHANT_MISMATCH`/`PROCESSING` 事件的渠道不判缺失；流水落在相邻业务日但已匹配的渠道不留下永久 `PARTIAL`；巡检按商户每轮只统计一次。
+新增反向用例：空串渠道不进入 `incompleteChannels` 且跑批不 `PARTIAL`；流水落在相邻业务日但已匹配的渠道不留下永久 `PARTIAL`；巡检按商户每轮只统计一次。第三轮“只有 `MERCHANT_MISMATCH`/`PROCESSING` 事件的渠道不判缺失”的用例已在第四轮改写，见 §13.3。
+
+## 13. 第四轮回核返工（2026-11-06）
+
+第四轮更正上一轮的差集状态口径，并补“非成功事件不得静默”的可见信号。
+
+**明确更正：本卡前一轮（第三轮）“仅 `SUCCESS`、`DUPLICATE_PAYMENT`、`LATE_PAYMENT` 三种状态计入差集”的口径是错误判断，已在本轮纠正。该错误导致 `AMOUNT_MISMATCH` 等已收款事件既不进差集、也被事件循环直接 `continue`，形成新的静默漏对。后续维护者不得照抄旧三类口径。**
+
+### 13.1 状态清单与取舍理由
+
+`STATEMENT_EXPECTED_EVENT_STATUSES` = `SUCCESS`、`DUPLICATE_PAYMENT`、`LATE_PAYMENT`、`MERCHANT_MISMATCH`、`AMOUNT_MISMATCH`、`CURRENCY_MISMATCH`、`FULFILLMENT_FAILED`。
+
+| 事件状态 | 是否计入“应产生本商户流水” | 理由 |
+| --- | --- | --- |
+| `SUCCESS` | 计入 | 渠道支付成功，必然有对应流水 |
+| `DUPLICATE_PAYMENT` | 计入 | 同一订单重复收款，资金已进渠道账户，流水至少一笔；重复部分另有 T33 补偿差异 |
+| `LATE_PAYMENT` | 计入 | 回调晚到但已收款，资金已进渠道账户 |
+| `MERCHANT_MISMATCH` | 计入 | 由 `PaymentEventServiceImpl.reject(...)` 在**已收到渠道支付回调之后**写入，资金已进渠道账户，不能因商户号校验失败就认定无流水 |
+| `AMOUNT_MISMATCH` | 计入 | 同上，回调已到、金额与预期不符，资金已收，只是业务侧拒绝 |
+| `CURRENCY_MISMATCH` | 计入 | 同上，币种校验失败不改变“已收款”事实 |
+| `FULFILLMENT_FAILED` | 计入（按本轮指令） | 主写入方是 `PaymentEventServiceImpl.reject(...)`，在收到回调后写；**另有一个写入方 G34 `PaymentEventReconcileService.markFailed`，会在渠道明确未支付（`PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST`）时写该状态**。本轮按指令统一计入，代价与待确认项见 §13.4 |
+| `PROCESSING` | 不计入 | 渠道结果尚未确认，是否收款未知；按 §13.2 的悬挂阈值单独给信号 |
+| `MANUAL_REVIEW` | 不计入 | 不属于本轮七状态差集：该状态由 G34 在陈旧 `PROCESSING` 重试超限后写入，结果仍未知；事件循环仍会为它生成 `PAYMENT_EVENT_REVIEW` 差异，不会静默 |
+| 其它未知状态（如 `ORDER_STATUS_INVALID`、`MANUAL_REVIEW`） | 不计入 | 无法证明“本商户渠道已收款”；但仍生成 `PAYMENT_EVENT_REVIEW` 差异，见 §13.2 |
+
+不计入差集只表示“不能据此判定渠道未导入”，不等于允许静默：事件循环对所有非 `SUCCESS`（`DUPLICATE_PAYMENT` 单独处理）事件调用 `signalNonSuccessEvent`。
+
+### 13.2 非成功事件的可见信号与选择理由
+
+| 场景 | 信号 | 说明 |
+| --- | --- | --- |
+| 七个状态中非 `SUCCESS` 的事件 | 生成 `PAYMENT_EVENT_REJECTED` 差异（键 `EV\|{eventId}\|{status}`，分类 `INTERNAL`，渠道/事件单据/金额可定位） | 渠道已收款但履约或校验被拒，需人工核对资金与履行结果 |
+| `PROCESSING` 且 `created_at` 早于当前时间 **5 分钟** | 生成 `PAYMENT_EVENT_REVIEW` 差异（键 `EV\|{eventId}\|PROCESSING`） | 视为“悬挂”：渠道回查迟迟未回写，需人工确认 |
+| `PROCESSING` 未超 5 分钟 | 不生成差异，计入 `reconcile` 返回的 `processingPending`，并由跑批汇总 `processingPending` 可见 | 渠道回查仍在进行，逐笔入队只会制造噪音 |
+| 其它未知状态（如 `ORDER_STATUS_INVALID`） | 生成 `PAYMENT_EVENT_REVIEW` 差异 | 无法归类也不得静默 |
+
+- **悬挂阈值口径**：5 分钟，与 G34 `PaymentEventReconcileService` 陈旧 `PROCESSING` 补偿扫描的默认阈值一致，避免对账侧与补扫侧出现两套“悬挂”定义。`created_at` 缺失时无法判龄，按“未悬挂”处理，交给 G34 回查补写。
+- **选择“生成差异”而不是只做汇总计数的理由**：差异可分派、可审计（`reconciliation_difference_audit`）、可按 `biz_id` 定位到具体事件，`retry` 在事件回写为 `SUCCESS` 后可自动关闭；只写日志或只做汇总计数无法定位是哪一笔，也无法进入人工处理队列。跑批侧同时保留 `processingPending` 汇总，覆盖“尚未悬挂、暂不入队”的在途事件。
+- **新增漏对场景（本轮修复目标）**：A 渠道流水已导入、B 渠道未导入且 B 当天只有 `AMOUNT_MISMATCH` 事件时，上一轮口径下总流水数非 0、差集为空、事件被 `continue` 跳过，跑批记 `SUCCESS`。本轮 B 进入 `incompleteChannels` → 跑批 `PARTIAL` 且 `last_error` 点名 B，同时生成 `PAYMENT_EVENT_REJECTED` 差异；即便 B 流水已导入，仍有该差异作为信号。
+- `PAYMENT_EVENT_REJECTED` / `PAYMENT_EVENT_REVIEW` 在 `retry` 中判定：事件已回写 `SUCCESS` 才可自动关闭，否则保持人工队列。
+
+### 13.3 防回退用例
+
+- `amountMismatchOnlyChannelIsIncompleteAndQueuesRejectionDifference`：A 渠道有流水、B 渠道只有 `AMOUNT_MISMATCH` → `incompleteChannels=ALIPAY`、`added=1`、差异类型 `PAYMENT_EVENT_REJECTED`、金额 `20.00`。
+- `fulfillmentFailedEventIsIncompleteAndQueuesRejectionDifference`、`currencyMismatchEventIsIncompleteAndQueuesRejectionDifference`：同上，分别断言 `UNIONPAY`/`ALIPAY` 进入差集且差异文案含对应状态。
+- `staleProcessingIsVisibleEvenWhenOtherChannelHasStatements`：其他渠道有流水时，悬挂 `PROCESSING` 仍生成 1 条 `PAYMENT_EVENT_REVIEW` 差异（文案含“5分钟”），且不误判渠道缺失。
+- `freshProcessingIsCountedInSummaryWithoutNoiseDifference`：未悬挂 `PROCESSING` 生成 0 条差异、`processingPending=1`。
+- `unknownEventStatusStillQueuesReviewDifference`：`ORDER_STATUS_INVALID` 生成 1 条 `PAYMENT_EVENT_REVIEW`，不静默。
+- 跑批侧 `onlyAmountMismatchChannelIsNeverReportedAsSuccess`：`partial=1`、`success=0`、`run.status=PARTIAL`、`last_error` 含 `ALIPAY`。
+- 跑批侧 `fulfillmentAndCurrencyMismatchChannelsAreNeverReportedAsSuccess`：`partial=1`、`success=0`、`differencesAdded=2`、`last_error` 含两个渠道。
+- 跑批侧 `freshProcessingIsVisibleInRunSummaryCount`：`success=1` 时汇总仍给出 `processingPending=2`。
+
+### 13.4 复核发现的口径冲突（按本轮指令执行，待确认）
+
+本轮指令的前提是“`FULFILLMENT_FAILED` 只在收到渠道回调后由 `reject(...)` 写入”。静态审阅发现代码中存在**第二个写入方**：G34 `PaymentEventReconcileService.markFailed` 在渠道明确未支付（`PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST`）或查询前置校验失败（400/401/403/404）时，会把仍处于 `PROCESSING` 的事件写成 `FULFILLMENT_FAILED`（`PaymentEventMapper.markFulfillmentFailed`）。这类事件**没有资金到账，也不会有渠道流水**。
+
+因此按本轮指令把 `FULFILLMENT_FAILED` 整体计入差集后，存在以下代价：
+
+- 某商户某渠道当日只有一笔“渠道明确未支付”的 `FULFILLMENT_FAILED` 事件时，该渠道会进入 `incompleteChannels`，跑批 `PARTIAL`；连续 3 次后转 `MANUAL`。这是**误报**（不是静默漏对），但会造成无效人工处理。
+- 该状态同时可能是真实已收款后履约失败，两种情况在 `payment_event` 现有字段中无法区分（`error_message` 文案可区分但不可靠）。
+
+本轮按用户明确指令执行（计入差集）；如需消除误报，后续可选方案：G34 明确未支付改落独立状态（如 `CHANNEL_NOT_PAID`），或在事件上增加“资金已到账”标志后再据此判定。该事项不阻塞本卡交付，但需在真实渠道联调时确认。
+
+状态：**已实现·待人工验证**（第四轮返工）。未运行编译/测试/构建，未连接数据库，未接真实渠道。

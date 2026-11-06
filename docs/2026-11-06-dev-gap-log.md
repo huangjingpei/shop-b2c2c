@@ -202,7 +202,9 @@
 - 本卡已补：每日跑批与按业务日逐店记录、`(business_date, merchant_id)` 唯一键与状态机续跑、退款/服务费金额/退款冲正/平台代收对账、长短款/单边/精度/币种/跨天分类、差异审计与 `MANUAL` 升级、`PARTIAL` 标记流水未导入。
 - 复核返工（原判断错误已修正）：退款切日改用不可变 `success_at`、`PARTIAL` 纳入转人工前置状态、退款单边账加流水门禁、每店每次跑批只做一轮自动重试（`last_retry_date` 用执行日）、重试异常落 `retry_failed`、完成回写改条件更新防接管覆盖、结算批次合计只在完整账期校验、时间统一 `Asia/Shanghai`。详见 [2026-11-06-t1-reconciliation-plan.md](2026-11-06-t1-reconciliation-plan.md) 第 10 节。
 - 第二轮回核返工：结算批次合计改按开区间 `periodEnd = to`（原 `to.minusDays(1)` 把月结/手工按月入口全关掉）；退款三条单边路径（`REF|id|NO`、`REF|id|ST`、`REFFEE`）统一受流水门禁；按渠道求差集返回 `incompleteChannels`，多渠道部分导入不再静默 `SUCCESS` 而是 `PARTIAL`。详见同一文档第 11 节。
-- 第三轮回核返工：本地渠道收集排除空串（避免永久 `PARTIAL`→`MANUAL`）；缺失渠道差集只统计应产生流水的 `SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT` 事件（其余状态不参与判定但仍走原校验）；`success_at` 巡检改为按 `merchant_id` 且每店每轮一次。详见同一文档第 12 节。
+- 第三轮回核返工：本地渠道收集排除空串（避免永久 `PARTIAL`→`MANUAL`）；`success_at` 巡检改为按 `merchant_id` 且每店每轮一次。第三轮曾把缺失渠道差集限定为 `SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT`，**该口径在第四轮被认定为错误判断并已纠正**。详见同一文档第 12 节。
+- 第四轮回核返工：差集状态扩为七种（`SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT` 与 `reject(...)` 写入的 `MERCHANT_MISMATCH`/`AMOUNT_MISMATCH`/`CURRENCY_MISMATCH`/`FULFILLMENT_FAILED`，均在收到渠道回调后产生、资金已到账）；非成功事件不再静默——拒绝状态生成 `PAYMENT_EVENT_REJECTED` 差异，悬挂超过 5 分钟的 `PROCESSING`（与 G34 阈值一致）生成 `PAYMENT_EVENT_REVIEW` 差异，未悬挂 `PROCESSING` 计入跑批 `processingPending` 汇总，未知状态（如 `ORDER_STATUS_INVALID`）生成 `PAYMENT_EVENT_REVIEW`。详见同一文档第 13 节。
+- 复核补充（第四轮，待确认）：`FULFILLMENT_FAILED` 除回调后 `reject(...)` 外，G34 `PaymentEventReconcileService.markFailed` 也会在渠道明确未支付（`PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST`）时写入该状态，这类事件无资金到账。按本轮指令仍整体计入差集，可能对明确未支付事件产生多余 `PARTIAL`；消除方案（拆分独立状态或增加“资金已到账”标志）待确认，见 t1 方案 §13.4。
 - 登记缺口（未做）：支付事件仍按 `payment_event.created_at`（回调受理时间）切日，不是渠道成功时间；跨日回调可能归属错误业务日，缓解手段是渠道流水侧按 `trade_time` 对账并在差异中标注 `TIME_CROSS_DAY`。补齐需新增 `paid_at`/渠道成功时间字段并回填历史数据。
 - 登记缺口（未补数）：`success_at IS NULL` 的成功退款不进 T+1 窗口（旧数据或异常迁移）。跑批会统计数量并 `warn`，补数需按渠道流水 `trade_time`（无流水时按人工核对值）回填，方案见 t1 方案第 8 节，不得自动改写历史资金记录。
 - 部署前提：DB 会话时区必须与 `Asia/Shanghai` 对齐（`serverTimezone` 或 `time_zone='+08:00'`），否则 `CURRENT_TIMESTAMP` 与 Java 截断时间漂移；验收用 `SELECT @@session.time_zone, NOW(), UTC_TIMESTAMP()` 校验。
