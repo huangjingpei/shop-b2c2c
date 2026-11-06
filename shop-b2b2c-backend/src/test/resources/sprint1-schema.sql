@@ -400,6 +400,7 @@ CREATE TABLE IF NOT EXISTS payment_event (
   currency VARCHAR(16) NOT NULL DEFAULT 'CNY',
   payer_id VARCHAR(128) NULL,
   event_status VARCHAR(32) NOT NULL,
+  funds_received TINYINT NULL,
   error_message VARCHAR(512) NULL,
   raw_payload TEXT NULL,
   reconcile_attempts INT NOT NULL DEFAULT 0,

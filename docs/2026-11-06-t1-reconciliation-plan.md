@@ -182,28 +182,30 @@
 
 新增反向用例：空串渠道不进入 `incompleteChannels` 且跑批不 `PARTIAL`；流水落在相邻业务日但已匹配的渠道不留下永久 `PARTIAL`；巡检按商户每轮只统计一次。第三轮“只有 `MERCHANT_MISMATCH`/`PROCESSING` 事件的渠道不判缺失”的用例已在第四轮改写，见 §13.3。
 
-## 13. 第四轮回核返工（2026-11-06）
+## 13. 第四~五轮回核返工（2026-11-06）
 
-第四轮更正上一轮的差集状态口径，并补“非成功事件不得静默”的可见信号。
+第四轮更正上一轮的差集状态口径，并补“非成功事件不得静默”的可见信号；第五轮新增 `funds_received` 三值拆分“钱有没有到账”，并纠正两条前提判断。
 
 **明确更正：本卡前一轮（第三轮）“仅 `SUCCESS`、`DUPLICATE_PAYMENT`、`LATE_PAYMENT` 三种状态计入差集”的口径是错误判断，已在本轮纠正。该错误导致 `AMOUNT_MISMATCH` 等已收款事件既不进差集、也被事件循环直接 `continue`，形成新的静默漏对。后续维护者不得照抄旧三类口径。**
 
 ### 13.1 状态清单与取舍理由
 
-`STATEMENT_EXPECTED_EVENT_STATUSES` = `SUCCESS`、`DUPLICATE_PAYMENT`、`LATE_PAYMENT`、`MERCHANT_MISMATCH`、`AMOUNT_MISMATCH`、`CURRENCY_MISMATCH`、`FULFILLMENT_FAILED`。
+`STATEMENT_EXPECTED_EVENT_STATUSES` = `SUCCESS`、`DUPLICATE_PAYMENT`、`LATE_PAYMENT`、`MERCHANT_MISMATCH`、`AMOUNT_MISMATCH`、`CURRENCY_MISMATCH`、`FULFILLMENT_FAILED`。状态命中集合只是必要条件，**还必须 `funds_received=1`（渠道确认资金到账）才计入差集**；三值语义见 §13.5。
+
+支付事件状态清单（`payment_event.event_status`）明确包含 `PROCESSING`、`SUCCESS`、`MANUAL_REVIEW`、`DUPLICATE_PAYMENT`、`AMOUNT_MISMATCH`、`CURRENCY_MISMATCH`、`MERCHANT_MISMATCH`、`LATE_PAYMENT`、`FULFILLMENT_FAILED`，以及收款后写入的 `ORDER_STATUS_INVALID`。其中 `MANUAL_REVIEW` 是 G34 重试耗尽后的人工队列状态（**前一轮“MANUAL_REVIEW 不是支付事件状态”的判断有误，已纠正**）。
 
 | 事件状态 | 是否计入“应产生本商户流水” | 理由 |
 | --- | --- | --- |
-| `SUCCESS` | 计入 | 渠道支付成功，必然有对应流水 |
-| `DUPLICATE_PAYMENT` | 计入 | 同一订单重复收款，资金已进渠道账户，流水至少一笔；重复部分另有 T33 补偿差异 |
-| `LATE_PAYMENT` | 计入 | 回调晚到但已收款，资金已进渠道账户 |
-| `MERCHANT_MISMATCH` | 计入 | 由 `PaymentEventServiceImpl.reject(...)` 在**已收到渠道支付回调之后**写入，资金已进渠道账户，不能因商户号校验失败就认定无流水 |
-| `AMOUNT_MISMATCH` | 计入 | 同上，回调已到、金额与预期不符，资金已收，只是业务侧拒绝 |
-| `CURRENCY_MISMATCH` | 计入 | 同上，币种校验失败不改变“已收款”事实 |
-| `FULFILLMENT_FAILED` | 计入（按本轮指令） | 主写入方是 `PaymentEventServiceImpl.reject(...)`，在收到回调后写；**另有一个写入方 G34 `PaymentEventReconcileService.markFailed`，会在渠道明确未支付（`PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST`）时写该状态**。本轮按指令统一计入，代价与待确认项见 §13.4 |
-| `PROCESSING` | 不计入 | 渠道结果尚未确认，是否收款未知；按 §13.2 的悬挂阈值单独给信号 |
-| `MANUAL_REVIEW` | 不计入 | 不属于本轮七状态差集：该状态由 G34 在陈旧 `PROCESSING` 重试超限后写入，结果仍未知；事件循环仍会为它生成 `PAYMENT_EVENT_REVIEW` 差异，不会静默 |
-| 其它未知状态（如 `ORDER_STATUS_INVALID`、`MANUAL_REVIEW`） | 不计入 | 无法证明“本商户渠道已收款”；但仍生成 `PAYMENT_EVENT_REVIEW` 差异，见 §13.2 |
+| `SUCCESS` | `funds_received=1` 时计入 | 渠道支付成功，必然有对应流水 |
+| `DUPLICATE_PAYMENT` | `funds_received=1` 时计入 | 同一订单重复收款，资金已进渠道账户，流水至少一笔；重复部分另有 T33 补偿差异 |
+| `LATE_PAYMENT` | `funds_received=1` 时计入 | 回调晚到但已收款，资金已进渠道账户 |
+| `MERCHANT_MISMATCH` | `funds_received=1` 时计入 | 由 `PaymentEventServiceImpl.reject(...)` 在**已收到渠道支付回调之后**写入，资金已进渠道账户，不能因商户号校验失败就认定无流水 |
+| `AMOUNT_MISMATCH` | `funds_received=1` 时计入 | 同上，回调已到、金额与预期不符，资金已收，只是业务侧拒绝 |
+| `CURRENCY_MISMATCH` | `funds_received=1` 时计入 | 同上，币种校验失败不改变“已收款”事实 |
+| `FULFILLMENT_FAILED` | 仅 `funds_received=1` 时计入 | **一码两义（前一轮把它当成单一“已收款”状态是错误判断，已纠正）**：回调后 `reject(...)` 写入为 `1`；G34 `markFailed` 在渠道明确未支付时写 `0`；G34 查单前置校验失败时写 `NULL` |
+| `PROCESSING` | 不计入 | 渠道结果尚未确认；按 §13.2 的悬挂阈值单独给信号 |
+| `MANUAL_REVIEW` | 不计入 | G34 重试耗尽后的人工队列，资金状态未知且固定回写 `funds_received=NULL`；生成 `PAYMENT_EVENT_REVIEW` 差异兜住 |
+| 其它状态（如 `ORDER_STATUS_INVALID`） | 不计入 | 无法证明“本商户渠道已收款”；仍生成 `PAYMENT_EVENT_REVIEW` 差异，见 §13.2 |
 
 不计入差集只表示“不能据此判定渠道未导入”，不等于允许静默：事件循环对所有非 `SUCCESS`（`DUPLICATE_PAYMENT` 单独处理）事件调用 `signalNonSuccessEvent`。
 
@@ -211,14 +213,17 @@
 
 | 场景 | 信号 | 说明 |
 | --- | --- | --- |
-| 七个状态中非 `SUCCESS` 的事件 | 生成 `PAYMENT_EVENT_REJECTED` 差异（键 `EV\|{eventId}\|{status}`，分类 `INTERNAL`，渠道/事件单据/金额可定位） | 渠道已收款但履约或校验被拒，需人工核对资金与履行结果 |
+| 状态在七状态集合内且 `funds_received=1` | 生成 `PAYMENT_EVENT_REJECTED` 差异（键 `EV\|{eventId}\|{status}`，分类 `INTERNAL`，渠道/事件单据/金额可定位） | 渠道已收款但履约或校验被拒，需人工核对资金与履行结果 |
+| 状态在集合内且 `funds_received=0` | 生成 `PAYMENT_EVENT_REJECTED` 差异 | 渠道明确未收到资金，不预期流水、不进差集；但拒绝事件仍必须可见，不能因“本来就没钱”静默 |
+| 状态在集合内且 `funds_received IS NULL` | 生成 `PAYMENT_EVENT_REVIEW` 差异，文案含“funds_received IS NULL” | 未标注必须人工确认是否已收款；**不得把 NULL 当成“无需流水”静默放过**。`SUCCESS`/`DUPLICATE_PAYMENT` 的历史漏写行也走此信号（键 `EV\|{eventId}\|FUNDS`） |
 | `PROCESSING` 且 `created_at` 早于当前时间 **5 分钟** | 生成 `PAYMENT_EVENT_REVIEW` 差异（键 `EV\|{eventId}\|PROCESSING`） | 视为“悬挂”：渠道回查迟迟未回写，需人工确认 |
 | `PROCESSING` 未超 5 分钟 | 不生成差异，计入 `reconcile` 返回的 `processingPending`，并由跑批汇总 `processingPending` 可见 | 渠道回查仍在进行，逐笔入队只会制造噪音 |
-| 其它未知状态（如 `ORDER_STATUS_INVALID`） | 生成 `PAYMENT_EVENT_REVIEW` 差异 | 无法归类也不得静默 |
+| 其它状态（`ORDER_STATUS_INVALID`、`MANUAL_REVIEW` 等） | 生成 `PAYMENT_EVENT_REVIEW` 差异 | 无法归类或结果未知也不得静默 |
 
 - **悬挂阈值口径**：5 分钟，与 G34 `PaymentEventReconcileService` 陈旧 `PROCESSING` 补偿扫描的默认阈值一致，避免对账侧与补扫侧出现两套“悬挂”定义。`created_at` 缺失时无法判龄，按“未悬挂”处理，交给 G34 回查补写。
 - **选择“生成差异”而不是只做汇总计数的理由**：差异可分派、可审计（`reconciliation_difference_audit`）、可按 `biz_id` 定位到具体事件，`retry` 在事件回写为 `SUCCESS` 后可自动关闭；只写日志或只做汇总计数无法定位是哪一笔，也无法进入人工处理队列。跑批侧同时保留 `processingPending` 汇总，覆盖“尚未悬挂、暂不入队”的在途事件。
-- **新增漏对场景（本轮修复目标）**：A 渠道流水已导入、B 渠道未导入且 B 当天只有 `AMOUNT_MISMATCH` 事件时，上一轮口径下总流水数非 0、差集为空、事件被 `continue` 跳过，跑批记 `SUCCESS`。本轮 B 进入 `incompleteChannels` → 跑批 `PARTIAL` 且 `last_error` 点名 B，同时生成 `PAYMENT_EVENT_REJECTED` 差异；即便 B 流水已导入，仍有该差异作为信号。
+- **新增漏对场景（第四轮修复目标）**：A 渠道流水已导入、B 渠道未导入且 B 当天只有 `AMOUNT_MISMATCH` 事件时，第三轮口径下总流水数非 0、差集为空、事件被 `continue` 跳过，跑批记 `SUCCESS`。第四轮起 B 进入 `incompleteChannels` → 跑批 `PARTIAL` 且 `last_error` 点名 B，同时生成 `PAYMENT_EVENT_REJECTED` 差异；即便 B 流水已导入，仍有该差异作为信号。
+- **第五轮补充（资金三值）**：`funds_received=1` 才进差集；`=0` 不进差集但落 `REJECTED`；`NULL` 不进差集但落 `REVIEW`。这样既消除“渠道明确未支付被每天判未导入”的持续误报，又不让未标注事件静默消失。
 - `PAYMENT_EVENT_REJECTED` / `PAYMENT_EVENT_REVIEW` 在 `retry` 中判定：事件已回写 `SUCCESS` 才可自动关闭，否则保持人工队列。
 
 ### 13.3 防回退用例
@@ -232,15 +237,36 @@
 - 跑批侧 `fulfillmentAndCurrencyMismatchChannelsAreNeverReportedAsSuccess`：`partial=1`、`success=0`、`differencesAdded=2`、`last_error` 含两个渠道。
 - 跑批侧 `freshProcessingIsVisibleInRunSummaryCount`：`success=1` 时汇总仍给出 `processingPending=2`。
 
-### 13.4 复核发现的口径冲突（按本轮指令执行，待确认）
+- `explicitlyNotPaidEventIsNotIncompleteButStillHasDifference`：`funds_received=0` + 同渠道未导入流水 → `incompleteChannels=""`（不 `PARTIAL`）、`added=1`、类型 `PAYMENT_EVENT_REJECTED`。
+- `unmarkedFundsEventIsNotIncompleteButStillHasReviewDifference`：`funds_received=NULL` → `incompleteChannels=""`、`added=1`、类型 `PAYMENT_EVENT_REVIEW`（文案含 `funds_received IS NULL`）。
+- `mixedFundsReceivedFlagsStillMarkChannelIncomplete`：同一渠道同时有 `=1` 与 `=0` 事件 → `incompleteChannels=ALIPAY`、`added=2`（只要一条 `1` 就必须导入流水）。
+- `manualReviewEventIsVisibleButNotTreatedAsExpectedStatement`：`MANUAL_REVIEW` + `funds_received=NULL` → 不进差集、`added=1`、类型 `PAYMENT_EVENT_REVIEW`。
+- 跑批侧 `notPaidOrUnmarkedFundsStaySuccessButDifferencesAreCounted`：`success=1`、`partial=0`、`differencesAdded=2`（不误报但差异可见）。
+- `successEventWithoutFundsAnnotationStillProducesReview`：`SUCCESS` 但 `funds_received=NULL` → 不进差集、`added=1`、类型 `PAYMENT_EVENT_REVIEW`（文案含 `funds_received IS NULL`），`retry` 不会在资金未标注时自动关闭。
+- 集成用例补充：G34 明确未支付事件 `funds_received=0`；G34 重试耗尽 `MANUAL_REVIEW` 的 `funds_received IS NULL`；渠道确认成功事件 `funds_received=1`。
 
-本轮指令的前提是“`FULFILLMENT_FAILED` 只在收到渠道回调后由 `reject(...)` 写入”。静态审阅发现代码中存在**第二个写入方**：G34 `PaymentEventReconcileService.markFailed` 在渠道明确未支付（`PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST`）或查询前置校验失败（400/401/403/404）时，会把仍处于 `PROCESSING` 的事件写成 `FULFILLMENT_FAILED`（`PaymentEventMapper.markFulfillmentFailed`）。这类事件**没有资金到账，也不会有渠道流水**。
+### 13.4 前提纠正记录（第五轮）
 
-因此按本轮指令把 `FULFILLMENT_FAILED` 整体计入差集后，存在以下代价：
+前一轮（第四轮提交 `b0c1e10`）有两条前提判断错误，本轮已纠正：
 
-- 某商户某渠道当日只有一笔“渠道明确未支付”的 `FULFILLMENT_FAILED` 事件时，该渠道会进入 `incompleteChannels`，跑批 `PARTIAL`；连续 3 次后转 `MANUAL`。这是**误报**（不是静默漏对），但会造成无效人工处理。
-- 该状态同时可能是真实已收款后履约失败，两种情况在 `payment_event` 现有字段中无法区分（`error_message` 文案可区分但不可靠）。
+1. **`MANUAL_REVIEW` 不是支付事件状态**——错误。G34 `PaymentEventReconcileService` 在陈旧 `PROCESSING` 重试耗尽后确实通过 `PaymentEventMapper.markManualReview` 写入 `payment_event.event_status='MANUAL_REVIEW'`。本轮把它明确列入支付事件状态清单；它不进入“预期有流水”差集（资金状态未知），但生成 `PAYMENT_EVENT_REVIEW` 差异。
+2. **`FULFILLMENT_FAILED` 只有“回调后已收款”一个含义**——错误。该状态一码两义：回调后 `reject(...)` 写入表示已收款；G34 `markFailed` 在渠道明确未支付时写入表示未收款。无法用单一状态值判定是否需要流水，必须增加 `funds_received` 显式标记（见 §13.5）。第四轮“整体计入差集”因此会对明确未支付事件每天误判 `PARTIAL`，连续 3 次转 `MANUAL`。
 
-本轮按用户明确指令执行（计入差集）；如需消除误报，后续可选方案：G34 明确未支付改落独立状态（如 `CHANNEL_NOT_PAID`），或在事件上增加“资金已到账”标志后再据此判定。该事项不阻塞本卡交付，但需在真实渠道联调时确认。
+### 13.5 资金到账标记 funds_received（第五轮）
 
-状态：**已实现·待人工验证**（第四轮返工）。未运行编译/测试/构建，未连接数据库，未接真实渠道。
+- **列定义**：`payment_event.funds_received TINYINT NULL`，**不设默认值**，语义为“渠道侧是否已确认收到资金”。
+- **三个取值与行为**：
+  - `1`（已到账）：状态在七状态集合内时进入“预期产生流水”差集；该渠道未导入流水 → 跑批 `PARTIAL`。
+  - `0`（明确未到账）：不进差集（本来就不该有流水，避免持续误报），但仍生成 `PAYMENT_EVENT_REJECTED` 差异，保证拒绝事件可见。
+  - `NULL`（未标注）：不进差集，但生成 `PAYMENT_EVENT_REVIEW` 差异，要求人工确认是否已收款；**禁止把 NULL 当作“无需流水”静默放过**。
+- **为什么不用默认值**：若给默认值（尤其默认 0 或 1），任何漏写都会得到一个“看起来正常”的结论——默认 1 会把未到账事件误判为应有流水，默认 0 会把已到账事件静默排除。NULL 有意保留为“未标注、必须产生可见信号”的合法取值。
+- **写入点（逐个显式赋值）**：
+  - `PaymentEventServiceImpl.claimEvent`（受理占位）：`1`（占位由渠道到账回调驱动）；各 `reject(...)` 分支、`recordEventStatus(SUCCESS)`、`DuplicatePayment`、`auditFailure`：`1`。
+  - G34 `markFulfillmentFailed`：渠道明确未支付（`PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST`）=`0`；查单前置校验失败（400/401/403/404）=`NULL`（只说明无法确认，不等于未收款）。
+  - G34 `markManualReview`：固定回写 `NULL`（资金状态未知），由 `PAYMENT_EVENT_REVIEW` 差异兜住。
+  - 写入接口 `PaymentEventRecorder.recordEventStatus/recordFailureAudit` 的 `fundsReceived` 参数为必填，不提供默认值，强制调用方显式说明资金状态。
+- **索引**：不新增索引。T+1 先按 `(merchant_id, created_at)` 取当日事件再在内存判定 `funds_received`，没有按该列过滤的查询路径。
+- **历史数据**：本项目无历史数据，不做回填；`NULL` 是合法且有意为之的取值（表示未标注、需要人工核对），不得用脚本批量改成 `0/1` 来“消除告警”。
+- **口径边界**：`REFUNDED` 按本轮指令归入“明确未支付”（`0`）。该状态语义上是“曾收款后退回”，若后续需要按双边流水核对，应单列处理而不是改回默认值。真实渠道联调时确认。
+
+状态：**已实现·待人工验证**（第五轮回核返工）。未运行编译/测试/构建，未连接数据库，未接真实渠道。

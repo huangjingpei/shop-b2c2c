@@ -9,6 +9,8 @@
  *     或 PaymentEventReconcileService 的无外层事务补偿扫描中调用。
  *  4. 失败审计不得把其他订单的事件改写，也不得把已完成支付的事件降级；重复冲突由调用方跳过审计。
  *  5. 事件状态与订单状态必须保持一致，禁止在业务事务内另开事件表或第二套状态机。
+ *  6. T+1：funds_received 必须由调用方显式给出（1-已到账、0-明确未到账、NULL-未标注），
+ *     本类不提供默认值，避免漏写被当成“无需流水”而失去对账可见性。
  */
 package com.shop.b2b2c.service;
 
@@ -32,11 +34,12 @@ public class PaymentEventRecorder {
     private final PaymentEventMapper paymentEventMapper;
 
     @Transactional(rollbackFor = Exception.class)
-    public void recordEventStatus(Long eventId, String status, String errorMessage) {
+    public void recordEventStatus(Long eventId, String status, Integer fundsReceived, String errorMessage) {
         if (eventId == null) return;
         PaymentEvent pe = paymentEventMapper.selectById(eventId);
         if (pe != null) {
             pe.setEventStatus(status);
+            pe.setFundsReceived(fundsReceived);
             pe.setErrorMessage(trim(errorMessage));
             paymentEventMapper.updateById(pe);
         }
@@ -48,7 +51,7 @@ public class PaymentEventRecorder {
      * 避免在主连接池耗尽时形成自锁。
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
-    public void recordFailureAudit(PaymentEvent snapshot, String status, String errorMessage) {
+    public void recordFailureAudit(PaymentEvent snapshot, String status, Integer fundsReceived, String errorMessage) {
         if (snapshot == null || snapshot.getChannel() == null || snapshot.getPayTradeNo() == null) {
             return;
         }
@@ -66,12 +69,14 @@ public class PaymentEventRecorder {
                 return;
             }
             existing.setEventStatus(status);
+            existing.setFundsReceived(fundsReceived);
             existing.setErrorMessage(trim(errorMessage));
             paymentEventMapper.updateById(existing);
             return;
         }
         snapshot.setId(null);
         snapshot.setEventStatus(status);
+        snapshot.setFundsReceived(fundsReceived);
         snapshot.setErrorMessage(trim(errorMessage));
         paymentEventMapper.insert(snapshot);
     }

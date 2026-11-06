@@ -7,8 +7,8 @@
  *  3. CSV 用例覆盖公式注入防护和逗号/引号转义，避免导出打开即执行公式。
  *  4. 真实渠道流水导入与 MySQL 并发对账仍由用户手动验证。
  *  5. T+1 用例覆盖退款↔渠道退款、服务费金额、平台代收、同日重试防重复与审计留痕。
- *  6. 非成功支付事件不得静默：四个 reject 状态与悬挂 PROCESSING 必须生成差异，
- *     未悬挂 PROCESSING 只在 processingPending 汇总可见；断言使用具体差异条数/类型。
+ *  6. 非成功支付事件不得静默：按 funds_received 三值分别断言——=1 进差集且落 REJECTED，
+ *     =0 不进差集但仍落 REJECTED，NULL 不进差集但落 REVIEW；断言使用具体差异条数与类型。
  */
 package com.shop.b2b2c;
 
@@ -358,6 +358,139 @@ class ReconciliationServiceTest {
         verify(differenceMapper).insert(captor.capture());
         assertEquals(ReconciliationService.PAYMENT_EVENT_REVIEW, captor.getValue().getDiffType());
         assertTrue(captor.getValue().getDetail().contains("ORDER_STATUS_INVALID"));
+    }
+
+    @Test
+    void explicitlyNotPaidEventIsNotIncompleteButStillHasDifference() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PaymentChannelStatement wechatGate = statement("WECHAT", "WX-GATE", "SN-GATE", new BigDecimal("10.00"));
+        wechatGate.setTradeStatus("FAILED");
+        // G34 渠道明确未支付：funds_received=0，本来就不该有流水，不得据此判 ALIPAY 未导入。
+        PaymentEvent notPaid = successEvent("SN-NP", new BigDecimal("20.00"));
+        notPaid.setId(10L);
+        notPaid.setChannel("ALIPAY");
+        notPaid.setEventStatus("FULFILLMENT_FAILED");
+        notPaid.setFundsReceived(0);
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(wechatGate));
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(notPaid));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        // 既不误报渠道缺失（不 PARTIAL），也不静默：拒绝事件必须落差异。
+        assertEquals("", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        assertEquals(0, result.get("processingPending"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REJECTED, captor.getValue().getDiffType());
+        assertTrue(captor.getValue().getDetail().contains("明确未收到资金"));
+    }
+
+    @Test
+    void unmarkedFundsEventIsNotIncompleteButStillHasReviewDifference() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PaymentChannelStatement wechatGate = statement("WECHAT", "WX-GATE", "SN-GATE", new BigDecimal("10.00"));
+        wechatGate.setTradeStatus("FAILED");
+        // funds_received=NULL 是“未标注、需要人看”，不得当作无需流水。
+        PaymentEvent unmarked = successEvent("SN-NL", new BigDecimal("20.00"));
+        unmarked.setId(11L);
+        unmarked.setChannel("ALIPAY");
+        unmarked.setEventStatus("AMOUNT_MISMATCH");
+        unmarked.setFundsReceived(null);
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(wechatGate));
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(unmarked));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals("", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REVIEW, captor.getValue().getDiffType());
+        assertTrue(captor.getValue().getDetail().contains("funds_received IS NULL"));
+    }
+
+    @Test
+    void mixedFundsReceivedFlagsStillMarkChannelIncomplete() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        // 同一渠道既有明确未支付(=0)，也有已到账(=1)：只要有一条 1，该渠道仍必须导入流水。
+        PaymentEvent received = successEvent("SN-MX1", new BigDecimal("20.00"));
+        received.setId(12L);
+        received.setChannel("ALIPAY");
+        received.setEventStatus("AMOUNT_MISMATCH");
+        received.setFundsReceived(1);
+        PaymentEvent notPaid = successEvent("SN-MX2", new BigDecimal("20.00"));
+        notPaid.setId(13L);
+        notPaid.setChannel("ALIPAY");
+        notPaid.setEventStatus("FULFILLMENT_FAILED");
+        notPaid.setFundsReceived(0);
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(received, notPaid));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals("ALIPAY", result.get("incompleteChannels"));
+        assertEquals(2, result.get("added"));
+    }
+
+    @Test
+    void manualReviewEventIsVisibleButNotTreatedAsExpectedStatement() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        // G34 重试耗尽转 MANUAL_REVIEW 时 funds_received 回写 NULL：不进差集，但必须有 REVIEW 差异。
+        PaymentEvent manual = successEvent("SN-MR", new BigDecimal("20.00"));
+        manual.setId(14L);
+        manual.setChannel("ALIPAY");
+        manual.setEventStatus("MANUAL_REVIEW");
+        manual.setFundsReceived(null);
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(manual));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals("", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REVIEW, captor.getValue().getDiffType());
+        assertTrue(captor.getValue().getDetail().contains("MANUAL_REVIEW"));
+    }
+
+    @Test
+    void successEventWithoutFundsAnnotationStillProducesReview() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        // SUCCESS 但 funds_received 漏写为 NULL：不进差集，但必须落 REVIEW，且 retry 不应自动关闭。
+        PaymentEvent event = successEvent("SN-FN", new BigDecimal("100.00"));
+        event.setId(15L);
+        event.setFundsReceived(null);
+        TradeOrder order = paidOrder("SN-FN", BigDecimal.ZERO);
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(event));
+        when(orderMapper.findByOrderSn("SN-FN")).thenReturn(Optional.of(order));
+        when(statementMapper.findByChannelAndTradeNo("WECHAT", "WX-EVENT")).thenReturn(Optional.empty());
+        when(statementMapper.countByMerchantChannelPeriod(1L, "WECHAT", from, to)).thenReturn(0);
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals("", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REVIEW, captor.getValue().getDiffType());
+        assertTrue(captor.getValue().getDetail().contains("funds_received IS NULL"));
     }
 
     @Test
@@ -867,6 +1000,8 @@ class ReconciliationServiceTest {
         event.setMerchantId(1L);
         event.setPayAmount(amount);
         event.setEventStatus("SUCCESS");
+        // 默认按“渠道已确认到账”构造；明确未支付/未标注的用例自行改回 0/null。
+        event.setFundsReceived(1);
         return event;
     }
 

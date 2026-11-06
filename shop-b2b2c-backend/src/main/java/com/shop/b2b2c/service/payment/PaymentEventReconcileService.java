@@ -6,9 +6,11 @@
  *     才允许调用 PaymentEventService.processPaymentEvent 补履约，禁止仅凭本地事件状态直接交付。
  *  2. 补履约复用 processPaymentEvent 的占位/订单行锁/CAS/卡密认领幂等路径；本类不直接写订单、不直接发卡，
  *     不出现第二次交付。
- *  3. 渠道结果分三类：明确未支付（渠道返回 PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST，或 400/401/403/404）
- *     落 FULFILLMENT_FAILED 并告警；查询异常或答复不确定（超时/限流/5xx/空响应/未知状态/流水号不一致）
- *     保留 PROCESSING，按指数退避写 reconcile_attempts/next_reconcile_at 重试；超过上限转 MANUAL_REVIEW 人工队列并告警。
+ *  3. 渠道结果分三类：明确未支付（渠道返回 PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST）落 FULFILLMENT_FAILED
+ *     且 funds_received=0；查询前置校验失败（400/401/403/404）同样落 FULFILLMENT_FAILED，但资金状态未知，
+ *     funds_received 必须写 NULL；查询异常或答复不确定（超时/限流/5xx/空响应/未知状态/流水号不一致）
+ *     保留 PROCESSING，按指数退避写 reconcile_attempts/next_reconcile_at 重试；超过上限转 MANUAL_REVIEW
+ *     人工队列并告警，同时把 funds_received 回写 NULL（资金状态未知，由 T+1 生成 REVIEW 差异兜住）。
  *     失败态不是永久锁死：后续收到真实 SUCCESS 通知仍可由 processPaymentEvent 幂等履约。
  *  4. 已被主事务正常履约的订单（PAID/COMPLETED/SHIPPED）不进入陈旧 PROCESSING 查询，避免与主事务重复处理。
  *  5. 陈旧判定阈值、最大重试次数、初始退避由调用方传入（默认 5 分钟 / 5 次 / 60 秒）；
@@ -106,7 +108,8 @@ public class PaymentEventReconcileService {
                     candidate.getMerchantId(), candidate.getChannel(), candidate.getOrderSn());
         } catch (BusinessException e) {
             if (DEFINITIVE_BUSINESS_CODES.contains(e.getCode())) {
-                markFailed(candidate, "渠道查单明确失败: " + e.getMessage());
+                // 查单前置校验失败只说明无法确认，不代表未收款：资金状态写 NULL，由对账 REVIEW 兜住。
+                markFailed(candidate, "渠道查单明确失败: " + e.getMessage(), null);
             } else {
                 handleRetryable(candidate, "渠道查单异常: " + messageOf(e), maxAttempts, initialBackoff, now);
             }
@@ -144,7 +147,8 @@ public class PaymentEventReconcileService {
             }
         }
         if (DEFINITIVE_NOT_PAID_STATES.contains(query.getTradeState())) {
-            markFailed(candidate, "渠道明确未支付: state=" + query.getTradeState());
+            // 渠道明确未支付：不会产生流水，funds_received=0；T+1 不会据此判渠道未导入。
+            markFailed(candidate, "渠道明确未支付: state=" + query.getTradeState(), 0);
             return false;
         }
         handleRetryable(candidate, "渠道答复不确定: state=" + query.getTradeState(),
@@ -172,6 +176,7 @@ public class PaymentEventReconcileService {
         int attempts = (candidate.getReconcileAttempts() == null ? 0 : candidate.getReconcileAttempts()) + 1;
         String message = truncate(reason);
         if (attempts >= maxAttempts) {
+            // markManualReview 固定把 funds_received 回写 NULL：资金状态未知，必须由 T+1 REVIEW 差异兜住。
             int moved = paymentEventMapper.markManualReview(candidate.getId(), attempts, message);
             if (moved == 1) {
                 log.error("【支付事件告警】陈旧 PROCESSING 超过重试上限，转人工队列 MANUAL_REVIEW "
@@ -215,15 +220,17 @@ public class PaymentEventReconcileService {
     }
 
     /**
-     * 明确未支付/明确失败：只把仍 PROCESSING 的事件落 FULFILLMENT_FAILED 并告警；
-     * 已被主事务并发收敛为 SUCCESS 的事件不降级。该失败态不阻止后续真实 SUCCESS 通知重新履约。
+     * 落 FULFILLMENT_FAILED：只把仍 PROCESSING 的事件更新并告警；已被主事务并发收敛为 SUCCESS 的事件不降级。
+     * fundsReceived 由调用方按渠道答复显式给出：明确未支付=0，查单前置校验失败/资金未知=NULL。
+     * 该失败态不阻止后续真实 SUCCESS 通知重新履约。
      */
-    private void markFailed(PaymentEvent candidate, String reason) {
-        int updated = paymentEventMapper.markFulfillmentFailed(candidate.getId(), truncate(reason));
+    private void markFailed(PaymentEvent candidate, String reason, Integer fundsReceived) {
+        int updated = paymentEventMapper.markFulfillmentFailed(candidate.getId(), fundsReceived, truncate(reason));
         if (updated == 1) {
             log.error("【支付事件告警】陈旧 PROCESSING 明确无法补履约，标记 FULFILLMENT_FAILED "
-                            + "channel={}, tradeNo={}, orderSn={}, reason={}",
-                    candidate.getChannel(), candidate.getPayTradeNo(), candidate.getOrderSn(), reason);
+                            + "channel={}, tradeNo={}, orderSn={}, fundsReceived={}, reason={}",
+                    candidate.getChannel(), candidate.getPayTradeNo(), candidate.getOrderSn(),
+                    fundsReceived, reason);
         } else {
             log.info("陈旧 PROCESSING 已被其它路径收敛，跳过失败标记 tradeNo={}", candidate.getPayTradeNo());
         }

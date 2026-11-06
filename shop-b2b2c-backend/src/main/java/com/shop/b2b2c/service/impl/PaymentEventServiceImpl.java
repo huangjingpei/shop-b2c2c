@@ -14,6 +14,8 @@
  *  6. 已支付订单收到不同流水号时必须落 DUPLICATE_PAYMENT 事件，不得静默返回；退款动作由后续补偿/退款任务处理。
  *  7. 不新建第二套支付事件表，不恢复公开 Mock/未验签到账入口。
  *  8. T34：首次支付成功时在同一事务内扣减/挂账服务费；重放不重复扣费，扣费失败不得让事件停在 SUCCESS。
+ *  9. T+1：funds_received 必须在每个写入点显式赋值。受理/成功/reject/失败审计均为收到渠道回调后发生，
+ *     一律写 1（已到账）；G34 渠道明确未支付写 0、查单失败与人工队列写 NULL，见 PaymentEventReconcileService。
  */
 package com.shop.b2b2c.service.impl;
 
@@ -127,6 +129,8 @@ public class PaymentEventServiceImpl implements PaymentEventService {
                 pe.setPayerId(event.getPayerId());
                 pe.setRawPayload(event.getRawPayload());
                 pe.setEventStatus(STATUS_PROCESSING);
+                // T+1：占位由渠道到账回调驱动，按“资金已到账”受理；后续 reject 分支保持不变。
+                pe.setFundsReceived(1);
                 paymentEventMapper.insert(pe);
                 return pe;
             });
@@ -219,7 +223,7 @@ public class PaymentEventServiceImpl implements PaymentEventService {
             if (freshlyClaimed && !sameChannelTrade) {
                 // T07：订单已支付但出现不同渠道流水号，第二笔资金必须留痕并进入重复支付补偿队列，
                 // 不能因为订单已履约就把它标成 SUCCESS 而静默吞掉资金。
-                eventRecorder.recordEventStatus(pe.getId(), STATUS_DUPLICATE_PAYMENT,
+                eventRecorder.recordEventStatus(pe.getId(), STATUS_DUPLICATE_PAYMENT, 1,
                         "订单已支付，第二笔资金已记录并进入重复支付补偿队列");
                 return result(pe, order, STATUS_DUPLICATE_PAYMENT,
                         "订单已支付，第二笔资金已记录并进入重复支付补偿队列");
@@ -227,7 +231,7 @@ public class PaymentEventServiceImpl implements PaymentEventService {
             if (isDelivered(order, items)) {
                 // 同一渠道流水号重放：仅当订单已履约时才幂等短路。
                 if (!STATUS_SUCCESS.equals(pe.getEventStatus())) {
-                    eventRecorder.recordEventStatus(pe.getId(), STATUS_SUCCESS, null);
+                    eventRecorder.recordEventStatus(pe.getId(), STATUS_SUCCESS, 1, null);
                 }
                 return result(pe, order, STATUS_SUCCESS, "支付事件已在库且已成功履约 (幂等返回)");
             }
@@ -328,21 +332,23 @@ public class PaymentEventServiceImpl implements PaymentEventService {
         if (!alreadyPaid) {
             merchantAccountService.chargeOrderFee(order, pe.getId());
         }
-        eventRecorder.recordEventStatus(pe.getId(), STATUS_SUCCESS, null);
+        eventRecorder.recordEventStatus(pe.getId(), STATUS_SUCCESS, 1, null);
 
         log.info("【支付事件履约完成】渠道={}, 流水号={}, 订单号={}, 状态={}", channel, payTradeNo, orderSn, order.getOrderStatus());
         return result(pe, order, STATUS_SUCCESS, "支付到账核验通过并成功完成本地履约");
     }
 
     private void reject(Long eventId, String status, String message) {
-        eventRecorder.recordEventStatus(eventId, status, message);
+        // 所有 reject 分支均在收到渠道回调之后触发，资金已到账。
+        eventRecorder.recordEventStatus(eventId, status, 1, message);
         throw new PaymentEventRejection(status, message);
     }
 
     private void auditFailure(PaymentEvent snapshot, String status, String message) {
         if (snapshot == null) return;
         try {
-            eventRecorder.recordFailureAudit(snapshot, status, message);
+            // 回调已送达，失败审计同样按资金已到账标注；若是受理前异常，snapshot 为空不会写入。
+            eventRecorder.recordFailureAudit(snapshot, status, 1, message);
         } catch (RuntimeException auditError) {
             log.error("支付事件失败审计写入异常，原业务异常仍向上抛出 tradeNo={}", snapshot.getPayTradeNo(), auditError);
         }

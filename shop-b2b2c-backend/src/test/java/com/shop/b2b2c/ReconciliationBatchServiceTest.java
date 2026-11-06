@@ -7,7 +7,7 @@
  *  3. 自动重试用例覆盖“多业务日回看只重试一轮”“今天已重试跳过”“本次新建跳过”“异常落库可见”。
  *  4. 真实 MySQL 唯一键冲突、并发接管与调度触发仍由用户手动验证。
  *  5. 非成功支付事件不得静默：拒绝状态/悬挂 PROCESSING 差异计数与未悬挂 PROCESSING 汇总
- *     必须在跑批结果中可见，且多渠道路径不得记 SUCCESS。
+ *     必须在跑批结果中可见，且多渠道路径不得记 SUCCESS；funds_received=0/NULL 不阻断跑批但差异仍计数。
  */
 package com.shop.b2b2c;
 
@@ -191,6 +191,26 @@ class ReconciliationBatchServiceTest {
 
         assertEquals(1, outcome.get("success"));
         assertEquals(2, outcome.get("processingPending"));
+    }
+
+    @Test
+    void notPaidOrUnmarkedFundsStaySuccessButDifferencesAreCounted() {
+        singleStore();
+        ReconciliationBatchRun run = run("PENDING", 0, DATE, MERCHANT);
+        when(runMapper.findByDateAndMerchant(DATE, MERCHANT)).thenReturn(Optional.of(run));
+        when(runMapper.markRunning(any(), anyInt(), any(), any())).thenReturn(1);
+        stubFinish(1);
+        // funds_received=0/NULL 不预期流水，渠道不进入 incompleteChannels；但差异必须计数可见。
+        Map<String, Object> reconcileResult = result(2, 2, 0, 2, 0);
+        when(reconciliationService.reconcile(eq(MERCHANT), any(), any(), eq(OPERATOR)))
+                .thenReturn(reconcileResult);
+
+        Map<String, Object> outcome = service().runRange(DATE, DATE, OPERATOR, null);
+
+        assertEquals(1, outcome.get("success"));
+        assertEquals(0, outcome.get("partial"));
+        assertEquals(2, outcome.get("differencesAdded"));
+        assertEquals("SUCCESS", run.getStatus());
     }
 
     @Test

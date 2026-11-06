@@ -5,6 +5,8 @@
  * 不得把缺失订单纳入自动补履约，避免无限重试；已 PAID/COMPLETED/SHIPPED 的订单不得再次进入两条补偿查询，
  * 避免与主事务正常履约重复处理。陈旧 PROCESSING 的退避与人工队列更新必须带 event_status = 'PROCESSING' 条件，
  * 防止把并发已成功的事件改回失败/人工态。
+ * T+1：markFulfillmentFailed 必须显式传入 funds_received（明确未支付=0、查单失败/资金未知=NULL）；
+ * markManualReview 一律回写 NULL（资金状态未知），对账侧据此生成 REVIEW 差异，不得静默。
  */
 package com.shop.b2b2c.mapper;
 
@@ -84,24 +86,29 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
 
     /**
      * G34 超过重试上限：转人工队列 MANUAL_REVIEW。只允许从 PROCESSING 迁移，已被并发成功的事件不得降级。
+     * 资金到账状态未知，funds_received 必须显式回写 NULL，由 T+1 对账生成 PAYMENT_EVENT_REVIEW 差异兜住。
      */
     @org.apache.ibatis.annotations.Update("UPDATE payment_event "
             + "SET reconcile_attempts = #{attempts}, event_status = 'MANUAL_REVIEW', next_reconcile_at = NULL, "
-            + "error_message = #{message}, updated_at = CURRENT_TIMESTAMP "
+            + "funds_received = NULL, error_message = #{message}, updated_at = CURRENT_TIMESTAMP "
             + "WHERE id = #{id} AND event_status = 'PROCESSING'")
     int markManualReview(@Param("id") Long id,
                          @Param("attempts") int attempts,
                          @Param("message") String message);
 
     /**
-     * G34 明确未支付/查无此单：只允许从 PROCESSING 迁移到 FULFILLMENT_FAILED。
+     * G34 FULFILLMENT_FAILED：只允许从 PROCESSING 迁移。
+     * fundsReceived 由调用方显式给出：渠道明确未支付（PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST）=0；
+     * 查单前置校验失败（400/401/403/404）资金状态未知，必须传 NULL。
      * 返回 0 表示事件已被主事务并发收敛为 SUCCESS 等状态，不得降级。
      */
     @org.apache.ibatis.annotations.Update("UPDATE payment_event "
-            + "SET event_status = 'FULFILLMENT_FAILED', next_reconcile_at = NULL, "
-            + "error_message = #{message}, updated_at = CURRENT_TIMESTAMP "
+            + "SET event_status = 'FULFILLMENT_FAILED', funds_received = #{fundsReceived,jdbcType=INTEGER}, "
+            + "next_reconcile_at = NULL, error_message = #{message}, updated_at = CURRENT_TIMESTAMP "
             + "WHERE id = #{id} AND event_status = 'PROCESSING'")
-    int markFulfillmentFailed(@Param("id") Long id, @Param("message") String message);
+    int markFulfillmentFailed(@Param("id") Long id,
+                              @Param("fundsReceived") Integer fundsReceived,
+                              @Param("message") String message);
 
     /**
      * T34：结算明细回填支付事件ID；同一订单理论上只取最早的一条 SUCCESS 付款事件。

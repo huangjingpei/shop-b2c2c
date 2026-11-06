@@ -203,8 +203,8 @@
 - 复核返工（原判断错误已修正）：退款切日改用不可变 `success_at`、`PARTIAL` 纳入转人工前置状态、退款单边账加流水门禁、每店每次跑批只做一轮自动重试（`last_retry_date` 用执行日）、重试异常落 `retry_failed`、完成回写改条件更新防接管覆盖、结算批次合计只在完整账期校验、时间统一 `Asia/Shanghai`。详见 [2026-11-06-t1-reconciliation-plan.md](2026-11-06-t1-reconciliation-plan.md) 第 10 节。
 - 第二轮回核返工：结算批次合计改按开区间 `periodEnd = to`（原 `to.minusDays(1)` 把月结/手工按月入口全关掉）；退款三条单边路径（`REF|id|NO`、`REF|id|ST`、`REFFEE`）统一受流水门禁；按渠道求差集返回 `incompleteChannels`，多渠道部分导入不再静默 `SUCCESS` 而是 `PARTIAL`。详见同一文档第 11 节。
 - 第三轮回核返工：本地渠道收集排除空串（避免永久 `PARTIAL`→`MANUAL`）；`success_at` 巡检改为按 `merchant_id` 且每店每轮一次。第三轮曾把缺失渠道差集限定为 `SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT`，**该口径在第四轮被认定为错误判断并已纠正**。详见同一文档第 12 节。
-- 第四轮回核返工：差集状态扩为七种（`SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT` 与 `reject(...)` 写入的 `MERCHANT_MISMATCH`/`AMOUNT_MISMATCH`/`CURRENCY_MISMATCH`/`FULFILLMENT_FAILED`，均在收到渠道回调后产生、资金已到账）；非成功事件不再静默——拒绝状态生成 `PAYMENT_EVENT_REJECTED` 差异，悬挂超过 5 分钟的 `PROCESSING`（与 G34 阈值一致）生成 `PAYMENT_EVENT_REVIEW` 差异，未悬挂 `PROCESSING` 计入跑批 `processingPending` 汇总，未知状态（如 `ORDER_STATUS_INVALID`）生成 `PAYMENT_EVENT_REVIEW`。详见同一文档第 13 节。
-- 复核补充（第四轮，待确认）：`FULFILLMENT_FAILED` 除回调后 `reject(...)` 外，G34 `PaymentEventReconcileService.markFailed` 也会在渠道明确未支付（`PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST`）时写入该状态，这类事件无资金到账。按本轮指令仍整体计入差集，可能对明确未支付事件产生多余 `PARTIAL`；消除方案（拆分独立状态或增加“资金已到账”标志）待确认，见 t1 方案 §13.4。
+- 第四轮回核返工：差集状态扩为七种（`SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT` 与 `reject(...)` 写入的 `MERCHANT_MISMATCH`/`AMOUNT_MISMATCH`/`CURRENCY_MISMATCH`/`FULFILLMENT_FAILED`）；非成功事件不再静默——拒绝状态生成 `PAYMENT_EVENT_REJECTED` 差异，悬挂超过 5 分钟的 `PROCESSING`（与 G34 阈值一致）生成 `PAYMENT_EVENT_REVIEW` 差异，未悬挂 `PROCESSING` 计入跑批 `processingPending` 汇总，未知状态（如 `ORDER_STATUS_INVALID`）生成 `PAYMENT_EVENT_REVIEW`。详见同一文档第 13 节。
+- 第五轮回核返工（纠正第四轮两条前提）：新增 `payment_event.funds_received TINYINT NULL`（**无默认值**），按 `1`/`0`/`NULL` 三值分别处理——`1` 且状态在七状态集合内才计入缺失渠道差集；`0` 不进差集但仍生成 `PAYMENT_EVENT_REJECTED`；`NULL` 不进差集但生成 `PAYMENT_EVENT_REVIEW`，禁止当作“无需流水”静默放过。`FULFILLMENT_FAILED` 一码两义由该列区分（G34 明确未支付=0、查单前置失败=NULL、回调后 reject=1）；`MANUAL_REVIEW` 明确列入支付事件状态清单且重试耗尽固定回写 `funds_received=NULL`。本项目无历史数据，该列不回填。详见同一文档 §13.4–§13.5。
 - 登记缺口（未做）：支付事件仍按 `payment_event.created_at`（回调受理时间）切日，不是渠道成功时间；跨日回调可能归属错误业务日，缓解手段是渠道流水侧按 `trade_time` 对账并在差异中标注 `TIME_CROSS_DAY`。补齐需新增 `paid_at`/渠道成功时间字段并回填历史数据。
 - 登记缺口（未补数）：`success_at IS NULL` 的成功退款不进 T+1 窗口（旧数据或异常迁移）。跑批会统计数量并 `warn`，补数需按渠道流水 `trade_time`（无流水时按人工核对值）回填，方案见 t1 方案第 8 节，不得自动改写历史资金记录。
 - 部署前提：DB 会话时区必须与 `Asia/Shanghai` 对齐（`serverTimezone` 或 `time_zone='+08:00'`），否则 `CURRENT_TIMESTAMP` 与 Java 截断时间漂移；验收用 `SELECT @@session.time_zone, NOW(), UTC_TIMESTAMP()` 校验。
@@ -430,6 +430,13 @@
 - 未改原因：当前入账全部由订单/退款/充值单驱动，操作人可由对应单据的 `confirmed_by`/`requested_by` 追溯；补一个永远为空的列会造成“审计字段齐全”的假象。
 - 建议归属：开放人工调整功能时，同批补 `operator_id` 与调整原因，并写入用例。
 - 影响面：现阶段无资金操作缺失审计；若绕过单据直接改账本（当前无入口），将无法在表内追溯操作人。
+
+## G43 配置文件存在明文凭据，需改为环境变量注入
+
+- 发现位置：`shop-b2b2c-backend/src/main/resources/application.yml`（工作区本地改动，未提交入库；本文件不回显任何凭据值）。
+- 风险：数据源账号/口令以字面量写入配置文件，易随文件复制、打包、备份流转；一旦误提交即泄露，且轮换只能改文件发版，无法按环境独立注入。
+- 建议：改为环境变量占位（按 G03 的注入方式），本地配置不入库；轮换凭据后确认仓库与构建产物无明文残留。
+- 现状：仅登记，本轮未修改该配置文件；提交时明确排除。
 
 
 

@@ -1878,6 +1878,9 @@ class Sprint1SecurityIntegrationTest {
         assertTrue(processed >= 1);
         assertEquals("COMPLETED", orders.selectById(order.getId()).getOrderStatus());
         assertEquals("SUCCESS", paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_STALE").getEventStatus());
+        // 渠道确认成功即资金已到账：funds_received 必须为 1。
+        assertEquals(1, paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_STALE")
+                .getFundsReceived().intValue());
         assertEquals(0, skus.selectById(1).getStockQuantity());
         verify(cards, times(1)).claimCard(anyLong(), anyLong(), anyLong(), anyString());
     }
@@ -1896,6 +1899,9 @@ class Sprint1SecurityIntegrationTest {
 
         assertEquals("FULFILLMENT_FAILED",
                 paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_NOPAY").getEventStatus());
+        // 渠道明确未支付必须显式标注 funds_received=0，T+1 不得据此判渠道未导入。
+        assertEquals(0, paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_NOPAY")
+                .getFundsReceived().intValue());
         assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
         verify(cards, never()).claimCard(anyLong(), anyLong(), anyLong(), anyString());
     }
@@ -1967,6 +1973,8 @@ class Sprint1SecurityIntegrationTest {
         com.shop.b2b2c.entity.PaymentEvent stored =
                 paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_MANUAL");
         assertEquals("MANUAL_REVIEW", stored.getEventStatus());
+        // 人工队列资金状态未知，funds_received 必须回写 NULL，由 T+1 REVIEW 差异兜住。
+        assertNull(stored.getFundsReceived());
         assertEquals(3, stored.getReconcileAttempts().intValue());
         assertNull(stored.getNextReconcileAt());
         assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
