@@ -7,6 +7,8 @@
  * 3. 核验只由平台人工动作推进：PENDING -> VERIFIED/REJECTED；换默认账户时旧默认账户置 DISABLED 并记录 effectiveTo，历史不原地覆盖。
  * 4. 阶段一不生成 sub_mchid、不调用渠道进件；merchant_payment_account 的绑定字段留待 T40 与渠道真实结果。
  * 5. 行锁 + 状态校验防重复核验；真实并发行锁由人工在 MySQL 验证。
+ * 6. O2 默认账户唯一：uk_settlement_default 生成列唯一索引兜底；登记/核验命中唯一冲突翻译为 409，
+ *    事务回滚，不继续提交、不向客户端泄漏 SQL。
  */
 package com.shop.b2b2c.service;
 
@@ -20,6 +22,7 @@ import com.shop.b2b2c.mapper.MerchantSettlementAccountAuditMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementAccountMapper;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -100,7 +103,12 @@ public class MerchantSettlementAccountService {
         account.setIsDefault(form.isDefault() || firstAccount);
         account.setEffectiveFrom(LocalDateTime.now());
         account.setVersion(0);
-        accountMapper.insert(account);
+        try {
+            accountMapper.insert(account);
+        } catch (DuplicateKeyException e) {
+            // 命中 uk_settlement_account_fingerprint 或 uk_settlement_default：并发重复登记/双默认。
+            throw new BusinessException(409, "收款账户登记冲突：账户已存在或默认账户已被占用，请勿重复提交");
+        }
 
         writeAudit(account, "REGISTER", operatorId, "收款账户登记，待人工核验");
         return account;
@@ -139,7 +147,12 @@ public class MerchantSettlementAccountService {
             account.setIsDefault(false);
         }
         account.setVersion((account.getVersion() == null ? 0 : account.getVersion()) + 1);
-        accountMapper.updateById(account);
+        try {
+            accountMapper.updateById(account);
+        } catch (DuplicateKeyException e) {
+            // 并发核验同时设默认账户：uk_settlement_default 兜底，事务回滚。
+            throw new BusinessException(409, "默认收款账户已被其他账户占用，请刷新后重试");
+        }
         writeAudit(account, "VERIFY", operatorId, reason == null ? "人工核对户名与账号一致" : reason);
         return account;
     }

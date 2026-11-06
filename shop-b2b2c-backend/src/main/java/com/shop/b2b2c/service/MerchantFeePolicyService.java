@@ -11,6 +11,9 @@
  * 5. 无政策时按存量 merchant_store.commission_rate 初始化一条 MIGRATION 政策，保证既有开发库可下单；
  *    生产应以入驻政策或后台配置为准，MIGRATION 只作开发期过渡，具体生产策略待用户确认。
  * 6. 默认费率 3.00%（300 基点）沿用既有默认值，具体默认数值仍待用户确认，不得表述为最终业务值。
+ * 7. O2 并发防重：uk_fee_policy_merchant_effective 保证同店同生效时点唯一；createInitialPolicy 先锁店铺行、
+ *    adjust 先锁同店政策行，插入命中唯一索引时翻译为 409，不继续提交、不向客户端泄漏 SQL；
+ *    effective_from 统一截断到秒，与 DATETIME 秒精度对齐，避免同事务微秒差异绕过唯一约束。
  */
 package com.shop.b2b2c.service;
 
@@ -23,6 +26,7 @@ import com.shop.b2b2c.mapper.MerchantFeePolicyMapper;
 import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -68,7 +72,7 @@ public class MerchantFeePolicyService {
      */
     @Transactional(rollbackFor = Exception.class)
     public MerchantFeePolicy getEffectivePolicy(Long merchantId) {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now().withNano(0);
         MerchantFeePolicy policy = policyMapper.findEffective(merchantId, now);
         if (policy != null) {
             return policy;
@@ -99,18 +103,23 @@ public class MerchantFeePolicyService {
         String rateType = bps == 0 ? RATE_PROMOTION : RATE_NORMAL;
         validateRate(rateType, bps, promotionReason);
 
+        // O2：锁店铺行串行化同店并发创建；店铺不存在时无权创建费率。
+        if (storeMapper.lockById(merchantId) == null) {
+            throw new BusinessException(404, "店铺不存在，无法创建初始费率");
+        }
+
         MerchantFeePolicy policy = new MerchantFeePolicy();
         policy.setMerchantId(merchantId);
         policy.setRateType(rateType);
         policy.setRateBps(bps);
         policy.setPromotionReason(rateType.equals(RATE_PROMOTION) ? promotionReason.trim() : null);
-        policy.setEffectiveFrom(LocalDateTime.now());
+        policy.setEffectiveFrom(LocalDateTime.now().withNano(0));
         policy.setSource(rateType.equals(RATE_PROMOTION) ? SOURCE_PROMOTION : SOURCE_ONBOARDING);
         policy.setReason(reason == null ? "开店初始费率" : reason.trim());
         policy.setOperatorId(operatorId);
         policy.setConfirmedBy(effectiveConfirmedBy);
         policy.setApprovalMode(approvalMode);
-        policyMapper.insert(policy);
+        insertPolicy(policy);
 
         writeAudit(policy.getMerchantId(), policy.getId(), null, null, rateType, bps,
                 policy.getReason(), operatorId, effectiveConfirmedBy, approvalMode, policy.getEffectiveFrom());
@@ -145,7 +154,9 @@ public class MerchantFeePolicyService {
         String approvalMode = approvalGuard.verify("调价", operatorId, requestedConfirmedBy);
         Long confirmedBy = approvalGuard.resolveReviewer(operatorId, requestedConfirmedBy);
 
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now().withNano(0);
+        // O2：事务内锁定同店政策行，串行化并发调价，再由唯一索引兜底同生效时点冲突。
+        policyMapper.lockIdsByMerchantId(merchantId);
         MerchantFeePolicy current = getEffectivePolicy(merchantId);
         int newBps = bpsValue;
         if (current.getRateBps() != null && current.getRateBps() == newBps) {
@@ -178,7 +189,7 @@ public class MerchantFeePolicyService {
         policy.setOperatorId(operatorId);
         policy.setConfirmedBy(confirmedBy);
         policy.setApprovalMode(approvalMode);
-        policyMapper.insert(policy);
+        insertPolicy(policy);
 
         writeAudit(merchantId, policy.getId(), current.getRateType(), current.getRateBps(),
                 rateType, newBps, policy.getReason(), operatorId, confirmedBy, approvalMode, effectiveFrom);
@@ -226,8 +237,17 @@ public class MerchantFeePolicyService {
         policy.setEffectiveFrom(now);
         policy.setSource(SOURCE_MIGRATION);
         policy.setReason("存量店铺按 merchant_store.commission_rate 初始化，后续以政策表为准");
-        policyMapper.insert(policy);
+        insertPolicy(policy);
         return policy;
+    }
+
+    /** 唯一索引兜底翻译：命中 uk_fee_policy_merchant_effective 时返回 409，事务回滚，不泄漏 SQL。 */
+    private void insertPolicy(MerchantFeePolicy policy) {
+        try {
+            policyMapper.insert(policy);
+        } catch (DuplicateKeyException e) {
+            throw new BusinessException(409, "该店铺已存在同生效时点的费率政策，请勿重复提交");
+        }
     }
 
     private void validateRate(String rateType, Integer rateBps, String promotionReason) {

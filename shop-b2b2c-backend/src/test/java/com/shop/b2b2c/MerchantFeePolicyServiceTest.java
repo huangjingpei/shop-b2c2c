@@ -67,6 +67,7 @@ class MerchantFeePolicyServiceTest {
 
     @Test
     void initialNormalPolicyIsCreatedAndMirrorsStoreRate() {
+        when(storeMapper.lockById(1L)).thenReturn(new MerchantStore());
         when(policyMapper.insert(any())).thenAnswer(invocation -> {
             MerchantFeePolicy policy = invocation.getArgument(0);
             policy.setId(42L);
@@ -78,6 +79,8 @@ class MerchantFeePolicyServiceTest {
         assertEquals("NORMAL", policy.getRateType());
         assertEquals(300, policy.getRateBps());
         assertEquals("ONBOARDING", policy.getSource());
+        // O2：effective_from 截断到秒，与 DATETIME 秒精度对齐。
+        assertEquals(0, policy.getEffectiveFrom().getNano());
         // 开关关闭时允许单管理员同人复核，但必须落 SAME_OPERATOR 标记。
         assertEquals(FinanceApprovalGuard.MODE_SAME_OPERATOR, policy.getApprovalMode());
         verify(auditMapper).insert(any(MerchantFeeAudit.class));
@@ -86,6 +89,7 @@ class MerchantFeePolicyServiceTest {
 
     @Test
     void zeroRateRequiresPromotionTypeAndReason() {
+        when(storeMapper.lockById(1L)).thenReturn(new MerchantStore());
         when(policyMapper.insert(any())).thenAnswer(invocation -> {
             MerchantFeePolicy policy = invocation.getArgument(0);
             policy.setId(43L);
@@ -266,6 +270,7 @@ class MerchantFeePolicyServiceTest {
 
     @Test
     void strictModeInitialPolicyRequiresDistinctReviewer() {
+        when(storeMapper.lockById(1L)).thenReturn(new MerchantStore());
         when(policyMapper.insert(any())).thenAnswer(invocation -> {
             MerchantFeePolicy policy = invocation.getArgument(0);
             policy.setId(49L);
@@ -317,6 +322,49 @@ class MerchantFeePolicyServiceTest {
 
         assertEquals(400, ex.getCode());
         verify(policyMapper, never()).insert(any());
+    }
+
+    // ---------- O2：唯一索引兜底与冲突翻译 ----------
+
+    @Test
+    void createInitialPolicyDuplicateKeyReturns409WithoutLeakingSql() {
+        when(storeMapper.lockById(1L)).thenReturn(new MerchantStore());
+        when(policyMapper.insert(any()))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("Duplicate entry"));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.createInitialPolicy(1L, 300, null, "开店初始费率", 7L));
+
+        assertEquals(409, ex.getCode());
+        assertTrue(ex.getMessage().contains("重复提交"));
+        assertTrue(!ex.getMessage().contains("Duplicate entry"));
+    }
+
+    @Test
+    void createInitialPolicyLocksStoreRowAndRejectsMissingStore() {
+        when(storeMapper.lockById(99L)).thenReturn(null);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.createInitialPolicy(99L, 300, null, "开店初始费率", 7L));
+
+        assertEquals(404, ex.getCode());
+        verify(policyMapper, never()).insert(any());
+    }
+
+    @Test
+    void adjustLocksMerchantPoliciesAndTranslatesDuplicateKey() {
+        MerchantFeePolicy current = currentPolicy(1L, 500, "NORMAL");
+        when(policyMapper.findEffective(eq(1L), any())).thenReturn(current);
+        when(policyMapper.findScheduledAfter(eq(1L), any())).thenReturn(List.of());
+        when(policyMapper.insert(any()))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("Duplicate entry"));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.adjust(1L, adjustForm("NORMAL", 300, null, "下调费率"), 7L));
+
+        assertEquals(409, ex.getCode());
+        // 事务内先锁同店政策行，再读当前政策（G23/O2）。
+        verify(policyMapper).lockIdsByMerchantId(1L);
     }
 
     private MerchantFeePolicy currentPolicy(Long merchantId, int rateBps, String rateType) {

@@ -19,6 +19,10 @@ public interface MerchantStoreMapper extends BaseMapper<MerchantStore> {
         return Optional.ofNullable(selectById(id));
     }
 
+    /** 事务内行锁：O2 用于串行化同店开店初始费率创建等并发写入；调用方必须处于事务中。 */
+    @org.apache.ibatis.annotations.Select("SELECT * FROM merchant_store WHERE id = #{id} FOR UPDATE")
+    MerchantStore lockById(@org.apache.ibatis.annotations.Param("id") Long id);
+
     @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET status = #{status} WHERE id = #{id}")
     int updateStatusOnly(@org.apache.ibatis.annotations.Param("id") Long id,
                          @org.apache.ibatis.annotations.Param("status") Integer status);

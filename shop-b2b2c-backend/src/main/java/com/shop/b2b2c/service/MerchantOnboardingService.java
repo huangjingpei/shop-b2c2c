@@ -182,7 +182,12 @@ public class MerchantOnboardingService {
         application.setVersion(0);
         applyMaterials(application, form);
         ensureNoActiveDuplicate(application, null);
-        applicationMapper.insert(application);
+        try {
+            applicationMapper.insert(application);
+        } catch (org.springframework.dao.DuplicateKeyException e) {
+            // O2：uk_onboarding_active_subject 兜底并发重复申请；事务回滚，不泄漏 SQL。
+            throw new BusinessException(409, "同一实名主体已有进行中的入驻申请");
+        }
         writeAudit(application, "CREATE", null, STATUS_DRAFT, operatorId, null, null);
         return application;
     }

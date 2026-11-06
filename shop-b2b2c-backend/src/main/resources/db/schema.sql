@@ -765,6 +765,7 @@ CREATE TABLE IF NOT EXISTS `merchant_onboarding_application` (
   `face_verify_code` VARCHAR(16) NULL COMMENT '个人店实人认证随机数字口令，申请人录制朗读视频，人工审核比对',
   `id_card_cipher` VARCHAR(512) NULL COMMENT '身份证号密文（复用 CardCipherService）',
   `id_card_fingerprint` VARCHAR(128) NULL COMMENT '主体去重指纹：个人=身份证，企业=营业执照号',
+  `active_fingerprint` VARCHAR(128) GENERATED ALWAYS AS (IF(`status` IN ('DRAFT','SUBMITTED','REVIEWING','SUPPLEMENT_REQUIRED','APPROVED','OPENED'), `id_card_fingerprint`, NULL)) STORED COMMENT '进行中申请的主体指纹（终态行为 NULL）；配合 uk_onboarding_active_subject 并发防重',
   `license_no_cipher` VARCHAR(512) NULL COMMENT '营业执照号密文',
   `license_url` VARCHAR(512) NULL COMMENT '执照影像地址',
   `legal_person` VARCHAR(64) NULL COMMENT '企业法定代表人/个人经营者',
@@ -792,6 +793,7 @@ CREATE TABLE IF NOT EXISTS `merchant_onboarding_application` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_onboarding_active_subject` (`subject_type`, `active_fingerprint`),
   KEY `idx_onboarding_subject` (`subject_type`, `id_card_fingerprint`),
   KEY `idx_onboarding_status_submitted` (`status`, `submitted_at`),
   KEY `idx_onboarding_merchant` (`merchant_id`),
@@ -848,6 +850,7 @@ CREATE TABLE IF NOT EXISTS `merchant_settlement_account` (
   `status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/VERIFIED/REJECTED/DISABLED',
   `reject_reason` VARCHAR(512) NULL,
   `is_default` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '同一商户默认账户唯一',
+  `default_merchant_id` BIGINT UNSIGNED GENERATED ALWAYS AS (IF(`is_default` = 1, `merchant_id`, NULL)) STORED COMMENT '默认账户占位：仅默认账户非空，配合 uk_settlement_default 保证同店默认唯一',
   `effective_from` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `effective_to` DATETIME NULL COMMENT '换账户时停用旧账户，不原地覆盖历史',
   `verified_at` DATETIME NULL,
@@ -857,6 +860,7 @@ CREATE TABLE IF NOT EXISTS `merchant_settlement_account` (
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_settlement_account_fingerprint` (`merchant_id`, `account_fingerprint`),
+  UNIQUE KEY `uk_settlement_default` (`default_merchant_id`),
   KEY `idx_settlement_merchant_status` (`merchant_id`, `status`, `is_default`),
   CONSTRAINT fk_settlement_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商家收款账户';
@@ -894,6 +898,7 @@ CREATE TABLE IF NOT EXISTS `merchant_fee_policy` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '政策行最近变更时间，用于发现生效区间被事后改动',
   PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_fee_policy_merchant_effective` (`merchant_id`, `effective_from`),
   KEY `idx_fee_policy_merchant_effective` (`merchant_id`, `effective_from`, `effective_to`),
   CONSTRAINT `chk_fee_policy_rate` CHECK ((`rate_type` = 'NORMAL' AND `rate_bps` BETWEEN 100 AND 1000)
       OR (`rate_type` = 'PROMOTION' AND `rate_bps` = 0)),

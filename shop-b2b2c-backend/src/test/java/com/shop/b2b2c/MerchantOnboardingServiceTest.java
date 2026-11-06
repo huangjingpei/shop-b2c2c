@@ -492,6 +492,22 @@ class MerchantOnboardingServiceTest {
         assertFalse(second.containsKey("initialPassword"));
     }
 
+    // ---------- O2：主体防重唯一索引兜底 ----------
+
+    @Test
+    void createDuplicateSubjectConflictReturns409WithoutLeakingSql() {
+        MerchantOnboardingService.ApplicationForm form = individualForm();
+        when(applicationMapper.insert(any()))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("Duplicate entry"));
+
+        BusinessException ex = assertThrows(BusinessException.class, () -> service.create(form, 7L));
+
+        assertEquals(409, ex.getCode());
+        assertTrue(ex.getMessage().contains("进行中的入驻申请"));
+        assertTrue(!ex.getMessage().contains("Duplicate entry"));
+        verify(auditMapper, never()).insert(any());
+    }
+
     @Test
     void mapperQueriesMustCoverOpenedStatus() throws Exception {
         // T35：开通后初始费率查询、收款账户登记、主体防重都必须把 OPENED 视为"已审核/进行中"。

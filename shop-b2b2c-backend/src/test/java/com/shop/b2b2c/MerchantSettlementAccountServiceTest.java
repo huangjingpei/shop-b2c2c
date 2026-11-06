@@ -98,6 +98,23 @@ class MerchantSettlementAccountServiceTest {
     }
 
     @Test
+    void registerDuplicateKeyReturns409WithoutLeakingSql() {
+        // O2：并发下同指纹/双默认账户由唯一索引兜底，翻译为 409 且不泄漏 SQL。
+        when(onboardingService.findApprovedByMerchantId(10L)).thenReturn(approvedApplication("张三"));
+        when(accountMapper.countByMerchantId(10L)).thenReturn(0);
+        when(accountMapper.findByMerchantIdAndFingerprint(eq(10L), any())).thenReturn(null);
+        when(accountMapper.insert(any()))
+                .thenThrow(new org.springframework.dao.DuplicateKeyException("Duplicate entry"));
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.register(10L, registerForm("张三"), 7L));
+
+        assertEquals(409, ex.getCode());
+        assertTrue(ex.getMessage().contains("冲突"));
+        assertTrue(!ex.getMessage().contains("Duplicate entry"));
+    }
+
+    @Test
     void verifyApprovedAccountBecomesDefaultAndDisablesOldDefault() {
         MerchantSettlementAccount account = pendingAccount(5L, 10L, true);
         when(accountMapper.lockById(5L)).thenReturn(account);

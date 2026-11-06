@@ -34,4 +34,11 @@ public interface MerchantFeePolicyMapper extends BaseMapper<MerchantFeePolicy> {
     @Select("SELECT * FROM merchant_fee_policy WHERE merchant_id = #{merchantId} "
             + "ORDER BY effective_from DESC, id DESC")
     List<MerchantFeePolicy> findByMerchantId(@Param("merchantId") Long merchantId);
+
+    /**
+     * O2 事务内锁定同店全部政策行（FOR UPDATE），配合 uk_fee_policy_merchant_effective
+     * 防止并发调价/并发初始化产生同店同时点重复政策；调用方必须处于事务中。
+     */
+    @Select("SELECT id FROM merchant_fee_policy WHERE merchant_id = #{merchantId} FOR UPDATE")
+    List<Long> lockIdsByMerchantId(@Param("merchantId") Long merchantId);
 }
