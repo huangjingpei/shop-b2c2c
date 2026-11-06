@@ -149,13 +149,13 @@
 - 处理结果：已随 T39 第三段（`81840c3`）落地。快照唯一来源改为 `MerchantFeePolicyService.getEffectivePolicy`，订单写 `fee_policy_id/fee_rate_bps/fee_rate_type`；`merchant_store.commission_rate` 降为展示镜像，仅由政策服务同步；已生成订单的快照字段不回溯。
 - 残留：存量店铺无政策时按旧佣金费率懒初始化一条 `MIGRATION` 政策（开发期过渡），生产迁移策略仍待用户确认；真实 MySQL 生效区间唯一性与并发创建仍须人工验证。
 
-## G15 T33 全额退款后已交付虚拟卡密未作废（待用户确认，未实现）
+## G15 T33 全额退款后已交付虚拟卡密未作废（用户已确认默认口径，已实现）
 
-- 发现位置：T33 退款成功流程与订单卡密交付；用户在本轮明确“先登记为待确认，不要擅自实现作废逻辑”。
-- 现象：全额退款成功后订单置 REFUNDED 并回退库存，但已分配给买家的虚拟卡密未作废，仍可能被继续使用。
-- 不属本卡范围的原因：作废/换发涉及已交付资产的业务规则（是否允许、是否可追回、是否影响买家权益），用户答复未到。
-- 建议归属：T33 后续补卡或新增候选；实现前必须先确认业务口径。
-- 影响面：当前不得把“退款后卡密仍可用”写成既定规则；文档与代码均保持该缺口开放。
+- 发现位置：T33 退款成功流程、订单卡密交付与 [ProductVirtualCardMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/ProductVirtualCardMapper.java)。
+- 现象：此前全额退款成功后订单置 REFUNDED 并回退库存，但已分配给买家的虚拟卡密未作废，仍可能被继续使用。
+- 处理结果：用户已给出默认口径“卡密全额退款成功即作废该卡密”。已在 T40 第三提交（`eb84b4b`）落地：虚拟卡密订单全额退款成功时将订单已售卡密 status 1→2，条件 UPDATE 幂等；卡密密文保留用于倒查，不删除。
+- 库存口径：卡密可能已交付，全额退款时**不恢复 SKU 库存**，避免“库存数大于可用卡密数”导致后续超卖；实物/服务订单仍按原逻辑回退库存。
+- 残留：部分退款不作废卡密；真实 MySQL 并发退款与库存一致性、作废后的买家侧展示/客服口径仍须用户手动验证与确认。
 
 ## G16 T39 入驻/账户审核角色未确认（待用户确认）
 
@@ -171,7 +171,7 @@
 - 现象：新店初始费率沿用既有默认 3.00%（300 基点），用户尚未答复该数值是否为最终业务值。
 - 未确认原因：默认费率属业务定价，不得由开发臆定；本轮只复用现有默认值并集中到政策服务。
 - 建议归属：T39 后续；确认后只改常量与迁移默认值并补用例，已生成订单快照不回溯。
-- 影响面：文档不得把 3% 写成“已确定默认费率”。另：开店初始费率是否允许 0% 推广尚未答复，当前按 1%~10% 拒绝，0% 只能在开店后通过后台调价设置。
+- 影响面：文档不得把 3% 写成“已确定默认费率”。开店 0% 推广费率已按用户默认口径实现（仅 PROMOTION 且必须填写原因，见 `eb84b4b`），不再以“未确认”为由拒绝。
 
 ## G18 T39 价税分离税率未确认（待用户确认）
 
@@ -180,3 +180,11 @@
 - 未确认原因：税率涉及财税口径与开票，不得由开发默认成业务结论；本轮沿用既有配置值。
 - 建议归属：T39 后续或财税专项；确认后调整配置默认值与快照用例，历史订单税额不重算。
 - 影响面：当前税额仅作内部记账与对账数据，不代表已开票或税务合规；不得把 6% 表述为最终税率。
+
+## G19 T40 平台代收/分账通道未联调（待资质与通道联调）
+
+- 发现位置：[ProfitSharingChannelAdapter.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/ProfitSharingChannelAdapter.java)、[WeChatProfitSharingAdapter.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/WeChatProfitSharingAdapter.java)、[AlipayProfitSharingAdapter.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/AlipayProfitSharingAdapter.java)、[PlatformCollectionService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/PlatformCollectionService.java)。
+- 现象：T40 只落地数据模型、本地分账账本、结算台账与通道适配契约；微信/支付宝适配器均为占位，`enabled()` 固定 false，任何分账/查分/退分调用明确拒绝。
+- 未实现原因：平台代收与分账依赖支付机构分账资质、协议与沙箱联调；用户明确本轮只做骨架，不得调用真实代收/分账接口，也不得形成资金池。
+- 建议归属：T40 资质后阶段；取得资质后按 Q09-A 灰度切换，补真实渠道调用、验签/防重放/乱序容忍、冻结/退分/退款联动与 T+1 四方对账。
+- 影响面：`shop.settlement.platform-collect-enabled` 默认 false；T40 状态只能表述为“骨架已实现·待资质后联调”，不得标为可用或已完成；阶段一 `MERCHANT_DIRECT` 流程不受影响。

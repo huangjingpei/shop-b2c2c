@@ -641,12 +641,12 @@
 | 优先级 | **P2（能力/资质前置）**（阶段一不依赖分账资质；阶段二未取得资质前不得开工） |
 | 阶段 | S5（延后，不阻塞阶段一） |
 | D/F/R | F01、F03、F05；关联 N3 |
-| 涉及文件 | 新增 `merchant_channel_binding/split_receiver/split_detail/split_reverse`；订单**计划新增** `collection_mode/platform_trade_no`；支付事件扩展 |
+| 涉及文件 | 新增 `platform_collection_settlement/split_detail/split_reverse` 与通道适配契约；复用 T39 的 `merchant_payment_account` 绑定列（`settlement_account_id/binding_status/channel_merchant_id/bound_at/effective_from/effective_to/raw_result`），**不另建 merchant_channel_binding/split_receiver**；订单新增 `platform_trade_no`；`PlatformCollectionService`、`ProfitSharingChannelAdapter` 及微信/支付宝占位。 |
 | 问题本质 | 当前无平台商户号、无分账接收方/明细/冻结/退分；`sharing_status` 只是订单字段，不能视为真实分账结果。 |
-| 修复要点 | **已确认 Q09-A**：资质取得后按灰度名单切换，支持按渠道/按商家回滚；平台代收订单写 `PLATFORM_COLLECT`；分账接收方进件与绑定；分账/冻结/退分/退款联动；平台留成与服务费复用原快照；历史阶段一订单不回填。**Q10 撤回后的技术约束**：旧 `payment_channel_type`/`payment_channel` 保留只读、新语义另起列、历史值不重算。设计 §10、§13.2。 |
-| 依赖/冲突 | 依赖 T39、T32–T35 全部完成、T15、支付资质/协议/沙箱；切换条件已确认（Q09-A）；**禁止在阶段一用平台商户号代收货款再手工转账**。 |
+| 修复要点 | **已确认 Q09-A**：资质取得后按灰度名单切换，支持按渠道/按商家回滚；平台代收订单写 `PLATFORM_COLLECT`；分账接收方进件与绑定；分账/冻结/退分/退款联动；平台留成与服务费复用原快照；历史阶段一订单不回填。**Q10 撤回后的技术约束**：旧 `payment_channel_type`/`payment_channel` 保留只读、新语义另起列、历史值不重算。设计 §10、§13.2。**本轮骨架口径**：只做数据模型、本地分账账本、结算台账与通道适配接口；默认开关关闭，不实现/不调用真实微信/支付宝代收或分账；阶段一 `MERCHANT_DIRECT` 流程、服务费扣费、退款冲正、欠费停收保持原行为。 |
+| 依赖/冲突 | 依赖 T39、T32–T35 全部完成、T15、**支付资质/协议/沙箱**；切换条件已确认（Q09-A）；**禁止在阶段一用平台商户号代收货款再手工转账**。 |
 | 回归要点 | 合法：实收=分账+平台留成；退款先退分再退款。非法：未绑定接收方/超分账比例/重复分账拒绝。并发交错：支付回调、分账、退款交错，金额守恒。失败后数据不变：分账失败可重试，订单支付状态不回退。 |
-| 状态 | 待修复（设计已出，资质前不排期） |
+| 状态 | **骨架已实现·待资质后联调**（提交 25adb8e / 47ee8df / eb84b4b；代理未运行 mvn/编译/测试/构建、未连接数据库；真实分账/代收通道与四方对账待资质后实现，不得标为可用） |
 
 ### 未单列修复单元的商业能力候选
 
