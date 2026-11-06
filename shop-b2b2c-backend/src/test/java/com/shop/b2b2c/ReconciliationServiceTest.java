@@ -6,6 +6,7 @@
  *  2. 对账只入队差异，不得自动改订单/账本/结算单；用例同时覆盖差异幂等与跨店拒绝。
  *  3. CSV 用例覆盖公式注入防护和逗号/引号转义，避免导出打开即执行公式。
  *  4. 真实渠道流水导入与 MySQL 并发对账仍由用户手动验证。
+ *  5. T+1 用例覆盖退款↔渠道退款、服务费金额、平台代收、同日重试防重复与审计留痕。
  */
 package com.shop.b2b2c;
 
@@ -15,20 +16,29 @@ import com.shop.b2b2c.entity.MerchantSettlementBatch;
 import com.shop.b2b2c.entity.MerchantSettlementItem;
 import com.shop.b2b2c.entity.PaymentChannelStatement;
 import com.shop.b2b2c.entity.PaymentEvent;
+import com.shop.b2b2c.entity.PlatformCollectionSettlement;
 import com.shop.b2b2c.entity.ReconciliationDifference;
+import com.shop.b2b2c.entity.ReconciliationDifferenceAudit;
 import com.shop.b2b2c.entity.TradeOrder;
+import com.shop.b2b2c.entity.TradeRefund;
 import com.shop.b2b2c.mapper.MerchantAccountLedgerMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementBatchMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementItemMapper;
 import com.shop.b2b2c.mapper.PaymentChannelStatementMapper;
 import com.shop.b2b2c.mapper.PaymentEventMapper;
+import com.shop.b2b2c.mapper.PlatformCollectionSettlementMapper;
+import com.shop.b2b2c.mapper.ReconciliationDifferenceAuditMapper;
 import com.shop.b2b2c.mapper.ReconciliationDifferenceMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
+import com.shop.b2b2c.mapper.TradeRefundMapper;
+import com.shop.b2b2c.service.ReconciliationClassifier;
 import com.shop.b2b2c.service.ReconciliationService;
 import com.shop.b2b2c.service.ServiceFeeSnapshotService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -57,10 +67,16 @@ class ReconciliationServiceTest {
     private final ReconciliationDifferenceMapper differenceMapper =
             mock(ReconciliationDifferenceMapper.class);
     private final ServiceFeeSnapshotService snapshotService = new ServiceFeeSnapshotService();
+    private final ReconciliationDifferenceAuditMapper auditMapper =
+            mock(ReconciliationDifferenceAuditMapper.class);
+    private final TradeRefundMapper refundMapper = mock(TradeRefundMapper.class);
+    private final PlatformCollectionSettlementMapper platformSettlementMapper =
+            mock(PlatformCollectionSettlementMapper.class);
 
     private ReconciliationService service() {
         return new ReconciliationService(statementMapper, eventMapper, orderMapper, ledgerMapper, batchMapper,
-                itemMapper, differenceMapper, snapshotService);
+                itemMapper, differenceMapper, snapshotService, auditMapper, refundMapper,
+                platformSettlementMapper);
     }
 
     @Test
@@ -76,6 +92,11 @@ class ReconciliationServiceTest {
 
         assertEquals(1, result.get("added"));
         verify(differenceMapper).insert(any(ReconciliationDifference.class));
+        ArgumentCaptor<ReconciliationDifferenceAudit> audit =
+                ArgumentCaptor.forClass(ReconciliationDifferenceAudit.class);
+        verify(auditMapper).insert(audit.capture());
+        assertEquals("CREATE", audit.getValue().getAction());
+        assertEquals("DISPUTED", audit.getValue().getToStatus());
     }
 
     @Test
@@ -228,6 +249,12 @@ class ReconciliationServiceTest {
         assertEquals(3L, result.getHandledBy());
         assertNotNull(result.getHandledAt());
         verify(differenceMapper).updateById(difference);
+        ArgumentCaptor<ReconciliationDifferenceAudit> audit =
+                ArgumentCaptor.forClass(ReconciliationDifferenceAudit.class);
+        verify(auditMapper).insert(audit.capture());
+        assertEquals("ESCALATE", audit.getValue().getAction());
+        assertEquals("RETRY", audit.getValue().getFromStatus());
+        assertEquals("MANUAL", audit.getValue().getToStatus());
     }
 
     @Test
@@ -257,6 +284,11 @@ class ReconciliationServiceTest {
         assertEquals(3L, result.getHandledBy());
         assertEquals("渠道已确认，人工平衡", result.getHandleNote());
         verify(differenceMapper).updateById(difference);
+        ArgumentCaptor<ReconciliationDifferenceAudit> audit =
+                ArgumentCaptor.forClass(ReconciliationDifferenceAudit.class);
+        verify(auditMapper).insert(audit.capture());
+        assertEquals("IGNORE", audit.getValue().getAction());
+        assertEquals(3L, audit.getValue().getOperatorId());
     }
 
     @Test
@@ -327,6 +359,129 @@ class ReconciliationServiceTest {
         assertEquals(0, result.get("imported"));
         assertEquals(1, result.get("skipped"));
         verify(statementMapper, never()).insert(any(PaymentChannelStatement.class));
+    }
+
+    @Test
+    void reconcileFlagsRefundWithoutChannelStatement() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        TradeRefund refund = successfulRefund("RF-1", "WX-R1", new BigDecimal("50.00"), BigDecimal.ZERO);
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(refundMapper.findSuccessfulRefundsByPeriod(1L, from, to)).thenReturn(List.of(refund));
+        when(statementMapper.findByChannelAndTradeNo("WECHAT", "WX-R1")).thenReturn(Optional.empty());
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.REFUND_WITHOUT_STATEMENT, captor.getValue().getDiffType());
+        assertEquals(ReconciliationClassifier.ONE_SIDED_LOCAL, captor.getValue().getDiffCategory());
+    }
+
+    @Test
+    void reconcileFlagsFeeAmountMismatchInsteadOfOnlyMissingLedger() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PaymentEvent event = successEvent("SN-X9", new BigDecimal("100.00"));
+        TradeOrder order = paidOrder("SN-X9", new BigDecimal("3.00"));
+        MerchantAccountLedger charge = ledger("ORDER_FEE:SN-X9", new BigDecimal("2.00"));
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(event));
+        when(orderMapper.findByOrderSn("SN-X9")).thenReturn(Optional.of(order));
+        when(ledgerMapper.findByIdempotencyKey("ORDER_FEE:SN-X9")).thenReturn(Optional.of(charge));
+        when(statementMapper.findByChannelAndTradeNo("WECHAT", "WX-EVENT")).thenReturn(Optional.empty());
+        when(statementMapper.countByMerchantChannelPeriod(1L, "WECHAT", from, to)).thenReturn(0);
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.FEE_AMOUNT_MISMATCH, captor.getValue().getDiffType());
+        // 应收 3.00、账本 2.00，实际少 1.00 → 短款口径。
+        assertEquals(ReconciliationClassifier.SHORT, captor.getValue().getDiffCategory());
+        assertEquals(new BigDecimal("3.00"), captor.getValue().getExpectedAmount());
+        assertEquals(new BigDecimal("2.00"), captor.getValue().getActualAmount());
+    }
+
+    @Test
+    void reconcileFlagsPlatformSettlementMismatch() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        PlatformCollectionSettlement settlement = new PlatformCollectionSettlement();
+        settlement.setId(30L);
+        settlement.setMerchantId(1L);
+        settlement.setOrderSn("SN-P1");
+        settlement.setPaymentEventId(5L);
+        settlement.setGrossAmount(new BigDecimal("100.00"));
+        PaymentEvent event = successEvent("SN-P1", new BigDecimal("99.00"));
+        event.setId(5L);
+        event.setPayTradeNo("PT-1");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(platformSettlementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(settlement));
+        when(eventMapper.selectById(5L)).thenReturn(event);
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PLATFORM_SETTLEMENT_MISMATCH, captor.getValue().getDiffType());
+        assertEquals(ReconciliationClassifier.LONG, captor.getValue().getDiffCategory());
+    }
+
+    @Test
+    void retryOnSameBusinessDateDoesNotDoubleCount() {
+        LocalDate businessDate = LocalDate.of(2026, 11, 5);
+        ReconciliationDifference difference = new ReconciliationDifference();
+        difference.setId(11L);
+        difference.setDiffType(ReconciliationService.FEE_LEDGER_MISSING);
+        difference.setOrderSn("SN-X8");
+        difference.setStatus("RETRY");
+        difference.setRetryCount(1);
+        difference.setLastRetryDate(businessDate);
+        when(differenceMapper.selectById(11L)).thenReturn(difference);
+
+        ReconciliationDifference result = service().retry(11L, 3L, businessDate);
+
+        assertEquals(1, result.getRetryCount());
+        assertEquals(businessDate, result.getLastRetryDate());
+        verify(differenceMapper, never()).updateById(any(ReconciliationDifference.class));
+        verify(auditMapper, never()).insert(any(ReconciliationDifferenceAudit.class));
+    }
+
+    private TradeRefund successfulRefund(String refundNo, String channelRefundNo, BigDecimal amount,
+                                         BigDecimal feeRefund) {
+        TradeRefund refund = new TradeRefund();
+        refund.setId(40L);
+        refund.setRefundNo(refundNo);
+        refund.setOrderSn("SN-R1");
+        refund.setMerchantId(1L);
+        refund.setChannel("WECHAT");
+        refund.setChannelRefundNo(channelRefundNo);
+        refund.setSource("ORDER");
+        refund.setRefundAmount(amount);
+        refund.setFeeRefundAmount(feeRefund);
+        refund.setStatus("SUCCESS");
+        refund.setUpdatedAt(LocalDateTime.of(2026, 10, 5, 10, 0));
+        return refund;
+    }
+
+    private MerchantAccountLedger ledger(String idempotencyKey, BigDecimal amount) {
+        MerchantAccountLedger entry = new MerchantAccountLedger();
+        entry.setId(50L);
+        entry.setIdempotencyKey(idempotencyKey);
+        entry.setAmount(amount);
+        return entry;
     }
 
     private PaymentChannelStatement statement(String channel, String tradeNo, String orderSn, BigDecimal amount) {

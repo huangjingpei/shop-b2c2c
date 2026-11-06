@@ -668,6 +668,7 @@ CREATE TABLE IF NOT EXISTS `payment_channel_statement` (
   `order_sn` VARCHAR(64) NULL COMMENT '平台订单号（导入时按 out_trade_no 映射）',
   `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '归属店铺',
   `amount` DECIMAL(12,2) NOT NULL COMMENT '渠道金额',
+  `currency` VARCHAR(16) NOT NULL DEFAULT 'CNY' COMMENT '渠道币种；与 payment_event.currency 比对，不一致记 CURRENCY',
   `trade_status` VARCHAR(24) NOT NULL DEFAULT 'SUCCESS' COMMENT 'SUCCESS/REFUND/FAIL',
   `trade_time` DATETIME NULL COMMENT '渠道交易时间',
   `imported_by` BIGINT NULL COMMENT '导入人',
@@ -684,16 +685,19 @@ CREATE TABLE IF NOT EXISTS `reconciliation_difference` (
   `difference_key` VARCHAR(191) NOT NULL COMMENT '稳定差异键，防重复入队',
   `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '所属店铺ID',
   `channel` VARCHAR(32) NULL COMMENT '渠道',
-  `diff_type` VARCHAR(48) NOT NULL COMMENT 'CHANNEL_WITHOUT_EVENT/EVENT_WITHOUT_STATEMENT/AMOUNT_MISMATCH/ORDER_MISMATCH/ORDER_MISSING/FEE_LEDGER_MISSING/DUPLICATE_PAYMENT/SETTLEMENT_ITEM_MISMATCH/RECHARGE_AMOUNT_MISMATCH',
-  `biz_type` VARCHAR(24) NOT NULL COMMENT 'ORDER/EVENT/STATEMENT/SETTLEMENT/RECHARGE',
+  `diff_type` VARCHAR(48) NOT NULL COMMENT 'CHANNEL_WITHOUT_EVENT/EVENT_WITHOUT_STATEMENT/AMOUNT_MISMATCH/ORDER_MISMATCH/ORDER_MISSING/FEE_LEDGER_MISSING/FEE_AMOUNT_MISMATCH/REFUND_WITHOUT_STATEMENT/REFUND_AMOUNT_MISMATCH/REFUND_STATEMENT_WITHOUT_REFUND/REFUND_FEE_LEDGER_MISSING/REFUND_FEE_AMOUNT_MISMATCH/CURRENCY_MISMATCH/TIME_CROSS_DAY/PLATFORM_SETTLEMENT_MISMATCH/PLATFORM_SETTLEMENT_BATCH_MISSING/DUPLICATE_PAYMENT/SETTLEMENT_ITEM_MISMATCH/RECHARGE_AMOUNT_MISMATCH',
+  `diff_category` VARCHAR(32) NULL COMMENT 'T+1 分类：LONG/SHORT/ONE_SIDED_LOCAL/ONE_SIDED_CHANNEL/PRECISION/CURRENCY/TIME_CROSS_DAY/INTERNAL',
+  `biz_type` VARCHAR(24) NOT NULL COMMENT 'ORDER/EVENT/STATEMENT/REFUND/SETTLEMENT/PLATFORM_SETTLEMENT/LEDGER/RECHARGE',
   `biz_id` BIGINT UNSIGNED NULL COMMENT '关联业务主键',
   `order_sn` VARCHAR(64) NULL COMMENT '订单号',
-  `channel_trade_no` VARCHAR(128) NULL COMMENT '渠道流水号',
+  `channel_trade_no` VARCHAR(128) NULL COMMENT '渠道流水号；退款时可为渠道退款流水号',
+  `business_date` DATE NULL COMMENT '差异归属业务日（T+1 跑批，Asia/Shanghai）',
   `expected_amount` DECIMAL(12,2) NULL COMMENT '平台应有金额',
   `actual_amount` DECIMAL(12,2) NULL COMMENT '渠道/实际金额',
   `status` VARCHAR(24) NOT NULL DEFAULT 'DISPUTED' COMMENT 'DISPUTED/RETRY/MANUAL/RESOLVED/IGNORED；MANUAL=自动重试超限转人工',
   `detail` VARCHAR(512) NULL COMMENT '差异说明',
   `retry_count` INT NOT NULL DEFAULT 0 COMMENT '重试次数；达到3次仍不一致转MANUAL',
+  `last_retry_date` DATE NULL COMMENT '最近一次重试的业务日；同一业务日重复跑批不重复计数',
   `handled_by` BIGINT NULL COMMENT '处理人',
   `handled_at` DATETIME NULL COMMENT '处理时间',
   `handle_note` VARCHAR(512) NULL COMMENT '处理说明',
@@ -702,8 +706,50 @@ CREATE TABLE IF NOT EXISTS `reconciliation_difference` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_difference_key` (`difference_key`),
   KEY `idx_difference_merchant_status` (`merchant_id`, `status`, `created_at`),
-  CONSTRAINT fk_difference_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+  KEY `idx_difference_business` (`business_date`, `merchant_id`, `status`),
+  CONSTRAINT fk_difference_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
+  CONSTRAINT `chk_difference_amounts` CHECK (`expected_amount` IS NULL OR `expected_amount` >= 0.00)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='对账差异队列';
+
+-- 27.1 T+1 跑批记录：每店每业务日一条，唯一键保证同一天重复跑不产生第二条；状态机支持续跑与转人工
+CREATE TABLE IF NOT EXISTS `reconciliation_batch_run` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `business_date` DATE NOT NULL COMMENT '业务日（Asia/Shanghai）',
+  `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '店铺ID',
+  `status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/RUNNING/SUCCESS/PARTIAL/FAILED/MANUAL；PARTIAL=渠道流水未导入，可续跑',
+  `attempts` INT NOT NULL DEFAULT 0 COMMENT '已尝试次数；达到上限转 MANUAL',
+  `statement_count` INT NOT NULL DEFAULT 0 COMMENT '本业务日渠道流水数',
+  `event_count` INT NOT NULL DEFAULT 0 COMMENT '本业务日支付事件数',
+  `refund_count` INT NOT NULL DEFAULT 0 COMMENT '本业务日成功退款数',
+  `difference_added` INT NOT NULL DEFAULT 0 COMMENT '新增差异数',
+  `difference_refreshed` INT NOT NULL DEFAULT 0 COMMENT '刷新已有未关闭差异数',
+  `retry_processed` INT NOT NULL DEFAULT 0 COMMENT '自动重试处理数',
+  `manual_escalated` INT NOT NULL DEFAULT 0 COMMENT '本次转人工数',
+  `last_error` VARCHAR(512) NULL COMMENT '失败/部分完成原因；渠道流水未导入等缺口在此可见',
+  `started_at` DATETIME NULL,
+  `finished_at` DATETIME NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_reconciliation_run` (`business_date`, `merchant_id`),
+  KEY `idx_reconciliation_run_status` (`business_date`, `status`),
+  CONSTRAINT fk_reconciliation_run_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='T+1 对账跑批记录';
+
+-- 27.2 差异处理审计：只追加，记录谁在何时把哪条差异从什么状态改成什么状态
+CREATE TABLE IF NOT EXISTS `reconciliation_difference_audit` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `difference_id` BIGINT UNSIGNED NOT NULL COMMENT '差异ID',
+  `action` VARCHAR(24) NOT NULL COMMENT 'CREATE/RETRY/RESOLVE/IGNORE/ESCALATE',
+  `from_status` VARCHAR(24) NULL COMMENT '变更前状态；CREATE 为空',
+  `to_status` VARCHAR(24) NOT NULL COMMENT '变更后状态',
+  `operator_id` BIGINT NULL COMMENT '操作人；NULL 或 0 表示系统任务',
+  `note` VARCHAR(512) NULL COMMENT '说明',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_difference_audit_diff` (`difference_id`, `created_at`, `id`),
+  CONSTRAINT fk_difference_audit_diff FOREIGN KEY (`difference_id`) REFERENCES `reconciliation_difference` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='对账差异处理审计（append-only）';
 
 -- 28. 商家入驻申请（T39）：实名材料、审核状态机；身份证/营业执照只存密文与去重指纹，接口一律脱敏
 CREATE TABLE IF NOT EXISTS `merchant_onboarding_application` (

@@ -6,6 +6,7 @@
  *  2. 充值确认以人工核对后的金额入账；确认接口幂等由充值单号+账本幂等键保证。
  *  3. 批次生成只生成/重算 DRAFT，确认后不可再改；跨店查询必须显式传 merchantId。
  *  4. 复核人候选只返回启用中的其他 SUPERADMIN，不返回密码；是否允许同人由 FinanceApprovalGuard 判定。
+ *  5. T+1 跑批入口与记录查询只暴露跑批状态/计数，不返回渠道报文；业务日默认按 Asia/Shanghai 取昨天。
  */
 package com.shop.b2b2c.controller;
 
@@ -19,11 +20,13 @@ import com.shop.b2b2c.entity.MerchantRechargeOrder;
 import com.shop.b2b2c.entity.MerchantSettlementBatch;
 import com.shop.b2b2c.entity.MerchantSettlementItem;
 import com.shop.b2b2c.entity.PaymentChannelStatement;
+import com.shop.b2b2c.entity.ReconciliationBatchRun;
 import com.shop.b2b2c.entity.ReconciliationDifference;
 import com.shop.b2b2c.entity.SysUser;
 import com.shop.b2b2c.mapper.SysUserMapper;
 import com.shop.b2b2c.service.FinanceApprovalGuard;
 import com.shop.b2b2c.service.MerchantAccountService;
+import com.shop.b2b2c.service.ReconciliationBatchService;
 import com.shop.b2b2c.service.ReconciliationService;
 import com.shop.b2b2c.service.SettlementService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -43,8 +46,8 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.YearMonth;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -58,6 +61,7 @@ public class AdminSettlementController {
     private final MerchantAccountService accountService;
     private final SettlementService settlementService;
     private final ReconciliationService reconciliationService;
+    private final ReconciliationBatchService reconciliationBatchService;
     private final SysUserMapper userMapper;
     private final FinanceApprovalGuard approvalGuard;
 
@@ -206,6 +210,7 @@ public class AdminSettlementController {
                 statement.setOrderSn(item.getOrderSn());
                 statement.setMerchantId(item.getMerchantId());
                 statement.setAmount(item.getAmount());
+                statement.setCurrency(item.getCurrency());
                 statement.setTradeStatus(item.getTradeStatus());
                 statement.setTradeTime(item.getTradeTime());
                 statements.add(statement);
@@ -223,7 +228,30 @@ public class AdminSettlementController {
         StpUtil.checkRole("SUPERADMIN");
         LocalDate start = from == null ? YearMonth.now().atDay(1) : from;
         LocalDate end = to == null ? YearMonth.now().plusMonths(1).atDay(1) : to;
-        return R.ok(reconciliationService.reconcile(merchantId, start.atStartOfDay(), end.atStartOfDay()));
+        return R.ok(reconciliationService.reconcile(merchantId, start.atStartOfDay(), end.atStartOfDay(),
+                StpUtil.getLoginIdAsLong()));
+    }
+
+    @Operation(summary = "手动触发 T+1 对账跑批（按业务日、可选单店）")
+    @PostMapping("/reconciliation/runs")
+    public R<Map<String, Object>> runReconciliation(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate businessDate,
+            @RequestParam(required = false) Long merchantId) {
+        StpUtil.checkRole("SUPERADMIN");
+        LocalDate date = businessDate == null
+                ? LocalDate.now(ZoneId.of("Asia/Shanghai")).minusDays(1) : businessDate;
+        return R.ok("对账跑批已执行", reconciliationBatchService.runRange(date, date,
+                StpUtil.getLoginIdAsLong(), merchantId));
+    }
+
+    @Operation(summary = "查询 T+1 对账跑批记录")
+    @GetMapping("/reconciliation/runs")
+    public R<List<ReconciliationBatchRun>> reconciliationRuns(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate businessDate,
+            @RequestParam(required = false) Long merchantId,
+            @RequestParam(defaultValue = "50") int limit) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok(reconciliationBatchService.list(businessDate, merchantId, limit));
     }
 
     @Operation(summary = "查询对账差异队列")

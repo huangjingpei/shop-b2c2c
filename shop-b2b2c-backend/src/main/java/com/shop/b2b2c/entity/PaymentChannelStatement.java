@@ -4,6 +4,7 @@
  * 维护注意：
  *  1. 渠道流水只读比对，不直接修改订单/账本/结算单；差异写入 reconciliation_difference。
  *  2. (channel, channelTradeNo) 唯一，重复导入同一流水不重复入队。
+ *  3. currency 与 payment_event.currency 比对；不一致只记 CURRENCY 差异，不做汇率折算。
  */
 package com.shop.b2b2c.entity;
 
@@ -27,6 +28,7 @@ public class PaymentChannelStatement {
     private String orderSn;
     private Long merchantId;
     private BigDecimal amount;
+    private String currency;
     private String tradeStatus = "SUCCESS";
     private LocalDateTime tradeTime;
     private Long importedBy;

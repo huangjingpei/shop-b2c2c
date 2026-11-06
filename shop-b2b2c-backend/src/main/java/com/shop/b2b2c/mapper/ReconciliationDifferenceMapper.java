@@ -1,7 +1,9 @@
 /*
  * 文件：ReconciliationDifferenceMapper.java
- * 用途：对账差异队列数据访问（T35）。
- * 维护注意：差异键唯一防重；查询按商户/状态过滤并限制条数。
+ * 用途：对账差异队列数据访问（T35/T+1）。
+ * 维护注意：
+ *  1. 差异键唯一防重；重复对账只刷新未关闭记录。
+ *  2. 自动重试按商户读取 DISPUTED/RETRY，最多 MAX_RETRY_COUNT 次；MANUAL/RESOLVED/IGNORED 不再自动处理。
  */
 package com.shop.b2b2c.mapper;
 
@@ -27,5 +29,14 @@ public interface ReconciliationDifferenceMapper extends BaseMapper<Reconciliatio
                 .eq(status != null && !status.isBlank(), ReconciliationDifference::getStatus, status)
                 .orderByDesc(ReconciliationDifference::getId)
                 .last("LIMIT " + Math.min(Math.max(limit, 1), 200)));
+    }
+
+    /** T+1 自动重试候选：只取未关闭记录，跨业务日也纳入，避免旧差异永远躺在 RETRY。 */
+    default List<ReconciliationDifference> findOpenByMerchant(Long merchantId, int limit) {
+        return selectList(new LambdaQueryWrapper<ReconciliationDifference>()
+                .eq(ReconciliationDifference::getMerchantId, merchantId)
+                .in(ReconciliationDifference::getStatus, "DISPUTED", "RETRY")
+                .orderByAsc(ReconciliationDifference::getId)
+                .last("LIMIT " + Math.min(Math.max(limit, 1), 500)));
     }
 }

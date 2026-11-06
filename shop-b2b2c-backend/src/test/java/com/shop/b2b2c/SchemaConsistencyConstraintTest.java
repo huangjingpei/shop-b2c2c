@@ -210,6 +210,7 @@ class SchemaConsistencyConstraintTest {
                 Map.entry("uk_settlement_item", "batch_id,item_type,order_id,refund_id"),
                 Map.entry("uk_statement_trade", "channel,channel_trade_no"),
                 Map.entry("uk_difference_key", "difference_key"),
+                Map.entry("uk_reconciliation_run", "business_date,merchant_id"),
                 Map.entry("uk_settlement_account_fingerprint", "merchant_id,account_fingerprint"),
                 Map.entry("uk_platform_settlement_order", "order_id"),
                 Map.entry("uk_split_order_receiver", "order_id,payment_account_id"),
@@ -274,8 +275,35 @@ class SchemaConsistencyConstraintTest {
                 "merchant_fee_policy", "merchant_fee_audit", "merchant_collection_status_audit",
                 "merchant_settlement_account", "merchant_settlement_account_audit",
                 "merchant_onboarding_application", "merchant_onboarding_audit",
-                "platform_collection_settlement", "split_detail", "split_reverse");
+                "platform_collection_settlement", "split_detail", "split_reverse",
+                "reconciliation_batch_run", "reconciliation_difference_audit");
         financialTables.forEach(table -> assertAuditColumn(columns, table, "created_at"));
+    }
+
+    @Test
+    void t1ReconciliationColumnsAndRunUniquenessArePresent() throws IOException {
+        Map<String, Map<String, ColumnDef>> columns = tableColumns(tableBlocks(schemaText()));
+        Map<String, ColumnDef> difference = columns.get("reconciliation_difference");
+        assertNotNull(difference, "schema.sql 缺少 reconciliation_difference");
+        assertNotNull(difference.get("diff_category"), "差异缺少 T+1 分类列 diff_category");
+        assertNotNull(difference.get("business_date"), "差异缺少业务日归属列 business_date");
+        assertNotNull(difference.get("last_retry_date"), "差异缺少同日重试防重复列 last_retry_date");
+
+        Map<String, ColumnDef> run = columns.get("reconciliation_batch_run");
+        assertNotNull(run, "schema.sql 缺少 reconciliation_batch_run");
+        assertNotNull(run.get("business_date"), "跑批记录缺少业务日");
+        assertNotNull(run.get("merchant_id"), "跑批记录缺少店铺");
+        assertNotNull(run.get("attempts"), "跑批记录缺少尝试次数");
+        assertNotNull(run.get("last_error"), "跑批记录缺少失败/部分完成原因");
+
+        Map<String, ColumnDef> audit = columns.get("reconciliation_difference_audit");
+        assertNotNull(audit, "schema.sql 缺少 reconciliation_difference_audit");
+        assertNotNull(audit.get("action"), "差异审计缺少动作");
+        assertNotNull(audit.get("from_status"), "差异审计缺少变更前状态");
+        assertNotNull(audit.get("to_status"), "差异审计缺少变更后状态");
+        assertNotNull(audit.get("operator_id"), "差异审计缺少操作人");
+        assertTrue(normalized(schemaText()).contains("UNIQUE KEY `uk_reconciliation_run` (`business_date`, `merchant_id`)"),
+                "跑批必须由 (business_date, merchant_id) 唯一键保证同日同店不重复");
     }
 
     @Test

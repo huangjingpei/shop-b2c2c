@@ -69,6 +69,7 @@ public final class SettlementDTOs {
         private String orderSn;
         private Long merchantId;
         private BigDecimal amount;
+        private String currency;
         private String tradeStatus;
         private LocalDateTime tradeTime;
     }

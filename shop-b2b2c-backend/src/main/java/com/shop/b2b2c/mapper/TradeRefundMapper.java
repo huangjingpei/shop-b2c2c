@@ -5,6 +5,7 @@
  *  1. 预占与冲正必须用条件 UPDATE（订单必须已支付且累计退款不超过实付），禁止先查后改的无锁写法。
  *  2. 成功/失败状态迁移都以 status=PROCESSING 为条件，保证重复回调或并发同步只生效一次。
  *  3. 不提供删除接口；退款记录是资金证据，失败记录也保留。
+ *  4. T+1 对账按 updated_at 读取成功退款，并可通过渠道退款流水号反查，用于退款↔渠道退款比对。
  */
 package com.shop.b2b2c.mapper;
 
@@ -13,9 +14,11 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.shop.b2b2c.entity.TradeRefund;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -42,6 +45,27 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
         return selectList(new LambdaQueryWrapper<TradeRefund>()
                 .eq(TradeRefund::getOrderSn, orderSn)
                 .orderByDesc(TradeRefund::getId));
+    }
+
+    /**
+     * T+1 对账：读取业务日窗口内成功退款（含 ORDER 与 DUPLICATE_PAYMENT）。
+     * 以 updated_at 作为本地记账时间，渠道侧以流水 trade_time 比对；跨天由分类器标记。
+     */
+    @Select("SELECT * FROM trade_refund WHERE merchant_id = #{merchantId} AND status = 'SUCCESS' "
+            + "AND updated_at >= #{from} AND updated_at < #{to} ORDER BY id ASC")
+    List<TradeRefund> findSuccessfulRefundsByPeriod(@Param("merchantId") Long merchantId,
+                                                    @Param("from") LocalDateTime from,
+                                                    @Param("to") LocalDateTime to);
+
+    /** 渠道退款流水反查本地退款；同一退款流水号重复出现时取最早一条，差异由对账键另行暴露。 */
+    default Optional<TradeRefund> findByChannelRefundNo(String channelRefundNo) {
+        if (channelRefundNo == null || channelRefundNo.isBlank()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(selectOne(new LambdaQueryWrapper<TradeRefund>()
+                .eq(TradeRefund::getChannelRefundNo, channelRefundNo)
+                .orderByAsc(TradeRefund::getId)
+                .last("LIMIT 1")));
     }
 
     default List<TradeRefund> findProcessingByMerchant(Long merchantId) {

@@ -195,11 +195,12 @@
 - 现象：24 条硬性基线中，本轮已整改 A/B/C/D/E 五项；其余仍为“部分合规/缺失”，不得表述为已完成。
 - 建议归属：按下列 G21–G29 分批；任何新增资金功能必须先过基线文档判定。
 
-## G21 T+1 定时对账与长短款分类未实现（已登记未做）
+## G21 T+1 定时对账与长短款分类（已实现·待人工验证，2026-11-06 第③卡）
 
-- 发现位置：[ReconciliationService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ReconciliationService.java)。
-- 现象：有手工 `reconcile` 入口与差异队列，但无 T+1 调度、无长款/短款分类、无处理时限与超时升级。
-- 建议归属：后续对账专项；不得用“差异已入队”替代 T+1 闭环。
+- 发现位置：[ReconciliationService.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ReconciliationService.java)、`ReconciliationBatchService`、`ReconciliationDailyJob`。
+- 原现象：有手工 `reconcile` 入口与差异队列，但无 T+1 调度、无长款/短款分类、无处理时限与超时升级。
+- 本卡已补：每日跑批与按业务日逐店记录、`(business_date, merchant_id)` 唯一键与状态机续跑、退款/服务费金额/退款冲正/平台代收对账、长短款/单边/精度/币种/跨天分类、差异审计与 `MANUAL` 升级、`PARTIAL` 标记流水未导入。
+- 仍缺：渠道对账单自动拉取（当前只能管理端导入）、对账差异处理时限与超时升级策略；未运行构建/测试、未连库，待人工验证。
 
 ## G22 支付事件/充值/对账差异状态迁移未统一 CAS（已登记未做）
 
