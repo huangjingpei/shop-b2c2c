@@ -1,0 +1,64 @@
+# 文件：ci.yml
+# 用途：T38 最小只读 CI：后端 H2 单测、shared 前端规则用例、deploy 隔离用例；每次执行结果写入 Job Summary。
+# 维护注意：只在 GitHub 托管运行器执行，不连接业务数据库、不执行真实发布构建、不写生产目录。
+# H2 通过不能替代真实 MySQL；Nginx 用例依赖本步骤安装的系统 nginx，缺依赖时 unittest 显式 skipped 且不得视为通过。
+# CI 绿只表示对应隔离用例通过，不替代 V03–V07 的人工验收或前端生产构建。
+name: regression
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: backend-h2-tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: 后端 H2 单测
+        run: mvn -B -f shop-b2b2c-backend/pom.xml test
+      - name: 记录执行结果
+        if: always()
+        run: echo "- backend-h2-tests: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+
+  shared:
+    name: shared-node-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: shop-storefront-vue/package-lock.json
+      - name: 安装样式测试锁定依赖
+        run: npm --prefix shop-storefront-vue ci
+      - name: shared 规则用例
+        run: node --test shared/*.test.mjs
+      - name: 记录执行结果
+        if: always()
+        run: echo "- shared-node-tests: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: deploy-isolation-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 安装 Nginx（网关隔离用例依赖）
+        run: sudo apt-get update && sudo apt-get install -y nginx
+      - name: deploy 隔离用例
+        run: python3 -m unittest discover -s deploy/tests -v
+      - name: 记录执行结果
+        if: always()
+        run: echo "- deploy-isolation-tests: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
