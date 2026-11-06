@@ -197,6 +197,8 @@ public class ProductController {
         }
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         storeGuard.requireOpen(merchantId);
+        // O9：资质到期（含当天）限制上新；不影响既有商品编辑与已成交订单。
+        storeGuard.requireQualificationValid(merchantId);
 
         if (dto.getTitle() == null || dto.getTitle().isBlank() || dto.getTitle().length() > 255
                 || dto.getMainImage() == null || dto.getMainImage().isBlank() || dto.getMainImage().length() > 255

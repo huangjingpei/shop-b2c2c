@@ -9,6 +9,7 @@
 5. 上传请求必须带 X-Onboarding-Token；证件只上传到平台私有目录，页面不提供公开文件地址。
 6. O3 协议：提交审核前必须阅读并勾选同意全部当前生效协议（GET /onboarding/protocols），逐项 POST /consents 由服务端校验版本与哈希；
    协议版本更新（409）时自动刷新协议列表并清空勾选，用户须重新阅读后再次同意；平台未发布协议时不阻断提交。
+7. O9：身份证/营业执照有效期为选填（长期有效留空），随材料一并提交；审核通过后快照到店铺，用于到期提醒与限制上新。
 -->
 <template>
   <div class="apply-page">
@@ -57,9 +58,17 @@
           <el-form-item label="身份证号" required>
             <el-input v-model="form.idCardNumber" placeholder="本人有效期内的身份证号码" maxlength="18" />
           </el-form-item>
+          <el-form-item label="身份证有效期">
+            <el-date-picker v-model="form.idCardExpiry" type="date" value-format="YYYY-MM-DD"
+              placeholder="选填；长期有效可留空" :disabled="locked" style="width: 100%" />
+          </el-form-item>
           <template v-if="isBusiness">
             <el-form-item label="营业执照号" required>
               <el-input v-model="form.licenseNo" placeholder="统一社会信用代码/注册号" maxlength="64" />
+            </el-form-item>
+            <el-form-item label="营业执照有效期">
+              <el-date-picker v-model="form.licenseExpiry" type="date" value-format="YYYY-MM-DD"
+                placeholder="选填；长期有效可留空" :disabled="locked" style="width: 100%" />
             </el-form-item>
             <el-form-item label="经营者/法人" required>
               <el-input v-model="form.legalPerson" placeholder="执照登记的经营者或法定代表人姓名" maxlength="64" />
@@ -220,7 +229,9 @@ const form = reactive({
   subjectName: '',
   storeName: '',
   idCardNumber: '',
+  idCardExpiry: '',
   licenseNo: '',
+  licenseExpiry: '',
   legalPerson: '',
   contactPhone: '',
   contactEmail: ''

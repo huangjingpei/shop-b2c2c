@@ -36,6 +36,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -514,6 +515,58 @@ class MerchantOnboardingServiceTest {
         assertTrue(ex.getMessage().contains("进行中的入驻申请"));
         assertTrue(!ex.getMessage().contains("Duplicate entry"));
         verify(auditMapper, never()).insert(any());
+    }
+
+    @Test
+    void createParsesExpiryDatesBlankAllowedAndInvalidRejected() {
+        // O9：合法日期解析落库；空白视为未采集；非法格式 400。
+        MerchantOnboardingService.ApplicationForm form = individualForm();
+        form.setIdCardExpiry("2030-12-31");
+        form.setLicenseExpiry("2035-06-30");
+
+        MerchantOnboardingApplication created = service.create(form, 7L);
+        assertEquals(java.time.LocalDate.of(2030, 12, 31), created.getIdCardExpiry());
+        assertEquals(java.time.LocalDate.of(2035, 6, 30), created.getLicenseExpiry());
+
+        MerchantOnboardingApplication blankCreated = service.create(individualForm(), 7L);
+        assertNull(blankCreated.getIdCardExpiry());
+        assertNull(blankCreated.getLicenseExpiry());
+
+        MerchantOnboardingService.ApplicationForm bad = individualForm();
+        bad.setIdCardExpiry("2030/12/31");
+        BusinessException ex = assertThrows(BusinessException.class, () -> service.create(bad, 7L));
+        assertEquals(400, ex.getCode());
+        assertTrue(ex.getMessage().contains("身份证有效期"));
+
+        MerchantOnboardingService.ApplicationForm impossible = individualForm();
+        impossible.setLicenseExpiry("2030-02-30");
+        assertEquals(400, assertThrows(BusinessException.class,
+                () -> service.create(impossible, 7L)).getCode());
+    }
+
+    @Test
+    void approveSnapshotsQualificationExpiriesToStore() {
+        // O9：审核通过把申请单有效期快照到 merchant_store，作为提醒/限制上新/冻结的唯一数据源。
+        MerchantOnboardingApplication application = submittedApplication(50L);
+        application.setIdCardExpiry(java.time.LocalDate.of(2030, 12, 31));
+        application.setLicenseExpiry(java.time.LocalDate.of(2035, 6, 30));
+        when(applicationMapper.lockById(50L)).thenReturn(application);
+        when(storeMapper.findByStoreCode("STORE-001")).thenReturn(Optional.empty());
+        when(userMapper.findByUsername("merchant001")).thenReturn(Optional.empty());
+        when(storeMapper.save(any())).thenAnswer(invocation -> {
+            MerchantStore store = invocation.getArgument(0);
+            store.setId(99L);
+            return store;
+        });
+
+        service.approve(50L, provisioning(), "材料齐全", 7L);
+
+        org.mockito.ArgumentCaptor<MerchantStore> captor = org.mockito.ArgumentCaptor.forClass(MerchantStore.class);
+        verify(storeMapper).save(captor.capture());
+        assertEquals(java.time.LocalDate.of(2030, 12, 31), captor.getValue().getIdCardExpiry());
+        assertEquals(java.time.LocalDate.of(2035, 6, 30), captor.getValue().getLicenseExpiry());
+        // 申请单保留填报值（快照是复制不是搬移）。
+        assertEquals(java.time.LocalDate.of(2030, 12, 31), application.getIdCardExpiry());
     }
 
     @Test

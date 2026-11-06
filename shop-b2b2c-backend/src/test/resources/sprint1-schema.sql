@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS `merchant_store` (
   `payment_channel_type` VARCHAR(16) NOT NULL DEFAULT 'C' COMMENT '支付模式: B(商户自主直收), C(Mock沙箱), A(平台电商收付通)',
   `pay_channel` VARCHAR(32) NOT NULL DEFAULT 'WECHAT' COMMENT 'T32 新增：真实支付渠道 WECHAT/ALIPAY',
   `custom_pay_qrcode` VARCHAR(512) NULL COMMENT '商户自主微信/支付宝收款码URL',
+  `id_card_expiry` DATE NULL COMMENT 'O9 身份证有效期快照（列与 MySQL schema.sql 同步）',
+  `license_expiry` DATE NULL COMMENT 'O9 营业执照有效期快照（列与 MySQL schema.sql 同步）',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
@@ -627,6 +629,8 @@ CREATE TABLE IF NOT EXISTS merchant_onboarding_application (
   verification_method VARCHAR(24) NOT NULL DEFAULT 'MANUAL',
   verification_source VARCHAR(32) NULL,
   reject_reason VARCHAR(512) NULL,
+  id_card_expiry DATE NULL,
+  license_expiry DATE NULL,
   submitted_at TIMESTAMP NULL,
   reviewed_at TIMESTAMP NULL,
   reviewer_id BIGINT NULL,

@@ -9,6 +9,8 @@
  * 5. accessTokenHash 只存申请人查询凭证的 SHA-256，明文只在创建响应返回一次；
  * 6. initialPasswordCipher 保存自动开店初始密码密文，供申请人在进度查询中一次性查看，明文不得落库或回传列表；
  * 7. initialPassword 是审核响应用的瞬时字段（TableField exist=false），不参与任何 SQL 持久化。
+ * 8. O9：idCardExpiry/licenseExpiry 为申请人填报的证件有效期（可空），审核通过时快照到 merchant_store，
+ *    申请单两列保留填报值，商家后续更新有效期只写店铺快照，不回写本表。
  */
 package com.shop.b2b2c.entity;
 
@@ -92,6 +94,12 @@ public class MerchantOnboardingApplication {
 
     /** 逾期撤回/取消原因（系统 EXPIRE 或人工撤回）。 */
     private String cancelReason;
+
+    /** 身份证有效期（O9）；可空表示长期/未采集，审核通过时快照到 merchant_store。 */
+    private java.time.LocalDate idCardExpiry;
+
+    /** 营业执照有效期（O9）；个人店可空，审核通过时快照到 merchant_store。 */
+    private java.time.LocalDate licenseExpiry;
 
     private LocalDateTime submittedAt;
 

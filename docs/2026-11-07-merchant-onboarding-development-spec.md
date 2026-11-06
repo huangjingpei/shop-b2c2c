@@ -1149,6 +1149,26 @@ npm --prefix shop-storefront-vue run build
 
 `400` 参数/状态前置不合法；`401` 未登录；`403` 越权/同人复核；`404` 不存在或防枚举；`409` 状态冲突/重复；`428` 缺复核人；`429` 限流；`500` 生成/落盘失败
 
+### A.11 通知模板码（`merchant_notification_outbox.template_code`，O8/O9）
+
+唯一键 `(biz_type, biz_id, channel, template_code)` 是"每节点只发一次"的兜底；新增节点/档位必须先登记本表再改代码。
+
+| 模板码 | biz_type | 渠道 | 触发点 | 幂等口径 |
+| --- | --- | --- | --- | --- |
+| `ONBOARDING_SUBMITTED` | 同左 | INAPP | 提交审核 | 每申请一次（biz_id=审计行ID） |
+| `ONBOARDING_SUPPLEMENT` | 同左 | INAPP+SMS | 要求补件 | 每次补件一次 |
+| `ONBOARDING_REJECTED` | 同左 | INAPP+SMS | 驳回 | 每次驳回一次 |
+| `ONBOARDING_APPROVED` | 同左 | INAPP | 终审通过 | 每申请一次 |
+| `ONBOARDING_OPENED` | 同左 | INAPP+SMS | 开通营业 | 每申请一次 |
+| `STORE_STATUS_CHANGED` | 同左 | INAPP | 冻结/解封/关店/注销 | 每次状态变更一次（biz_id=审计行ID） |
+| `REVIEW_SLA_REMINDER` | `REVIEW_SLA_BREACH` | INAPP | 提交超 24h 未审结 | 每申请每档一次（biz_id=申请ID） |
+| `REVIEW_SLA_ESCALATION` | `REVIEW_SLA_BREACH` | INAPP | 提交超 48h 未审结（升级） | 每申请每档一次 |
+| `REVIEW_SLA_REVIEWER` | `REVIEW_SLA_BREACH` | INAPP | 初审滞留超 24h | 每申请每档一次 |
+| `LICENSE_EXPIRING_ID_CARD_D60/D30/D7` | `LICENSE_EXPIRING` | INAPP+SMS | 身份证到期前 60/30/7 天 | 同一资质同一档位一次（biz_id=店铺ID） |
+| `LICENSE_EXPIRING_LICENSE_D60/D30/D7` | `LICENSE_EXPIRING` | INAPP+SMS | 营业执照到期前 60/30/7 天 | 同一资质同一档位一次 |
+
+SMS 通道默认禁用（`shop.notification.sms-enabled=false`），禁用期落 `SKIPPED` 仅留痕，不投递；启用后只落 `PENDING` 待渠道商接入。
+
 ---
 
 ## 附录 B：现有页面与入口

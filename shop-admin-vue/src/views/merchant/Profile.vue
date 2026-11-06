@@ -2,6 +2,8 @@
 文件：Profile.vue
 用途：本店展示资料与渠道账户信息页面。
 维护注意：仅能访问会话绑定店铺；银行资料应受权限和脱敏控制。保存成功不代表真实渠道变更，展示字段需与后端白名单一致。
+O9：资质有效期卡片展示身份证/营业执照到期状态（规则见 utils/qualificationExpiry.mjs），
+    店长可更新为未来日期（PUT /merchant/profile/qualification-expiries）；到期当天即限制发布新商品，逾期30天自动冻结。
 -->
 <template>
   <div class="merchant-profile">
@@ -39,6 +41,30 @@
               <el-button type="primary" :loading="saving" @click="saveProfile">保存修改</el-button>
             </el-form-item>
           </el-form>
+        </el-card>
+
+        <!-- O9 资质有效期：到期提醒与更新入口；到期当天限制上新，逾期30天自动冻结 -->
+        <el-card shadow="never" class="box-card qualification-card">
+          <template #header>
+            <span class="card-header">资质有效期</span>
+          </template>
+
+          <el-alert v-if="hasExpired" type="error" :closable="false" class="qualification-alert"
+            title="存在已到期资质：已限制发布新商品；逾期超 30 天未更新将自动冻结店铺，请立即更新有效期" />
+          <div v-for="item in qualificationViews" :key="item.name" class="qualification-row">
+            <div class="qualification-info">
+              <span class="qualification-name">{{ item.name }}</span>
+              <el-tag :type="item.tagType" effect="plain">{{ item.label }}</el-tag>
+              <span class="qualification-text">{{ item.text }}</span>
+            </div>
+            <el-date-picker v-if="isManager" v-model="expiryForm[item.field]" type="date"
+              value-format="YYYY-MM-DD" placeholder="选择新有效期" :disabled-date="disabledPastDate"
+              class="qualification-picker" />
+          </div>
+          <div v-if="isManager" class="qualification-actions">
+            <el-button type="primary" :loading="savingExpiry" @click="saveExpiries">更新有效期</el-button>
+            <span class="qualification-tip">须为未来日期；只需更新有变化的资质，留空一项保持不变</span>
+          </div>
         </el-card>
       </el-col>
 
@@ -85,17 +111,42 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 import { paymentAccountView as buildPaymentAccountView } from '../../utils/orderStatistics.mjs'
+import { qualificationView, validateExpiryUpdate } from '../../utils/qualificationExpiry.mjs'
 
 const saving = ref(false)
+const savingExpiry = ref(false)
 const store = ref({})
 const paymentAccount = ref({})
 const isManager = ref(localStorage.getItem('roleCode') === 'MERCHANT_ADMIN' || localStorage.getItem('roleCode') === 'SUPERADMIN')
 
+// O9 资质有效期更新表单：value-format 已保证 YYYY-MM-DD，校验规则与后端一致（未来日期）。
+const expiryForm = reactive({ idCardExpiry: '', licenseExpiry: '' })
+
 const paymentAccountView = computed(() => buildPaymentAccountView(paymentAccount.value))
+
+const localToday = () => {
+  const now = new Date()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${now.getFullYear()}-${month}-${day}`
+}
+
+const qualificationViews = computed(() => [
+  { ...qualificationView(store.value.idCardExpiry || '', '身份证', localToday()), field: 'idCardExpiry' },
+  { ...qualificationView(store.value.licenseExpiry || '', '营业执照', localToday()), field: 'licenseExpiry' }
+])
+
+const hasExpired = computed(() => qualificationViews.value.some(item => item.status === 'EXPIRED'))
+
+const disabledPastDate = (date) => {
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  return date.getTime() <= today.getTime()
+}
 
 const maskBankCard = (num) => {
   if (!num || num.length < 10) return num
@@ -119,6 +170,28 @@ const saveProfile = async () => {
     ElMessage.success('店铺展示资料已更新')
   } finally {
     saving.value = false
+  }
+}
+
+// O9 更新资质有效期：前端先按同一口径校验，后端仍为最终裁决；成功后重载资料刷新状态。
+const saveExpiries = async () => {
+  const result = validateExpiryUpdate(expiryForm.idCardExpiry, expiryForm.licenseExpiry, localToday())
+  if (!result.valid) {
+    ElMessage.error(result.message)
+    return
+  }
+  savingExpiry.value = true
+  try {
+    await request.put('/merchant/profile/qualification-expiries', {
+      idCardExpiry: result.idCardExpiry || null,
+      licenseExpiry: result.licenseExpiry || null
+    })
+    ElMessage.success('资质有效期已更新')
+    expiryForm.idCardExpiry = ''
+    expiryForm.licenseExpiry = ''
+    await loadProfile()
+  } finally {
+    savingExpiry.value = false
   }
 }
 
@@ -163,5 +236,62 @@ onMounted(() => {
   font-size: 13px;
   color: #475569;
   font-weight: 500;
+}
+
+/* O9 资质有效期卡片 */
+.qualification-card {
+  margin-top: 24px;
+}
+
+.qualification-alert {
+  margin-bottom: 12px;
+}
+
+.qualification-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px dashed #e2e8f0;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.qualification-row:last-of-type {
+  border-bottom: none;
+}
+
+.qualification-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 260px;
+}
+
+.qualification-name {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.qualification-text {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.qualification-picker {
+  width: 180px;
+}
+
+.qualification-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.qualification-tip {
+  font-size: 12px;
+  color: #94a3b8;
 }
 </style>

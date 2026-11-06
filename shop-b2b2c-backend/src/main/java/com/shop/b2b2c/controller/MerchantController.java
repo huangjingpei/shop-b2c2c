@@ -391,6 +391,42 @@ public class MerchantController {
         return R.ok("店铺资料保存成功", null);
     }
 
+    /**
+     * O9【商家】更新资质有效期：身份证/营业执照可分别更新（传 null 的列保持不变）；
+     * 非空值必须 yyyy-MM-dd 且为未来日期。被冻结店铺也允许更新（解冻前置动作），已注销终态拒绝。
+     */
+    @Operation(summary = "【商家】更新资质有效期（身份证/营业执照，须未来日期）")
+    @PutMapping("/api/v1/merchant/profile/qualification-expiries")
+    @Transactional(rollbackFor = Exception.class)
+    public R<Void> updateQualificationExpiries(@RequestBody Map<String, String> body) {
+        if (body == null) throw new BusinessException(400, "请求体不能为空");
+        com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
+        Long merchantId = SecurityUtils.requireCurrentMerchantId();
+        MerchantStore store = storeMapper.findById(merchantId)
+                .orElseThrow(() -> new BusinessException(404, "店铺不存在"));
+        if (Integer.valueOf(4).equals(store.getStatus())) {
+            throw new BusinessException(409, "店铺已注销（终态），不可再更新资质");
+        }
+        String idCardRaw = body.get("idCardExpiry");
+        String licenseRaw = body.get("licenseExpiry");
+        ManagementGuards.text(idCardRaw, 10, false);
+        ManagementGuards.text(licenseRaw, 10, false);
+        java.time.LocalDate idCardExpiry = com.shop.b2b2c.service.MerchantOnboardingService
+                .parseExpiryDate(idCardRaw, "身份证有效期");
+        java.time.LocalDate licenseExpiry = com.shop.b2b2c.service.MerchantOnboardingService
+                .parseExpiryDate(licenseRaw, "营业执照有效期");
+        if (idCardExpiry == null && licenseExpiry == null) {
+            throw new BusinessException(400, "至少提交一项资质有效期");
+        }
+        java.time.LocalDate today = java.time.LocalDate.now();
+        if ((idCardExpiry != null && !idCardExpiry.isAfter(today))
+                || (licenseExpiry != null && !licenseExpiry.isAfter(today))) {
+            throw new BusinessException(400, "资质有效期必须为未来日期");
+        }
+        storeMapper.updateQualificationExpiries(merchantId, idCardExpiry, licenseExpiry);
+        return R.ok("资质有效期已更新", null);
+    }
+
     private void requireStore(Long id) {
         if (id == null || id <= 0) throw new BusinessException(400, "店铺编号不合法");
         storeMapper.findById(id).orElseThrow(() -> new BusinessException(404, "店铺不存在"));

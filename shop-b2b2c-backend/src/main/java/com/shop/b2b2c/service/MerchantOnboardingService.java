@@ -27,6 +27,8 @@
  *     逾期只撤回申请，已建的待开通店铺与店长账号的停用/注销属 O6 店铺状态机范围，本类不处理。
  * 13. D11 首次登录强制改密：审核开店生成的店长账号 must_change_password=1，
  *     该账号改密前仅 /api/v1/auth/** 可用（SaTokenConfigure 拦截业务工作台），改密成功清除标记并注销全部会话。
+ * 14. O9 资质有效期：ApplicationForm 接受 idCardExpiry/licenseExpiry（yyyy-MM-dd，可空），applyMaterials 统一解析校验；
+ *     审核通过建店时把两日期快照到 merchant_store（提醒/限制上新/逾期冻结的唯一数据源），申请单保留填报值不回写。
  */
 package com.shop.b2b2c.service;
 
@@ -150,6 +152,10 @@ public class MerchantOnboardingService {
         private String legalPerson;
         private String contactPhone;
         private String contactEmail;
+        /** 身份证有效期（yyyy-MM-dd，可空表示长期/未采集）；O9。 */
+        private String idCardExpiry;
+        /** 营业执照有效期（yyyy-MM-dd，个人店可空）；O9。 */
+        private String licenseExpiry;
     }
 
     @Data
@@ -389,6 +395,9 @@ public class MerchantOnboardingService {
         // 店铺主表只保留脱敏展示值，证件原文仅以密文留在入驻申请中。
         store.setIdCardNumber(maskedIdCard(application));
         store.setContactPhone(application.getContactPhone());
+        // O9：资质有效期快照到店铺，作为到期提醒/限制上新/逾期30天冻结的唯一数据源；申请单保留填报值。
+        store.setIdCardExpiry(application.getIdCardExpiry());
+        store.setLicenseExpiry(application.getLicenseExpiry());
         // O4 开通闸门：审核通过只代表资质合格，店铺先落“待开通”，签齐协议或超管 open 后才置 1 营业。
         store.setStatus(0);
         store.setCommissionRate(resolveDefaultRate(effective));
@@ -749,6 +758,8 @@ public class MerchantOnboardingService {
         ManagementGuards.text(form.getLicenseUrl(), 512, false);
         ManagementGuards.text(form.getLegalPerson(), 64, false);
         ManagementGuards.text(form.getContactEmail(), 128, false);
+        ManagementGuards.text(form.getIdCardExpiry(), 10, false);
+        ManagementGuards.text(form.getLicenseExpiry(), 10, false);
 
         application.setSubjectType(subjectType);
         application.setSubjectName(form.getSubjectName().trim());
@@ -757,6 +768,9 @@ public class MerchantOnboardingService {
         application.setContactEmail(blankToNull(form.getContactEmail()));
         application.setLicenseUrl(blankToNull(form.getLicenseUrl()));
         application.setLegalPerson(blankToNull(form.getLegalPerson()));
+        // O9：证件有效期只校验格式，不拦截已过期日期——过期由审核员按 ID_CARD_EXPIRED/LICENSE_EXPIRED 原因码判断。
+        application.setIdCardExpiry(parseExpiryDate(form.getIdCardExpiry(), "身份证有效期"));
+        application.setLicenseExpiry(parseExpiryDate(form.getLicenseExpiry(), "营业执照有效期"));
 
         if (form.getIdCardNumber() != null && !form.getIdCardNumber().isBlank()) {
             String raw = form.getIdCardNumber().trim();
@@ -919,6 +933,22 @@ public class MerchantOnboardingService {
             }
         }
         return payload;
+    }
+
+    /**
+     * O9 证件有效期解析：空串/空白 → null；否则必须 yyyy-MM-dd。
+     * 只校验格式，已过期日期照样受理（由审核员人工判断，拒绝时走 ID_CARD_EXPIRED/LICENSE_EXPIRED 原因码）。
+     * 商家资料页更新有效期也复用本方法解析（更新方另要求未来日期）。
+     */
+    public static LocalDate parseExpiryDate(String value, String fieldLabel) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(value.trim(), DateTimeFormatter.ISO_LOCAL_DATE);
+        } catch (java.time.format.DateTimeParseException e) {
+            throw new BusinessException(400, fieldLabel + "格式须为 yyyy-MM-dd");
+        }
     }
 
     private String firstNonBlank(String preferred, String fallback) {

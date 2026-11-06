@@ -87,4 +87,34 @@ public interface MerchantStoreMapper extends BaseMapper<MerchantStore> {
         return Optional.ofNullable(selectOne(new LambdaQueryWrapper<MerchantStore>()
                 .eq(MerchantStore::getStoreCode, storeCode)));
     }
+
+    /**
+     * O9：找指定到期日（身份证或营业执照任一命中）且未注销的店铺；
+     * 用于资质到期 60/30/7 天提醒节点扫描，是否命中具体资质由调用方逐字段比对。
+     */
+    @org.apache.ibatis.annotations.Select("SELECT * FROM merchant_store WHERE status <> 4 "
+            + "AND (id_card_expiry = #{date} OR license_expiry = #{date}) ORDER BY id LIMIT #{limit}")
+    java.util.List<MerchantStore> findExpiringOn(@org.apache.ibatis.annotations.Param("date") java.time.LocalDate date,
+                                                 @org.apache.ibatis.annotations.Param("limit") int limit);
+
+    /**
+     * O9：找资质过期超过阈值（expiry &lt; threshold，阈值=今天-30天）且仍在营业(1)/打烊(2)的店铺；
+     * 仅用于逾期 30 天自动冻结任务，冻结走 MerchantStoreStatusService.applyAction 审计留痕。
+     */
+    @org.apache.ibatis.annotations.Select("SELECT * FROM merchant_store WHERE status IN (1,2) "
+            + "AND ((id_card_expiry IS NOT NULL AND id_card_expiry &lt; #{threshold}) "
+            + "OR (license_expiry IS NOT NULL AND license_expiry &lt; #{threshold})) ORDER BY id LIMIT #{limit}")
+    java.util.List<MerchantStore> findExpiredBeyond(@org.apache.ibatis.annotations.Param("threshold") java.time.LocalDate threshold,
+                                                    @org.apache.ibatis.annotations.Param("limit") int limit);
+
+    /**
+     * O9 商家更新资质有效期：COALESCE 定向更新，传 null 的列保持不变（两个资质可分别更新）；
+     * 不允许清空已有有效期（“改为长期”需平台人工处理），调用方须先校验非空值为未来日期。
+     */
+    @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET "
+            + "id_card_expiry = COALESCE(#{idCardExpiry}, id_card_expiry), "
+            + "license_expiry = COALESCE(#{licenseExpiry}, license_expiry) WHERE id = #{id}")
+    int updateQualificationExpiries(@org.apache.ibatis.annotations.Param("id") Long id,
+                                    @org.apache.ibatis.annotations.Param("idCardExpiry") java.time.LocalDate idCardExpiry,
+                                    @org.apache.ibatis.annotations.Param("licenseExpiry") java.time.LocalDate licenseExpiry);
 }
