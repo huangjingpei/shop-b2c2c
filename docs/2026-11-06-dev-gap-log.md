@@ -204,7 +204,8 @@
 - 第二轮回核返工：结算批次合计改按开区间 `periodEnd = to`（原 `to.minusDays(1)` 把月结/手工按月入口全关掉）；退款三条单边路径（`REF|id|NO`、`REF|id|ST`、`REFFEE`）统一受流水门禁；按渠道求差集返回 `incompleteChannels`，多渠道部分导入不再静默 `SUCCESS` 而是 `PARTIAL`。详见同一文档第 11 节。
 - 第三轮回核返工：本地渠道收集排除空串（避免永久 `PARTIAL`→`MANUAL`）；`success_at` 巡检改为按 `merchant_id` 且每店每轮一次。第三轮曾把缺失渠道差集限定为 `SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT`，**该口径在第四轮被认定为错误判断并已纠正**。详见同一文档第 12 节。
 - 第四轮回核返工：差集状态扩为七种（`SUCCESS`/`DUPLICATE_PAYMENT`/`LATE_PAYMENT` 与 `reject(...)` 写入的 `MERCHANT_MISMATCH`/`AMOUNT_MISMATCH`/`CURRENCY_MISMATCH`/`FULFILLMENT_FAILED`）；非成功事件不再静默——拒绝状态生成 `PAYMENT_EVENT_REJECTED` 差异，悬挂超过 5 分钟的 `PROCESSING`（与 G34 阈值一致）生成 `PAYMENT_EVENT_REVIEW` 差异，未悬挂 `PROCESSING` 计入跑批 `processingPending` 汇总，未知状态（如 `ORDER_STATUS_INVALID`）生成 `PAYMENT_EVENT_REVIEW`。详见同一文档第 13 节。
-- 第五轮回核返工（纠正第四轮两条前提）：新增 `payment_event.funds_received TINYINT NULL`（**无默认值**），按 `1`/`0`/`NULL` 三值分别处理——`1` 且状态在七状态集合内才计入缺失渠道差集；`0` 不进差集但仍生成 `PAYMENT_EVENT_REJECTED`；`NULL` 不进差集但生成 `PAYMENT_EVENT_REVIEW`，禁止当作“无需流水”静默放过。`FULFILLMENT_FAILED` 一码两义由该列区分（G34 明确未支付=0、查单前置失败=NULL、回调后 reject=1）；`MANUAL_REVIEW` 明确列入支付事件状态清单且重试耗尽固定回写 `funds_received=NULL`。本项目无历史数据，该列不回填。详见同一文档 §13.4–§13.5。
+- 第五轮回核返工（纠正第四轮两条前提）：新增 `payment_event.funds_received TINYINT NULL`（**无默认值**），按 `1`/`0`/`NULL` 三值分别处理——`1` 且状态在七状态集合内才计入缺失渠道差集；`0` 不进差集但仍生成 `PAYMENT_EVENT_REJECTED`；`NULL` 不进差集但生成 `PAYMENT_EVENT_REVIEW`，禁止当作“无需流水”静默放过。`FULFILLMENT_FAILED` 一码多义由该列区分（G34 明确未支付=0、查单前置失败=NULL、回调后 reject=1）；`MANUAL_REVIEW` 明确列入支付事件状态清单且重试耗尽固定回写 `funds_received=NULL`。本项目无历史数据，该列不回填。详见同一文档 §13.4–§13.5。
+- 第六轮回核返工（纠正第五轮 `REFUNDED` 口径）：`REFUNDED` 从 `DEFINITIVE_NOT_PAID_STATES` 移出，按 `funds_received=1` 处理并单列 `DEFINITIVE_REFUNDED_STATES`，状态仍落 `FULFILLMENT_FAILED`、`error_message` 记“渠道已收款后已退款”，T+1 文案改写且不得出现“未收到资金”；`markFulfillmentFailed` 的 SQL 改为 `CASE WHEN funds_received = 1 THEN 1 ELSE ... END`，禁止把已确认到账覆盖成 0/NULL。补 retry 自动关闭 4 类用例、REFUNDED 差集/文案用例、资金标记保留与反向写 0 集成用例，`markManualReview` 集成用例起点改为 `funds_received=1` 以证明清空逻辑生效。详见同一文档 §13.6。
 - 登记缺口（未做）：支付事件仍按 `payment_event.created_at`（回调受理时间）切日，不是渠道成功时间；跨日回调可能归属错误业务日，缓解手段是渠道流水侧按 `trade_time` 对账并在差异中标注 `TIME_CROSS_DAY`。补齐需新增 `paid_at`/渠道成功时间字段并回填历史数据。
 - 登记缺口（未补数）：`success_at IS NULL` 的成功退款不进 T+1 窗口（旧数据或异常迁移）。跑批会统计数量并 `warn`，补数需按渠道流水 `trade_time`（无流水时按人工核对值）回填，方案见 t1 方案第 8 节，不得自动改写历史资金记录。
 - 部署前提：DB 会话时区必须与 `Asia/Shanghai` 对齐（`serverTimezone` 或 `time_zone='+08:00'`），否则 `CURRENT_TIMESTAMP` 与 Java 截断时间漂移；验收用 `SELECT @@session.time_zone, NOW(), UTC_TIMESTAMP()` 校验。
@@ -326,7 +327,10 @@
     | 渠道回查结果 | 判定 | 状态流转 |
     | --- | --- | --- |
     | SUCCESS 且流水号一致、金额/币种齐全 | 确认已支付 | 复用 `processPaymentEvent` 幂等履约 → `SUCCESS`；业务校验拒绝 → 对应失败态 |
-    | `PENDING`（NOTPAY/USERPAYING/WAIT_BUYER_PAY）、`CLOSED`、`REFUNDED`、`FAILED`（PAYERROR）、`NOT_EXIST`（微信 404/ORDER_NOT_EXIST、支付宝 ACQ.TRADE_NOT_EXIST），或 400/401/403/404 | 渠道明确未支付/查无此单 | 落 `FULFILLMENT_FAILED` + ERROR 告警；失败态不阻止后续真实成功通知重新履约 |
+    | `PENDING`（NOTPAY/USERPAYING/WAIT_BUYER_PAY）、`CLOSED`、`FAILED`（PAYERROR）、`NOT_EXIST`（微信 404/ORDER_NOT_EXIST、支付宝 ACQ.TRADE_NOT_EXIST） | 渠道明确未支付/查无此单 | 落 `FULFILLMENT_FAILED` + ERROR 告警，`funds_received=0`（T+1 不据此判渠道缺流水但仍留 REJECTED 差异）；失败态不阻止后续真实成功通知重新履约 |
+    | `REFUNDED` | 渠道已收款后已退款 | 落 `FULFILLMENT_FAILED` + ERROR 告警，但 `funds_received=1`（钱到过账又退回，进入 T+1 预期流水差集）；差异文案记“渠道已收款后已退款”，不得写“未收到资金”（第六轮修正，见 t1 方案 §13.6） |
+    | 400/401/403/404 | 查单前置校验失败 | 落 `FULFILLMENT_FAILED` + ERROR 告警，资金状态未知写 `NULL`，由 T+1 `REVIEW` 差异兜住 |
+    | 事件已有 `funds_received=1` 再遇上述“未支付/退款/无法确认”答复 | 已确认到账不得降级 | Mapper SQL 用 `CASE WHEN funds_received=1 THEN 1 ELSE ... END` 保留 `1`；状态与标记共存为“`FULFILLMENT_FAILED` + `1`”，由 T+1 差异要求人工核对冲突 |
     | 超时、网络、限流、5xx、空响应/解析失败、未知 trade_state、SUCCESS 但流水号/金额不一致 | 查询异常或答复不确定 | **保持 PROCESSING**，`reconcile_attempts+1`、写 `next_reconcile_at` 指数退避；到期前不再回查 |
     | 上述不确定结果达到 `payment.reconcile.max-attempts` | 重试耗尽 | 转 `MANUAL_REVIEW` 人工队列 + ERROR 告警，不静默失败 |
   - 失败态不锁死资金：`processPaymentEvent` 对已存在的 `FULFILLMENT_FAILED` 事件没有“禁止重放”的短路，后续收到真实
@@ -437,6 +441,22 @@
 - 风险：数据源账号/口令以字面量写入配置文件，易随文件复制、打包、备份流转；一旦误提交即泄露，且轮换只能改文件发版，无法按环境独立注入。
 - 建议：改为环境变量占位（按 G03 的注入方式），本地配置不入库；轮换凭据后确认仓库与构建产物无明文残留。
 - 现状：仅登记，本轮未修改该配置文件；提交时明确排除。
+
+## G44 recordEventStatus 用 updateById，null 字段不会写回（已登记未做）
+
+- 发现位置：[PaymentEventRecorder.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/PaymentEventRecorder.java) 的 `recordEventStatus` / `recordFailureAudit`。
+- 现象：两条路径都用 `updateById`，MyBatis-Plus 默认 `NOT_NULL` 字段策略会忽略实体中的 `null` 字段。传入 `fundsReceived=null` 只是“不改”，不会写成 `NULL`；将来若有人想用它“清空资金标记”，会静默不生效且没有任何报错。
+- 未改原因：当前所有需要写 `NULL` 的场景（G34 `markManualReview`、`markFulfillmentFailed` 的 NULL 分支）已使用显式 SQL，不依赖 `updateById`；为清空单独改全局字段策略会影响其他更新路径。
+- 建议归属：若后续出现“清空资金标记/错误信息”的需求，改用显式 `SET funds_received = NULL` 的 Mapper SQL，或在方法内显式判断并走自定义更新；同时补清理语义的用例。
+- 影响面：现状无功能缺失；仅在方法注释中写明陷阱，避免后续维护者误以为传 `null` 会清空。
+
+## G45 payment_event 缺 (merchant_id, created_at) 索引，T+1 按商户扫全历史（已登记未做）
+
+- 发现位置：[PaymentEventMapper.java](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/PaymentEventMapper.java) 的 `findByMerchantAndPeriod`、[schema.sql](file:///e:/shop-b2b2c/shop-b2b2c-backend/src/main/resources/db/schema.sql) 的 `payment_event` 索引。
+- 现象：`payment_event` 只有 `(merchant_id, event_status)` 索引；`findByMerchantAndPeriod` 先按 `merchant_id` 取该商户**全部历史事件**，再在 SQL 条件里过滤 `created_at >= from AND created_at < to`，即“按商户扫全历史再过滤”，T+1 每日跑批的成本随历史事件量线性增长。
+- 未改原因：这是 T35 既有查询（`payment_event` 建表与索引不在本卡范围），本卡只改判定口径；新增复合索引会影响其他写路径的索引选择，需与 T35 的查询清单一起评估。
+- 建议归属：T35 查询优化或性能专项；补 `(merchant_id, created_at)` 复合索引，并确认 `findByMerchantAndPeriod` 能命中该索引（必要时改为范围条件下推）。
+- 影响面：功能正确，仅性能随数据量下降；不会造成误报或漏对。
 
 
 

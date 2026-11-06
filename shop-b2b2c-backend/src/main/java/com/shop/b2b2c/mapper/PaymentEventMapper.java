@@ -98,12 +98,17 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
 
     /**
      * G34 FULFILLMENT_FAILED：只允许从 PROCESSING 迁移。
-     * fundsReceived 由调用方显式给出：渠道明确未支付（PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST）=0；
-     * 查单前置校验失败（400/401/403/404）资金状态未知，必须传 NULL。
+     * fundsReceived 由调用方显式给出：渠道明确未支付（PENDING/CLOSED/FAILED/NOT_EXIST）=0；
+     * 已收款后已退款（REFUNDED）=1；查单前置校验失败（400/401/403/404）资金状态未知，必须传 NULL。
+     * 资金标记只增不减：已存在的 funds_received=1 是“渠道已确认到账”的既成事实，
+     * 后续“未支付/退款/无法确认”答复一律不得覆盖成 0/NULL，SQL 用 CASE 保留 1；
+     * 此时状态与资金标记以“FULFILLMENT_FAILED + funds_received=1”共存，由 T+1 差异要求人工核对。
      * 返回 0 表示事件已被主事务并发收敛为 SUCCESS 等状态，不得降级。
      */
     @org.apache.ibatis.annotations.Update("UPDATE payment_event "
-            + "SET event_status = 'FULFILLMENT_FAILED', funds_received = #{fundsReceived,jdbcType=INTEGER}, "
+            + "SET event_status = 'FULFILLMENT_FAILED', "
+            + "funds_received = CASE WHEN funds_received = 1 THEN 1 "
+            + "ELSE #{fundsReceived,jdbcType=INTEGER} END, "
             + "next_reconcile_at = NULL, error_message = #{message}, updated_at = CURRENT_TIMESTAMP "
             + "WHERE id = #{id} AND event_status = 'PROCESSING'")
     int markFulfillmentFailed(@Param("id") Long id,

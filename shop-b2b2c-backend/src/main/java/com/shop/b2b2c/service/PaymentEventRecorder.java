@@ -33,6 +33,13 @@ public class PaymentEventRecorder {
 
     private final PaymentEventMapper paymentEventMapper;
 
+    /**
+     * 回写事件状态与资金标记。
+     * <b>陷阱</b>：updateById 走 MyBatis-Plus 默认 NOT_NULL 字段策略，实体字段为 null 时不会拼进 UPDATE，
+     * 即“把 funds_received 清空为 NULL”在这里会静默不生效（本次传 null 只是“不改”，并非“写到 NULL”）。
+     * 若将来需要真正清空资金标记，必须使用显式 SET funds_received = NULL 的自定义 Mapper SQL，
+     * 不得依赖本方法或把 null 当成清空语义（G44 已登记）。
+     */
     @Transactional(rollbackFor = Exception.class)
     public void recordEventStatus(Long eventId, String status, Integer fundsReceived, String errorMessage) {
         if (eventId == null) return;

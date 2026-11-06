@@ -9,6 +9,9 @@
  *  5. T+1 用例覆盖退款↔渠道退款、服务费金额、平台代收、同日重试防重复与审计留痕。
  *  6. 非成功支付事件不得静默：按 funds_received 三值分别断言——=1 进差集且落 REJECTED，
  *     =0 不进差集但仍落 REJECTED，NULL 不进差集但落 REVIEW；断言使用具体差异条数与类型。
+ *  7. 渠道退款（REFUNDED）按“已收款后已退款”处理，funds_received=1 仍进差集；文案不得出现“未收到资金”。
+ *  8. retry 自动关闭必须有用例：REVIEW 要求事件 SUCCESS 且 funds_received 非 NULL；REJECTED 仅要求 SUCCESS；
+ *     断言差异状态（RESOLVED/RETRY）而不只是“不抛异常”。
  */
 package com.shop.b2b2c;
 
@@ -48,6 +51,7 @@ import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -442,6 +446,34 @@ class ReconciliationServiceTest {
     }
 
     @Test
+    void refundedEventIsIncompleteAndDetailSaysRefundedNotUnreceived() {
+        LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
+        LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
+        // G34 渠道已收款后已退款：状态落 FULFILLMENT_FAILED，但钱到过账，funds_received=1。
+        PaymentEvent refunded = successEvent("SN-RF", new BigDecimal("20.00"));
+        refunded.setId(16L);
+        refunded.setChannel("ALIPAY");
+        refunded.setEventStatus("FULFILLMENT_FAILED");
+        refunded.setFundsReceived(1);
+        refunded.setErrorMessage("渠道已收款后已退款: state=REFUNDED");
+        when(statementMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of());
+        when(eventMapper.findByMerchantAndPeriod(1L, from, to)).thenReturn(List.of(refunded));
+        when(differenceMapper.findByKey(anyString())).thenReturn(Optional.empty());
+
+        Map<String, Object> result = service().reconcile(1L, from, to);
+
+        // 支付流水整批未导入必须能暴露：退款不代表没有流水，仍须判 ALIPAY 缺失并落差异。
+        assertEquals("ALIPAY", result.get("incompleteChannels"));
+        assertEquals(1, result.get("added"));
+        ArgumentCaptor<ReconciliationDifference> captor =
+                ArgumentCaptor.forClass(ReconciliationDifference.class);
+        verify(differenceMapper).insert(captor.capture());
+        assertEquals(ReconciliationService.PAYMENT_EVENT_REJECTED, captor.getValue().getDiffType());
+        assertTrue(captor.getValue().getDetail().contains("渠道已收款后已退款"));
+        assertFalse(captor.getValue().getDetail().contains("未收到资金"));
+    }
+
+    @Test
     void manualReviewEventIsVisibleButNotTreatedAsExpectedStatement() {
         LocalDateTime from = LocalDateTime.of(2026, 10, 1, 0, 0);
         LocalDateTime to = LocalDateTime.of(2026, 11, 1, 0, 0);
@@ -660,6 +692,105 @@ class ReconciliationServiceTest {
 
         assertEquals(409, ex.getCode());
         verify(differenceMapper, never()).updateById(any(ReconciliationDifference.class));
+    }
+
+    @Test
+    void retryResolvesPaymentEventReviewOnlyWhenEventSuccessAndFundsAnnotated() {
+        ReconciliationDifference difference = new ReconciliationDifference();
+        difference.setId(20L);
+        difference.setDiffType(ReconciliationService.PAYMENT_EVENT_REVIEW);
+        difference.setBizId(101L);
+        difference.setStatus("DISPUTED");
+        PaymentEvent event = new PaymentEvent();
+        event.setId(101L);
+        event.setEventStatus("SUCCESS");
+        event.setFundsReceived(1);
+        when(differenceMapper.selectById(20L)).thenReturn(difference);
+        when(eventMapper.selectById(101L)).thenReturn(event);
+
+        ReconciliationDifference result = service().retry(20L, 3L);
+
+        assertEquals("RESOLVED", result.getStatus());
+        assertTrue(result.getHandleNote().contains("自动关闭"));
+        verify(differenceMapper).updateById(difference);
+    }
+
+    @Test
+    void retryKeepsPaymentEventReviewOpenWhenFundsStillUnmarked() {
+        ReconciliationDifference difference = new ReconciliationDifference();
+        difference.setId(21L);
+        difference.setDiffType(ReconciliationService.PAYMENT_EVENT_REVIEW);
+        difference.setBizId(102L);
+        difference.setStatus("DISPUTED");
+        PaymentEvent event = new PaymentEvent();
+        event.setId(102L);
+        event.setEventStatus("SUCCESS");
+        // 事件已成功但资金仍为 NULL：REVIEW 不能自动关闭，必须继续人工确认到账。
+        event.setFundsReceived(null);
+        when(differenceMapper.selectById(21L)).thenReturn(difference);
+        when(eventMapper.selectById(102L)).thenReturn(event);
+
+        ReconciliationDifference result = service().retry(21L, 3L);
+
+        assertEquals("RETRY", result.getStatus());
+        assertEquals(1, result.getRetryCount());
+        verify(differenceMapper).updateById(difference);
+    }
+
+    @Test
+    void retryKeepsPaymentEventReviewOpenWhenEventNotSuccess() {
+        ReconciliationDifference difference = new ReconciliationDifference();
+        difference.setId(22L);
+        difference.setDiffType(ReconciliationService.PAYMENT_EVENT_REVIEW);
+        difference.setBizId(103L);
+        difference.setStatus("DISPUTED");
+        PaymentEvent event = new PaymentEvent();
+        event.setId(103L);
+        event.setEventStatus("FULFILLMENT_FAILED");
+        event.setFundsReceived(1);
+        when(differenceMapper.selectById(22L)).thenReturn(difference);
+        when(eventMapper.selectById(103L)).thenReturn(event);
+
+        ReconciliationDifference result = service().retry(22L, 3L);
+
+        assertEquals("RETRY", result.getStatus());
+        verify(differenceMapper).updateById(difference);
+    }
+
+    @Test
+    void retryResolvesPaymentEventRejectedOnlyWhenEventSuccess() {
+        ReconciliationDifference resolvedCase = new ReconciliationDifference();
+        resolvedCase.setId(23L);
+        resolvedCase.setDiffType(ReconciliationService.PAYMENT_EVENT_REJECTED);
+        resolvedCase.setBizId(104L);
+        resolvedCase.setStatus("DISPUTED");
+        PaymentEvent success = new PaymentEvent();
+        success.setId(104L);
+        success.setEventStatus("SUCCESS");
+        when(differenceMapper.selectById(23L)).thenReturn(resolvedCase);
+        when(eventMapper.selectById(104L)).thenReturn(success);
+
+        ReconciliationDifference result = service().retry(23L, 3L);
+
+        assertEquals("RESOLVED", result.getStatus());
+        verify(differenceMapper).updateById(resolvedCase);
+
+        ReconciliationDifference openCase = new ReconciliationDifference();
+        openCase.setId(24L);
+        openCase.setDiffType(ReconciliationService.PAYMENT_EVENT_REJECTED);
+        openCase.setBizId(105L);
+        openCase.setStatus("DISPUTED");
+        PaymentEvent rejected = new PaymentEvent();
+        rejected.setId(105L);
+        rejected.setEventStatus("AMOUNT_MISMATCH");
+        rejected.setFundsReceived(1);
+        when(differenceMapper.selectById(24L)).thenReturn(openCase);
+        when(eventMapper.selectById(105L)).thenReturn(rejected);
+
+        ReconciliationDifference stillOpen = service().retry(24L, 3L);
+
+        assertEquals("RETRY", stillOpen.getStatus());
+        verify(differenceMapper).updateById(openCase);
     }
 
     @Test

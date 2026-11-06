@@ -6,6 +6,8 @@
  * event_status 中的 MANUAL_REVIEW 是超过重试上限后的人工队列状态，不得当作已履约或终态成功。
  * T+1 第五轮新增 funds_received：渠道侧是否已确认收到资金，1-已到账、0-明确未到账、NULL-未标注；
  * 不设默认值，NULL 是有意义的状态（必须产生可见对账信号），写入方必须显式赋值。
+ * 已到账（1）不得被后续“未支付/退款/无法确认”答复覆盖成 0/NULL；渠道退款（REFUNDED）也记 1（钱到过账又退回），
+ * 状态仍可为 FULFILLMENT_FAILED，由 error_message（“渠道已收款后已退款”）与对账文案共同区分。
  */
 package com.shop.b2b2c.entity;
 

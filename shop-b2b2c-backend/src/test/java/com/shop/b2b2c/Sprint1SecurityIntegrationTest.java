@@ -1907,6 +1907,69 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    @DisplayName("G34: 渠道已收款后已退款按 funds_received=1 处理，不得写成未收到资金")
+    void g34RefundedKeepsFundsReceivedAndFailsFulfillment() {
+        TradeOrder order = unpaid("g34-refunded", 1);
+        insertProcessingEvent(order, "TX_G34_REFUNDED", LocalDateTime.now().minusMinutes(10));
+        when(paymentGateway.queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn())))
+                .thenReturn(com.shop.b2b2c.dto.PaymentChannelDTOs.ChannelQueryResult.builder()
+                        .channel("WECHAT").orderSn(order.getOrderSn()).payTradeNo("TX_G34_REFUNDED")
+                        .tradeState("REFUNDED").currency("CNY").build());
+
+        paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
+
+        com.shop.b2b2c.entity.PaymentEvent stored =
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_REFUNDED");
+        assertEquals("FULFILLMENT_FAILED", stored.getEventStatus());
+        // 钱到过账又退回：funds_received 必须为 1，进入 T+1 预期流水差集。
+        assertEquals(1, stored.getFundsReceived().intValue());
+        assertTrue(stored.getErrorMessage().contains("渠道已收款后已退款"));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        verify(cards, never()).claimCard(anyLong(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("G34: 已确认到账的 funds_received=1 不被明确未支付答复覆盖")
+    void g34DefinitiveNotPaidDoesNotOverwriteConfirmedFunds() {
+        TradeOrder order = unpaid("g34-preserve", 1);
+        var seeded = insertProcessingEvent(order, "TX_G34_PRESERVE", LocalDateTime.now().minusMinutes(10));
+        seeded.setFundsReceived(1);
+        paymentEvents.updateById(seeded);
+        when(paymentGateway.queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn())))
+                .thenReturn(com.shop.b2b2c.dto.PaymentChannelDTOs.ChannelQueryResult.builder()
+                        .channel("WECHAT").orderSn(order.getOrderSn()).payTradeNo("TX_G34_PRESERVE")
+                        .tradeState("CLOSED").currency("CNY").build());
+
+        paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
+
+        com.shop.b2b2c.entity.PaymentEvent stored =
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_PRESERVE");
+        // 已到账是既成事实：状态落 FULFILLMENT_FAILED 但资金标记仍为 1，由 T+1 差异要求人工核对冲突。
+        assertEquals("FULFILLMENT_FAILED", stored.getEventStatus());
+        assertEquals(1, stored.getFundsReceived().intValue());
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
+    @DisplayName("G34: 资金未标注的事件在渠道查无此单时仍写 0")
+    void g34DefinitiveNotPaidMarksZeroWhenFundsUnmarked() {
+        TradeOrder order = unpaid("g34-notexist", 1);
+        insertProcessingEvent(order, "TX_G34_NOTEXIST", LocalDateTime.now().minusMinutes(10));
+        when(paymentGateway.queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn())))
+                .thenReturn(com.shop.b2b2c.dto.PaymentChannelDTOs.ChannelQueryResult.builder()
+                        .channel("WECHAT").orderSn(order.getOrderSn()).payTradeNo("TX_G34_NOTEXIST")
+                        .tradeState("NOT_EXIST").currency("CNY").build());
+
+        paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
+
+        com.shop.b2b2c.entity.PaymentEvent stored =
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_NOTEXIST");
+        assertEquals("FULFILLMENT_FAILED", stored.getEventStatus());
+        assertEquals(0, stored.getFundsReceived().intValue());
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
     @DisplayName("G34: 未达到阈值的 PROCESSING 事件不进入补偿扫描")
     void g34FreshProcessingEventBelowThresholdIsNotScanned() {
         TradeOrder order = unpaid("g34-fresh", 1);
@@ -1964,7 +2027,12 @@ class Sprint1SecurityIntegrationTest {
     @DisplayName("G34: 超过重试上限转 MANUAL_REVIEW 人工队列，不静默失败")
     void g34ExceedingRetryLimitMovesToManualReview() {
         TradeOrder order = unpaid("g34-manual", 1);
-        insertPaymentEvent(order, "TX_G34_MANUAL", LocalDateTime.now().minusMinutes(10), "PROCESSING", 2);
+        // 起点刻意设为 1（已到账）：只有 SQL 显式 SET funds_received=NULL 才会变成 NULL，
+        // 起点本为 NULL 时即使不写该列也会“通过”，证明不了清空逻辑生效。
+        var seeded = insertPaymentEvent(order, "TX_G34_MANUAL",
+                LocalDateTime.now().minusMinutes(10), "PROCESSING", 2);
+        seeded.setFundsReceived(1);
+        paymentEvents.updateById(seeded);
         when(paymentGateway.queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn())))
                 .thenThrow(new com.shop.b2b2c.common.BusinessException(503, "渠道持续不可用"));
 

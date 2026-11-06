@@ -6,11 +6,13 @@
  *     才允许调用 PaymentEventService.processPaymentEvent 补履约，禁止仅凭本地事件状态直接交付。
  *  2. 补履约复用 processPaymentEvent 的占位/订单行锁/CAS/卡密认领幂等路径；本类不直接写订单、不直接发卡，
  *     不出现第二次交付。
- *  3. 渠道结果分三类：明确未支付（渠道返回 PENDING/CLOSED/REFUNDED/FAILED/NOT_EXIST）落 FULFILLMENT_FAILED
- *     且 funds_received=0；查询前置校验失败（400/401/403/404）同样落 FULFILLMENT_FAILED，但资金状态未知，
- *     funds_received 必须写 NULL；查询异常或答复不确定（超时/限流/5xx/空响应/未知状态/流水号不一致）
- *     保留 PROCESSING，按指数退避写 reconcile_attempts/next_reconcile_at 重试；超过上限转 MANUAL_REVIEW
- *     人工队列并告警，同时把 funds_received 回写 NULL（资金状态未知，由 T+1 生成 REVIEW 差异兜住）。
+ *  3. 渠道结果分四类：明确未支付（渠道返回 PENDING/CLOSED/FAILED/NOT_EXIST）落 FULFILLMENT_FAILED
+ *     且 funds_received=0；已收款后已退款（REFUNDED）同样落 FULFILLMENT_FAILED，但资金到过账，
+ *     funds_received 必须为 1（进入 T+1 预期流水差集，文案记“渠道已收款后已退款”）；查询前置校验失败
+ *     （400/401/403/404）资金状态未知，写 NULL；查询异常或答复不确定（超时/限流/5xx/空响应/未知状态/
+ *     流水号不一致）保留 PROCESSING，按指数退避写 reconcile_attempts/next_reconcile_at 重试；超过上限转
+ *     MANUAL_REVIEW 人工队列并告警，同时把 funds_received 回写 NULL（资金状态未知，由 T+1 REVIEW 差异兜住）。
+ *     已存在 funds_received=1 的事件不得被 markFailed 覆盖成 0/NULL（SQL 用 CASE 保留 1）。
  *     失败态不是永久锁死：后续收到真实 SUCCESS 通知仍可由 processPaymentEvent 幂等履约。
  *  4. 已被主事务正常履约的订单（PAID/COMPLETED/SHIPPED）不进入陈旧 PROCESSING 查询，避免与主事务重复处理。
  *  5. 陈旧判定阈值、最大重试次数、初始退避由调用方传入（默认 5 分钟 / 5 次 / 60 秒）；
@@ -47,9 +49,16 @@ public class PaymentEventReconcileService {
     private static final Duration MAX_RETRY_BACKOFF = Duration.ofMinutes(30);
     private static final int DEFAULT_MAX_ATTEMPTS = 5;
 
-    /** 渠道给出确定答复但没有成功资金：这些状态按“明确未支付”落失败态，不算查询异常。 */
+    /** 渠道给出确定答复且确认没有资金到账：这些状态按“明确未支付”落失败态，不算查询异常。 */
     private static final Set<String> DEFINITIVE_NOT_PAID_STATES =
-            Set.of("PENDING", "CLOSED", "REFUNDED", "FAILED", "NOT_EXIST");
+            Set.of("PENDING", "CLOSED", "FAILED", "NOT_EXIST");
+
+    /**
+     * 渠道明确答复“已收款后已退款”：资金到过账又退回，不能按“明确未支付”写 0。
+     * 仍落 FULFILLMENT_FAILED（订单不会履约），但 funds_received=1，使其进入 T+1 预期流水差集；
+     * 状态与资金标记的共存语义由 error_message 的“渠道已收款后已退款”与 T+1 文案共同表达。
+     */
+    private static final Set<String> DEFINITIVE_REFUNDED_STATES = Set.of("REFUNDED");
 
     /** 查询前置校验类错误码：重试无法自愈，按明确失败处理；其余异常保留重试。 */
     private static final Set<Integer> DEFINITIVE_BUSINESS_CODES = Set.of(400, 401, 403, 404);
@@ -146,6 +155,11 @@ public class PaymentEventReconcileService {
                 return false;
             }
         }
+        if (DEFINITIVE_REFUNDED_STATES.contains(query.getTradeState())) {
+            // 渠道已收款后已退款：钱到过账，禁止写 0；进入差集，保证“支付流水整批未导入”能被 PARTIAL 暴露。
+            markFailed(candidate, "渠道已收款后已退款: state=" + query.getTradeState(), 1);
+            return false;
+        }
         if (DEFINITIVE_NOT_PAID_STATES.contains(query.getTradeState())) {
             // 渠道明确未支付：不会产生流水，funds_received=0；T+1 不会据此判渠道未导入。
             markFailed(candidate, "渠道明确未支付: state=" + query.getTradeState(), 0);
@@ -221,16 +235,21 @@ public class PaymentEventReconcileService {
 
     /**
      * 落 FULFILLMENT_FAILED：只把仍 PROCESSING 的事件更新并告警；已被主事务并发收敛为 SUCCESS 的事件不降级。
-     * fundsReceived 由调用方按渠道答复显式给出：明确未支付=0，查单前置校验失败/资金未知=NULL。
+     * fundsReceived 由调用方按渠道答复显式给出：明确未支付=0，已收款后已退款=1，查单前置校验失败/资金未知=NULL。
+     * 已确认到账（1）是既成事实，不得被后续“未支付/退款”答复覆盖成 0/NULL；Mapper SQL 用 CASE 保留 1，
+     * 此时状态与资金标记共存为“FULFILLMENT_FAILED + funds_received=1”，由 T+1 生成差异要求人工核对冲突。
      * 该失败态不阻止后续真实 SUCCESS 通知重新履约。
      */
     private void markFailed(PaymentEvent candidate, String reason, Integer fundsReceived) {
         int updated = paymentEventMapper.markFulfillmentFailed(candidate.getId(), fundsReceived, truncate(reason));
         if (updated == 1) {
+            // 日志与实际落库一致：已有 1 时 SQL 保留 1，不展示会被覆盖的请求值。
+            Integer storedFundsReceived = Integer.valueOf(1).equals(candidate.getFundsReceived())
+                    ? Integer.valueOf(1) : fundsReceived;
             log.error("【支付事件告警】陈旧 PROCESSING 明确无法补履约，标记 FULFILLMENT_FAILED "
                             + "channel={}, tradeNo={}, orderSn={}, fundsReceived={}, reason={}",
                     candidate.getChannel(), candidate.getPayTradeNo(), candidate.getOrderSn(),
-                    fundsReceived, reason);
+                    storedFundsReceived, reason);
         } else {
             log.info("陈旧 PROCESSING 已被其它路径收敛，跳过失败标记 tradeNo={}", candidate.getPayTradeNo());
         }

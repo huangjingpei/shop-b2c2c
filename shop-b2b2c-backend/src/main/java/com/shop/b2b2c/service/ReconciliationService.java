@@ -15,6 +15,8 @@
  * 10. 非成功支付事件不得静默，且必须按 funds_received 三值分开：=1 且状态在七状态集合内才计入缺失渠道；
  *     =0 与 NULL 都不预期流水，但分别生成 REJECTED / REVIEW 差异；悬挂超过 5 分钟的 PROCESSING
  *     生成 REVIEW 差异；未悬挂 PROCESSING 计入 processingPending 汇总。
+ * 11. 渠道退款（REFUNDED）是“已收款后已退款”，G34 落 FULFILLMENT_FAILED 但 funds_received=1，
+ *     因此仍进入差集；差异文案按 error_message 标识写“渠道已收款后已退款”，不得写“未收到资金”。
  */
 package com.shop.b2b2c.service;
 
@@ -100,7 +102,8 @@ public class ReconciliationService {
      * 预期会在本商户渠道账户产生流水的支付事件状态（第四~五轮口径，覆盖第三轮“仅三种状态”的错误判断）。
      * 仅“状态在集合内且 funds_received=1”才进入缺失渠道判定：
      * SUCCESS、DUPLICATE_PAYMENT、LATE_PAYMENT 与收到回调后 reject(...) 写入的拒绝状态均属已收款；
-     * FULFILLMENT_FAILED 一码两义（回调后履约失败=1 / G34 渠道明确未支付=0），由 funds_received 区分。
+     * FULFILLMENT_FAILED 一码多义（回调后履约失败=1 / G34 渠道已收款后已退款=1 / G34 渠道明确未支付=0 /
+     * G34 查单前置校验失败=NULL），由 funds_received 区分；REFUNDED 属“钱到过账又退回”，按 1 进入差集。
      * funds_received=0（明确未到账）与 NULL（未标注）都不预期流水，但必须各自生成可见差异，不能静默。
      * 不计入：PROCESSING（结果未确认，单独按悬挂阈值给差异信号）与未知/人工队列状态。
      */
@@ -407,6 +410,7 @@ public class ReconciliationService {
      * 选择“生成差异”而不是只做汇总计数：差异可分派、可审计、可按单据定位，纯计数无法定位是哪一笔。
      * 资金到账三个取值分开处理（见 §13.5）：
      *  - 状态在七状态集合内且 funds_received=1：生成 PAYMENT_EVENT_REJECTED（已收款但业务拒绝）；
+     *    其中渠道退款 REFUNDED 经 G34 落 FULFILLMENT_FAILED 且 funds_received=1，文案写“渠道已收款后已退款”；
      *  - 状态在集合内且 funds_received=0：不预期流水，但仍生成 PAYMENT_EVENT_REJECTED 供人工核对，避免静默；
      *  - 状态在集合内且 funds_received IS NULL：资金未标注，生成 PAYMENT_EVENT_REVIEW，要求人工确认是否已收款；
      *  - PROCESSING 超过 {@link #PROCESSING_STALE_AFTER} 视为悬挂：生成 PAYMENT_EVENT_REVIEW；
@@ -434,7 +438,7 @@ public class ReconciliationService {
             Integer fundsReceived = event.getFundsReceived();
             if (Integer.valueOf(1).equals(fundsReceived)) {
                 String detail = "FULFILLMENT_FAILED".equals(status)
-                        ? "支付事件状态 FULFILLMENT_FAILED：渠道已收款但履约失败，需人工核对资金与履行结果"
+                        ? fulfilledFailureDetail(event.getErrorMessage())
                         : "支付事件状态 " + status + "：渠道已收款但履约/校验被拒绝，需人工核对资金与履行结果";
                 addDifference("EV|" + event.getId() + "|" + status, merchantId, event.getChannel(),
                         PAYMENT_EVENT_REJECTED, "EVENT", event.getId(), event.getOrderSn(), tradeNo,
@@ -463,6 +467,18 @@ public class ReconciliationService {
                 event.getPayAmount(), null,
                 "支付事件状态 " + statusKey + " 未进入预期流水状态，需人工确认真实结果",
                 ReconciliationClassifier.INTERNAL, businessDate, operatorId, counts);
+    }
+
+    /**
+     * FULFILLMENT_FAILED + funds_received=1 的差异文案。
+     * 渠道退款（G34 以 error_message “渠道已收款后已退款”标识）必须与“已收款但履约失败”区分，
+     * 避免把“钱到过账又退回”误读成“没收到钱”。缺省标识时按履约失败处理。
+     */
+    private String fulfilledFailureDetail(String errorMessage) {
+        if (errorMessage != null && errorMessage.contains("退款")) {
+            return "支付事件状态 FULFILLMENT_FAILED：渠道已收款后已退款，需人工核对退款流水与履约结果";
+        }
+        return "支付事件状态 FULFILLMENT_FAILED：渠道已收款但履约失败，需人工核对资金与履行结果";
     }
 
     /**
