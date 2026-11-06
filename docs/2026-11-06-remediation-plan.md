@@ -553,12 +553,12 @@
 | 优先级 | **P2**（工程性/可维护性：并发、权限、部署类修复无持续回归，历史“通过”不可重跑） |
 | 阶段 | S4 |
 | D/F/R | R33 |
-| 涉及文件 | 仓库根（无 CI 工作流）；`shop-b2b2c-backend/src/test/java/**`；`shared/*.test.mjs`；`deploy/tests/**` |
+| 涉及文件 | `.github/workflows/ci.yml`、`scripts/regression.sh`；`shop-b2b2c-backend/src/test/java/**`；`shared/*.test.mjs`；`deploy/tests/**` |
 | 问题本质 | 有后端测试类与前端规则用例，但仓库无 CI 工作流，无执行记录/环境矩阵，无法阻止回归。 |
 | 修复要点 | 增加最小 CI（后端单测 + 前端 `node --test` + 部署隔离用例），明确 H2/无 Nginx 的跳过口径；记录每次执行结果；不在 CI 中连接生产库或执行真实构建。 |
 | 依赖/冲突 | 依赖 T12/T21（隔离库与迁移用例）；与 V03–V07 的用户手动入口并行，不替代人工验收；不得把“CI 绿”当成“已验证”。 |
 | 回归要点 | 合法：提交可自动跑通现有用例。非法：用例失败阻断合并；环境缺依赖显式标记 skipped。失败后数据不变：CI 只读运行，不写业务库。 |
-| 状态 | 待修复 |
+| 状态 | 已实现·待人工验证（提交 60c6273；新增三作业只读 CI：后端 H2 单测、shared `node --test`（先按锁文件 `npm ci`）、deploy 隔离用例（CI 安装 Nginx），每次执行结果写入 Job Summary；新增 `scripts/regression.sh` 本地 Linux/WSL 重跑入口；AGENTS 记录跳过不算通过、CI 绿不替代人工验收。未运行 mvn/编译/测试/构建/CI，未连数据库；实际托管运行器结果与分支保护仍待人工配置验证） |
 
 ### S5 商业闭环（阶段一商家结算 + 阶段二预留）
 
