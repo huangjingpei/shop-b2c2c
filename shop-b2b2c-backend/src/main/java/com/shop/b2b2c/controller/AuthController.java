@@ -4,6 +4,8 @@
  * 维护注意：密码用BCrypt验证；登录先限制连接IP，再校验参数、图形验证码并限制账号，Redis故障拒绝登录；退出撤销服务端会话；me校验账号状态和授权变化；health仅为存活响应，不代表数据库和Redis就绪。Q13-A：员工仅返回店名/编码/公告/Logo/电话白名单，身份证默认脱敏。T36：限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For，直连客户端自报头不生效。
  * 登录入口 scope：MERCHANT 仅允许商家角色，ADMIN 仅允许 SUPERADMIN；商家页与超管私密页共用同一密码校验，但不得互相登录。
  * 验证码：captchaId/captchaCode 由前端两个登录页提交；shop.auth.captcha-required 打开时缺失即拒绝，关闭时仍校验显式提交的验证码（一次性失效）。
+ * D11：登录与 /me 响应携带 mustChangePassword；改密接口位于 /api/v1/auth/**（不被业务工作台拦截），
+ * 改密成功清除标记并注销该账号全部会话，前端必须引导重新登录，不得静默沿用旧令牌。
  */
 package com.shop.b2b2c.controller;
 
@@ -112,6 +114,8 @@ public class AuthController {
         res.put("realName", user.getRealName());
         res.put("roleCode", user.getRoleCode());
         res.put("merchantId", user.getMerchantId());
+        // D11：前端据此跳转强制改密页；标记账号在改密前无法访问业务工作台。
+        res.put("mustChangePassword", Boolean.TRUE.equals(user.getMustChangePassword()));
 
         if (user.getMerchantId() != null) {
             storeMapper.findById(user.getMerchantId()).ifPresent(store -> {
@@ -134,6 +138,42 @@ public class AuthController {
         return R.ok("退出成功", null);
     }
 
+    @Data
+    public static class ChangePasswordDTO {
+        private String oldPassword;
+        private String newPassword;
+    }
+
+    /**
+     * D11 修改密码：校验原密码与新密码强度，清除强制改密标记，并注销该账号全部会话（含当前会话）。
+     * 本接口必须留在 /api/v1/auth/**：标记账号唯一能调用的写接口，前端改密页只依赖它与 /me。
+     */
+    @Operation(summary = "修改密码（D11 强制改密；成功后注销全部会话需重新登录）")
+    @PostMapping("/change-password")
+    public R<Void> changePassword(@RequestBody ChangePasswordDTO dto) {
+        SysUser user = sessions.requireCurrentUser();
+        if (dto == null || dto.getOldPassword() == null || dto.getNewPassword() == null) {
+            throw new BusinessException(400, "请填写原密码与新密码");
+        }
+        String newPassword = dto.getNewPassword();
+        if (newPassword.length() < 8 || newPassword.length() > 128
+                || !newPassword.matches("(?=.*[A-Za-z])(?=.*\\d)[\\s\\S]+")) {
+            throw new BusinessException(400, "新密码需为 8-128 位且同时包含字母与数字");
+        }
+        if (!BCrypt.checkpw(dto.getOldPassword(), user.getPassword())) {
+            throw new BusinessException(400, "原密码不正确");
+        }
+        if (BCrypt.checkpw(newPassword, user.getPassword())) {
+            throw new BusinessException(400, "新密码不得与原密码相同");
+        }
+        user.setPassword(BCrypt.hashpw(newPassword));
+        user.setMustChangePassword(Boolean.FALSE);
+        userMapper.updateById(user);
+        // 改密后旧口令签发的会话一律作废；前端收到成功响应后必须清空本地令牌并回登录页。
+        StpUtil.logout(user.getId());
+        return R.ok("密码已修改，请使用新密码重新登录", null);
+    }
+
     @Operation(summary = "获取当前登录人信息")
     @GetMapping("/me")
     public R<Map<String, Object>> getProfile() {
@@ -145,6 +185,8 @@ public class AuthController {
         res.put("realName", user.getRealName());
         res.put("roleCode", user.getRoleCode());
         res.put("merchantId", user.getMerchantId());
+        // D11：前端路由守卫据此拦截业务页面并引导改密。
+        res.put("mustChangePassword", Boolean.TRUE.equals(user.getMustChangePassword()));
 
         if (user.getMerchantId() != null) {
             storeMapper.findById(user.getMerchantId()).ifPresent(store -> {

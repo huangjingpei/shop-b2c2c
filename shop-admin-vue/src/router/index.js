@@ -39,6 +39,13 @@ const routes = [
     meta: { public: true }
   },
   {
+    // D11：强制改密页需要登录令牌但不声明角色，守卫把标记账号限制在本页。
+    path: '/change-password',
+    name: 'ChangePassword',
+    component: () => import('../views/login/ChangePassword.vue'),
+    meta: { title: '首次登录修改密码' }
+  },
+  {
     path: '/',
     component: AdminLayout,
     children: [

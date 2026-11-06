@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS `sys_user` (
   `real_name` VARCHAR(64) DEFAULT NULL COMMENT '真实姓名',
   `role_code` VARCHAR(32) NOT NULL COMMENT '角色: SUPERADMIN-平台超管, MERCHANT_ADMIN-店长, MERCHANT_STAFF-员工',
   `is_active` TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用: 1-启用, 0-禁用',
+  `must_change_password` TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'D11 首次登录强制改密: 1-须先改密才能访问业务工作台, 0-正常；审核开店生成的店长账号落 1',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
 );

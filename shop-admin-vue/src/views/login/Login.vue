@@ -118,6 +118,12 @@ const handleLogin = async () => {
     localStorage.setItem('token', token)
     cacheProfile(localStorage, res.data)
     localStorage.setItem('currentPerspective', 'MERCHANT')
+    // D11：审核开店生成的店长账号首次登录必须先改密，改密成功后才进入工作台。
+    if (res.data.mustChangePassword) {
+      ElMessage.warning('首次登录须先修改初始密码')
+      await router.replace('/change-password')
+      return
+    }
     ElMessage.success(`欢迎回来，${realName || '商家'}！`)
     await router.replace(homeFor(res.data))
   } catch {

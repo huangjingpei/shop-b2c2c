@@ -25,6 +25,8 @@
  *     SUPPLEMENT_REQUIRED 超 shop.onboarding.supplement-expire-days（默认30天）未补件，由 OnboardingExpiryJob 逐条调用
  *     expireStaleApplication 置 WITHDRAWN，审计 action=EXPIRE 且 operator_id 为空（系统任务）；
  *     逾期只撤回申请，已建的待开通店铺与店长账号的停用/注销属 O6 店铺状态机范围，本类不处理。
+ * 13. D11 首次登录强制改密：审核开店生成的店长账号 must_change_password=1，
+ *     该账号改密前仅 /api/v1/auth/** 可用（SaTokenConfigure 拦截业务工作台），改密成功清除标记并注销全部会话。
  */
 package com.shop.b2b2c.service;
 
@@ -389,6 +391,8 @@ public class MerchantOnboardingService {
         user.setRealName(application.getSubjectName() + " 店长");
         user.setRoleCode("MERCHANT_ADMIN");
         user.setIsActive(true);
+        // D11：审核开店生成的店长账号必须首次登录强制改密，初始密码只允许一次性交付。
+        user.setMustChangePassword(Boolean.TRUE);
         userMapper.save(user);
 
         // T39：开店即建立初始费率政策，作为后续订单快照的唯一费率来源；merchant_store.commission_rate 仅同步展示镜像。

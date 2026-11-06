@@ -3,8 +3,11 @@
  * 用途：管理端会话清理、退出确认、服务端身份路由判断与API认证错误处理。
  * 维护注意：本地角色仅供展示，不作为授权；网络失败不能假装服务端退出成功。仅移除本应用会话键，旧请求不得清除新登录；前端判断不替代后端角色及租户校验。
  * 双入口：/login 为商家登录（含“我要开店”），/admin/login 为平台超管私密入口；loginPathFor 按 currentPerspective 选择失效跳转，避免商家被踢到超管入口或反之。
+ * D11：登录/会话返回 mustChangePassword 时，守卫把标记账号限制在 /change-password，改密成功重新登录后标记清除；不得用本地缓存标记放行业务页。
  */
-const sessionKeys = ['token', 'userId', 'roleCode', 'merchantId', 'realName', 'storeName', 'currentPerspective']
+const sessionKeys = ['token', 'userId', 'roleCode', 'merchantId', 'realName', 'storeName', 'currentPerspective', 'mustChangePassword']
+/** D11 强制改密页地址；该路由不声明角色，任何已登录账号均可进入改自己的密码。 */
+export const CHANGE_PASSWORD_PATH = '/change-password'
 const roles = new Set(['SUPERADMIN', 'MERCHANT_ADMIN', 'MERCHANT_STAFF'])
 export function clearSession(storage) {
   sessionKeys.forEach(key => storage.removeItem(key))
@@ -29,6 +32,8 @@ export function cacheProfile(storage, profile) {
   storage.setItem('merchantId', String(profile.merchantId ?? ''))
   storage.setItem('realName', profile.realName || profile.username || '')
   storage.setItem('storeName', profile.store?.storeName || profile.storeName || '')
+  // D11：仅缓存展示用标记；后端 428 才是强制拦截，本地缺失不视为已解除。
+  storage.setItem('mustChangePassword', profile.mustChangePassword ? '1' : '')
 }
 export function homeFor(profile) {
   if (profile?.roleCode === 'SUPERADMIN') return '/admin/dashboard'
@@ -50,7 +55,12 @@ export function createSessionGuard({ storage, loadProfile, loginPath: resolveLog
       const profile = await loadProfile()
       if (storage.getItem('token') !== token) return storage.getItem('token') ? '/' : fallbackLogin()
       cacheProfile(storage, profile)
+      // D11：标记账号只放行改密页；已清除标记的账号访问改密页则送回主页。
+      if (profile.mustChangePassword) {
+        return route.path === CHANGE_PASSWORD_PATH ? true : CHANGE_PASSWORD_PATH
+      }
       if (route.path === '/') return homeFor(profile)
+      if (route.path === CHANGE_PASSWORD_PATH) return homeFor(profile)
       return canEnter(profile, route) ? true : '/forbidden'
     } catch (error) {
       if (apiErrorCode(error) === 401) {

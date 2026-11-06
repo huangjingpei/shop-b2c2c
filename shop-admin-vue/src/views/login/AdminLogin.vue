@@ -104,6 +104,12 @@ const handleLogin = async () => {
     localStorage.setItem('token', res.data.token)
     cacheProfile(localStorage, res.data)
     localStorage.setItem('currentPerspective', 'ADMIN')
+    // D11：带强制改密标记的账号先改密再进入控制台。
+    if (res.data.mustChangePassword) {
+      ElMessage.warning('首次登录须先修改初始密码')
+      await router.replace('/change-password')
+      return
+    }
     ElMessage.success(`欢迎回来，${res.data.realName || '管理员'}！`)
     await router.replace(homeFor(res.data))
   } catch {

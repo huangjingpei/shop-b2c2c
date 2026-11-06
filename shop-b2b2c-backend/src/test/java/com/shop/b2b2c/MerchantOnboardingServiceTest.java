@@ -265,6 +265,8 @@ class MerchantOnboardingServiceTest {
         MerchantStore createdStore = storeCaptor();
         SysUser createdUser = userCaptor();
         assertEquals("13800000000", createdUser.getUsername());
+        // D11：审核开店生成的店长账号必须首次登录强制改密。
+        assertEquals(Boolean.TRUE, createdUser.getMustChangePassword());
         assertEquals("张三的小店", createdStore.getStoreName());
         assertEquals(1, createdStore.getMerchantType());
         // 初始密码明文只存在瞬时字段，审核列表/详情视图不得回传。

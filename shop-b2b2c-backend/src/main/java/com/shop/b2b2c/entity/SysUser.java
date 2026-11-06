@@ -23,5 +23,7 @@ public class SysUser {
     private String realName;
     private String roleCode; // SUPERADMIN, MERCHANT_ADMIN, MERCHANT_STAFF
     private Boolean isActive = true;
+    /** D11 首次登录强制改密标记：1-须先改密才能访问业务工作台；审核开店生成的店长账号落 1，改密成功清 0。 */
+    private Boolean mustChangePassword = false;
     private LocalDateTime createdAt;
 }

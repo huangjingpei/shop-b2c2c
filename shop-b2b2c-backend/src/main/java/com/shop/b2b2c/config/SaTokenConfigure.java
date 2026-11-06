@@ -4,6 +4,8 @@
  * 维护注意：公开路由不得加入可信支付落账；受保护请求先核验数据库中的账号和授权状态；角色检查不替代对象归属校验。跨域仅允许配置的精确来源及必要请求头，Bearer授权不开放跨域Cookie。
  * T32：/api/v1/payment/create 与 /api/v1/payment/callback/** 免登录，但回调安全性由渠道验签保证；/api/v1/merchant/payment/** 走商家登录与角色拦截，资金操作在控制器内再限定店长/超管。
  * S3：/api/v1/auth/captcha 与 /api/v1/onboarding/** 免登录；入驻接口用 X-Onboarding-Token 申请查询凭证做对象级校验，不能替代后台审核权限。
+ * D11：must_change_password=1 的账号在 /admin/** 与 /merchant/** 一律 428，须先经 /api/v1/auth/change-password 改密；
+ * 改密与会话查询位于 /api/v1/auth/**，不在本拦截范围，保证账号可自助解除标记。
  */
 package com.shop.b2b2c.config;
 
@@ -30,9 +32,9 @@ public class SaTokenConfigure implements WebMvcConfigurer {
             // 浏览器预检没有Bearer令牌；来源、方法和请求头仍由Spring CORS处理器校验。
             if ("OPTIONS".equals(cn.dev33.satoken.context.SaHolder.getRequest().getMethod())) return;
             // 超级管理员路由拦截
-            SaRouter.match("/api/v1/admin/**", r -> { sessions.requireCurrentUser(); StpUtil.checkRole("SUPERADMIN"); });
+            SaRouter.match("/api/v1/admin/**", r -> { sessions.requirePasswordChangeCleared(sessions.requireCurrentUser()); StpUtil.checkRole("SUPERADMIN"); });
             // 商家工作台路由拦截 (超管与商家员工均可访问)
-            SaRouter.match("/api/v1/merchant/**", r -> { sessions.requireCurrentUser(); StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN", "MERCHANT_STAFF"); });
+            SaRouter.match("/api/v1/merchant/**", r -> { sessions.requirePasswordChangeCleared(sessions.requireCurrentUser()); StpUtil.checkRoleOr("SUPERADMIN", "MERCHANT_ADMIN", "MERCHANT_STAFF"); });
         })).addPathPatterns("/api/v1/**")
            .excludePathPatterns(
                "/api/v1/auth/login",

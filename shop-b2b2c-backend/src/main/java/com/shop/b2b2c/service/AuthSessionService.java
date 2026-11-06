@@ -2,6 +2,9 @@
  * 文件：AuthSessionService.java
  * 用途：对受保护请求核验服务端会话与当前账号状态、角色和店铺绑定的一致性。
  * 维护注意：每次请求读取数据库，不信任浏览器角色缓存；账号删除/禁用或授权变化须撤销旧会话，要求重新登录。数据库故障不得降级放行；对象级租户归属仍由业务接口校验。Q13-A 最小权限通过 requireManagementRole 在接口层拒绝员工，前端隐藏按钮不能替代该检查。
+ * D11：must_change_password=1 的账号由 requirePasswordChangeCleared 统一拦截业务工作台访问
+ * （SaTokenConfigure 在 /admin/** 与 /merchant/** 匹配器内调用）；/api/v1/auth/** 不在拦截范围，
+ * 登录、会话查询与改密接口必须保持可用，否则账号无法自助解除标记。
  */
 package com.shop.b2b2c.service;
 import cn.dev33.satoken.stp.StpUtil;
@@ -44,5 +47,16 @@ public class AuthSessionService {
             throw new BusinessException(401, "登录信息已失效，请重新登录");
         }
         return user;
+    }
+
+    /**
+     * D11 首次登录强制改密：标记账号不得访问业务工作台（/admin/**、/merchant/**），只能改密或查询会话。
+     * 与 requireCurrentUser 分开：/me、登录、改密等 /api/v1/auth/** 接口不得被本方法拦截。
+     * 只拦截不放行其他校验：角色与租户一致性仍由 requireCurrentUser 先行判定。
+     */
+    public void requirePasswordChangeCleared(SysUser user) {
+        if (Boolean.TRUE.equals(user.getMustChangePassword())) {
+            throw new BusinessException(428, "首次登录须先修改初始密码");
+        }
     }
 }

@@ -2,11 +2,12 @@
  * 文件：authSession.test.mjs
  * 用途：管理端会话撤销、角色路由、跨标签页和HTTP认证错误规则的隔离单元测试。
  * 维护注意：使用内存storage和可控Promise，不访问浏览器或服务端；路由守卫不能代替后端鉴权。错误响应既覆盖HTTP状态也覆盖R.code。
+ * D11：强制改密标记账号只能进 /change-password；清除标记后访问改密页回主页；本地缓存标记不得放行业务页。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { clearSession, loginPath, loginPathFor, homeFor, canEnter, createSessionGuard, logoutSession,
-  createApiResponseHandlers, storageNavigation } from '../shop-admin-vue/src/utils/authSession.mjs'
+  createApiResponseHandlers, storageNavigation, CHANGE_PASSWORD_PATH } from '../shop-admin-vue/src/utils/authSession.mjs'
 
 function storage(seed = { token: 'old', roleCode: 'SUPERADMIN', unrelated: 'keep' }) {
   const data = new Map(Object.entries(seed))
@@ -148,4 +149,33 @@ test('Blob证件下载直接返回二进制，不按R业务码判失败', () => 
   })
   const blob = { type: 'image/png' }
   assert.equal(handlers.fulfilled({ config: { responseType: 'blob' }, data: blob }), blob)
+})
+
+// ---------- D11 首次登录强制改密 ----------
+const flaggedMerchant = { ...merchant, mustChangePassword: true }
+const changePasswordRoute = { path: CHANGE_PASSWORD_PATH, meta: { title: '首次登录修改密码' } }
+
+test('D11：会话缓存记录强制改密标记且随清理移除', async () => {
+  const s = storage()
+  const guard = createSessionGuard({ storage: s, loadProfile: async () => flaggedMerchant })
+  await guard(merchantRoute)
+  assert.equal(s.getItem('mustChangePassword'), '1')
+  clearSession(s)
+  assert.equal(s.getItem('mustChangePassword'), null)
+})
+
+test('D11：标记账号访问业务页一律改道改密页，改密页放行', async () => {
+  const s = storage()
+  const guard = createSessionGuard({ storage: s, loadProfile: async () => flaggedMerchant })
+  assert.equal(await guard(merchantRoute), CHANGE_PASSWORD_PATH)
+  assert.equal(await guard(adminRoute), CHANGE_PASSWORD_PATH)
+  assert.equal(await guard({ path: '/' }), CHANGE_PASSWORD_PATH)
+  assert.equal(await guard(changePasswordRoute), true)
+})
+
+test('D11：清除标记后访问改密页回主页，业务页正常放行', async () => {
+  const s = storage()
+  const guard = createSessionGuard({ storage: s, loadProfile: async () => ({ ...merchant, mustChangePassword: false }) })
+  assert.equal(await guard(changePasswordRoute), '/merchant/dashboard')
+  assert.equal(await guard(merchantRoute), true)
 })
