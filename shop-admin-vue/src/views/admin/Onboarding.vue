@@ -10,6 +10,8 @@
 5. O7 审核工作台：费率只支持 0（推广期，必填推广原因）或 100–1000bps；驳回/补件必选原因码（OTHER 必填说明）；
    复核人下拉来自 /admin/settlement/reviewers（已排除当前账号），严格模式必填；列表支持状态与 SLA(48h) 超时筛选。
    规则口径与 shared/onboardingReview.test.mjs、utils/financeReview.mjs 一致，修改须同步。
+6. O8：页首“审核超时提醒”来自发件箱 ROLE:SUPERADMIN 的 REVIEW_SLA_BREACH 通知（24h/48h/初审滞留三档，每档每单只发一次），
+   只读展示、加载失败不影响审核主流程；渲染解析复用 utils/notificationView.mjs。
 -->
 <template>
   <div class="onboarding-page">
@@ -23,6 +25,16 @@
 
     <el-alert type="info" :closable="false" class="notice"
       title="审核要点：身份证/执照照片清晰且在有效期；个人店需核对实人认证视频中的本人与朗读数字；店铺名称不得含旗舰/官方/专卖/专营等词。" />
+
+    <!-- O8 审核SLA超时提醒：来自发件箱（24h提醒/48h升级/初审滞留复核人提醒），每档每单只发一次 -->
+    <el-alert v-if="slaAlerts.length" type="error" :closable="false" class="notice">
+      <template #title>
+        审核超时提醒（{{ slaAlerts.length }}）：
+        <span v-for="item in slaAlerts" :key="item.id" class="sla-alert-item">
+          #{{ item.payload.applicationId }} {{ item.payload.storeName }} 已等待 {{ item.payload.waitingHours }}h{{ item.escalated ? '（升级）' : '' }}
+        </span>
+      </template>
+    </el-alert>
 
     <div class="filter-bar">
       <el-select v-model="filterStatus" placeholder="全部状态" clearable style="width: 150px">
@@ -185,6 +197,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
 import { reviewerState, validateReviewer } from '../../utils/financeReview.mjs'
+import { parsePayload } from '../../utils/notificationView.mjs'
 import {
   REJECT_CODES,
   REVIEW_SLA_HOURS,
@@ -287,6 +300,24 @@ async function loadApplications() {
     applications.value = res.data || []
   } finally {
     loading.value = false
+  }
+}
+
+// O8 审核SLA提醒：发件箱 ROLE:SUPERADMIN 的 REVIEW_SLA_BREACH 通知；加载失败不影响审核主流程。
+const slaAlerts = ref([])
+async function loadSlaAlerts() {
+  try {
+    const res = await request.get('/admin/notifications', {
+      params: { bizType: 'REVIEW_SLA_BREACH', limit: 10 },
+      skipErrorToast: true
+    })
+    slaAlerts.value = (Array.isArray(res.data) ? res.data : []).map(item => ({
+      ...item,
+      payload: parsePayload(item.payloadJson),
+      escalated: item.templateCode === 'REVIEW_SLA_ESCALATION'
+    }))
+  } catch {
+    slaAlerts.value = []
   }
 }
 
@@ -497,6 +528,7 @@ function formatSize(bytes) {
 onMounted(() => {
   loadApplications()
   loadReviewers()
+  loadSlaAlerts()
 })
 </script>
 
@@ -527,6 +559,11 @@ onMounted(() => {
 
 .notice {
   margin-bottom: 16px;
+}
+
+.sla-alert-item {
+  margin-right: 14px;
+  font-weight: 600;
 }
 
 .filter-bar {

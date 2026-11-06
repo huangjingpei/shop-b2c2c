@@ -54,6 +54,8 @@ class MerchantStoreStatusServiceTest {
     private SysUserMapper userMapper;
     @Mock
     private FinanceApprovalGuard approvalGuard;
+    @Mock
+    private com.shop.b2b2c.service.MerchantNotificationService notificationService;
     @InjectMocks
     private MerchantStoreStatusService service;
 

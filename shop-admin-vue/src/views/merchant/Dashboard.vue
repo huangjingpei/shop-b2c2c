@@ -1,7 +1,7 @@
 <!--
 文件：Dashboard.vue
 用途：本店实际营业状态、已上架商品、统一订单状态统计及快捷入口。
-维护注意：零费率必须保留；统计走专用本店接口，不用订单列表长度算成交。金额按状态而非渠道账本，不展示写死的开通/到账状态；网络缺失显示未知，不能回退演示店铺。
+维护注意：零费率必须保留；统计走专用本店接口，不用订单列表长度算成交。金额按状态而非渠道账本，不展示写死的开通/到账状态；网络缺失显示未知，不能回退演示店铺。O8：店铺通知来自发件箱站内已送达记录，渲染规则在 notificationView.mjs，加载失败不影响经营数据。
 -->
 <template>
   <div class="merchant-dashboard">
@@ -44,6 +44,20 @@
     <p>待付款 {{ stats.pendingOrders }} 笔，意向金额 ￥{{ stats.pendingIntentAmount }}；退款状态 {{ stats.refundedOrders }} 笔。</p>
     <el-alert v-if="stats.unknownOrders > 0 || stats.amountAnomalyOrders > 0" :title="`需核对：未知状态 ${stats.unknownOrders} 单，异常金额 ${stats.amountAnomalyOrders} 单。`" type="warning" :closable="false" />
 
+    <!-- O8 店铺通知：发件箱已送达的站内通知（开店节点/状态变更/证件到期提醒） -->
+    <el-card v-if="notifications.length" shadow="never" class="notify-card">
+      <template #header>
+        <span class="header-bold">店铺通知</span>
+      </template>
+      <div v-for="item in notifications" :key="item.id" class="notify-item">
+        <div class="notify-head">
+          <el-tag :type="item.view.tagType" size="small" effect="plain">{{ item.view.title }}</el-tag>
+          <span class="notify-time">{{ item.createdAt }}</span>
+        </div>
+        <div v-for="(line, i) in item.view.lines" :key="i" class="notify-line">{{ line }}</div>
+      </div>
+    </el-card>
+
     <!-- 快捷入口卡片 -->
     <el-card shadow="never" class="quick-entry">
       <template #header>
@@ -72,10 +86,13 @@ import { ref, computed, onMounted } from 'vue'
 import request from '../../api/request'
 import { statisticsView, listedProductCount, storeDisplay, STATISTICS_NOTICE } from '../../utils/orderStatistics.mjs'
 import { merchantProductRows } from '../../utils/merchantProducts.mjs'
+import { notificationView } from '../../utils/notificationView.mjs'
 
 const storeInfo = ref({})
 const productCount = ref('—')
 const stats = ref(statisticsView())
+// O8 店铺通知（站内已送达；渲染规则集中在 notificationView.mjs，payload 只文本插值）
+const notifications = ref([])
 const banner = computed(() => storeDisplay(storeInfo.value))
 // Q13-A：前端仅做入口隐藏，最终以路由守卫和后端接口拒绝为准。
 const canManageCards = computed(() => localStorage.getItem('roleCode') !== 'MERCHANT_STAFF')
@@ -90,6 +107,15 @@ const loadData = async () => {
 
     const oRes = await request.get('/merchant/orders/statistics')
     stats.value = statisticsView(oRes.data)
+
+    // O8：通知加载失败不阻塞经营数据展示。
+    try {
+      const nRes = await request.get('/merchant/notifications', { params: { limit: 10 } })
+      notifications.value = (Array.isArray(nRes.data) ? nRes.data : [])
+        .map(item => ({ ...item, view: notificationView(item) }))
+    } catch {
+      notifications.value = []
+    }
   } catch {
     // 请求层提示错误，不将失败或旧演示值当作经营数据。
   }
@@ -157,6 +183,38 @@ onMounted(() => {
 
 .quick-entry {
   border-radius: 8px;
+}
+
+.notify-card {
+  border-radius: 8px;
+  margin-bottom: 24px;
+}
+
+.notify-item {
+  padding: 10px 0;
+  border-bottom: 1px dashed #e2e8f0;
+}
+
+.notify-item:last-child {
+  border-bottom: none;
+}
+
+.notify-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.notify-time {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.notify-line {
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.7;
 }
 
 .header-bold {

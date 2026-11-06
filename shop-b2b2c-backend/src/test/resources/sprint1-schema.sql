@@ -51,6 +51,25 @@ CREATE TABLE IF NOT EXISTS merchant_store_status_audit (
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- O8 通知发件箱：与 MySQL 结构列同步（H2 无外键/JSON 用 CLOB 兼容）；uk 同 MySQL 保证幂等测试真实
+CREATE TABLE IF NOT EXISTS merchant_notification_outbox (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  biz_type VARCHAR(32) NOT NULL,
+  biz_id BIGINT NOT NULL,
+  channel VARCHAR(16) NOT NULL,
+  template_code VARCHAR(64) NOT NULL,
+  recipient VARCHAR(128) NOT NULL,
+  payload_json CLOB NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  attempts INT NOT NULL DEFAULT 0,
+  next_retry_at TIMESTAMP NULL,
+  last_error VARCHAR(512) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  sent_at TIMESTAMP NULL,
+  CONSTRAINT uk_notification_event UNIQUE (biz_type, biz_id, channel, template_code)
+);
+CREATE INDEX IF NOT EXISTS idx_notification_retry ON merchant_notification_outbox(status, next_retry_at);
+
 -- 2. 微信/支付宝官方二级商户进件账户表
 CREATE TABLE IF NOT EXISTS `merchant_payment_account` (
   `id` BIGINT  NOT NULL AUTO_INCREMENT,

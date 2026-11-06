@@ -77,6 +77,8 @@ public class MerchantStoreStatusService {
     private final SysUserMapper userMapper;
     /** 双人复核统一开关与复核人校验；解封（及带复核人的关店/注销）经它收口，不得各写一套。 */
     private final FinanceApprovalGuard approvalGuard;
+    /** O8 通知发件箱：冻结/解封/关店/注销通知商家；与状态变更同事务提交。 */
+    private final MerchantNotificationService notificationService;
 
     @Transactional(rollbackFor = Exception.class)
     public Map<String, Object> applyAction(Long merchantId, String action, String reasonCode, String reason,
@@ -157,6 +159,27 @@ public class MerchantStoreStatusService {
         audit.setConfirmedBy(reviewerId);
         audit.setApprovalMode(approvalMode);
         statusAuditMapper.insert(audit);
+
+        // O8：冻结/解封/关店/注销通知商家（打烊/恢复属日常操作不通知）；biz_id=本次审计行ID，
+        // 同一事件重试幂等，冻结->解封->再冻结是不同审计行各自通知一次。
+        if (ACTION_FREEZE.equals(action) || ACTION_UNFREEZE.equals(action)
+                || ACTION_CLOSE.equals(action) || ACTION_CANCEL.equals(action)) {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("merchantId", merchantId);
+            payload.put("action", action);
+            payload.put("fromStatus", from);
+            payload.put("toStatus", to);
+            payload.put("reasonCode", audit.getReasonCode());
+            payload.put("reason", normalizedReason == null ? "" : normalizedReason);
+            payload.put("tip", switch (action) {
+                case ACTION_FREEZE -> "店铺已被冻结：暂停新交易与出账，历史订单履约与退款不受影响";
+                case ACTION_UNFREEZE -> "店铺已解封：恢复营业，交易与结算恢复正常";
+                default -> "店铺已注销（终态）：账号已停用，未完结事项已全部结清";
+            });
+            notificationService.notify(MerchantNotificationService.BIZ_STORE_STATUS_CHANGED, audit.getId(),
+                    MerchantNotificationService.CHANNEL_INAPP, MerchantNotificationService.BIZ_STORE_STATUS_CHANGED,
+                    MerchantNotificationService.merchantRecipient(merchantId), payload);
+        }
 
         Map<String, Object> view = new LinkedHashMap<>();
         view.put("merchantId", merchantId);

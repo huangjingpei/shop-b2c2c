@@ -103,11 +103,13 @@ class Sprint1SecurityIntegrationTest {
     @Autowired com.shop.b2b2c.mapper.PaymentEventMapper paymentEvents;
     @Autowired com.shop.b2b2c.service.payment.PaymentEventReconcileService paymentEventReconcile;
     @MockBean com.shop.b2b2c.service.payment.PaymentGatewayService paymentGateway;
+    @Autowired com.shop.b2b2c.service.MerchantNotificationService notificationService;
+    @Autowired com.shop.b2b2c.mapper.MerchantNotificationOutboxMapper notificationOutboxMapper;
 
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("payment_event", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("merchant_notification_outbox", "payment_event", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -183,6 +185,42 @@ class Sprint1SecurityIntegrationTest {
                 else assertEquals("B", result.getPaymentChannelType());
             }
         }
+    }
+
+    // O8：发件箱四元组唯一键在真实 H2 库上的去重、SMS 默认禁用 SKIPPED 与密码红线。
+    @Test
+    void notificationOutboxDeduplicatesByUniqueKeyAndSmsStaysSkipped() {
+        Map<String, Object> payload = Map.of("applicationId", 9001, "storeName", "store1");
+        assertTrue(notificationService.notify("ONBOARDING_SUBMITTED", 9001L,
+                "INAPP", "ONBOARDING_SUBMITTED", "13800000000", payload));
+        // 重试/重扫重复事件：同四元组返回 false 且不再插行。
+        assertFalse(notificationService.notify("ONBOARDING_SUBMITTED", 9001L,
+                "INAPP", "ONBOARDING_SUBMITTED", "13800000000", payload));
+        assertTrue(notificationService.notify("ONBOARDING_SUBMITTED", 9001L,
+                "SMS", "ONBOARDING_SUBMITTED", "13800000000", payload));
+        // 不同业务事件（新审计行ID）不受唯一键影响，各通知一次。
+        assertTrue(notificationService.notify("ONBOARDING_SUPPLEMENT", 9002L,
+                "INAPP", "ONBOARDING_SUPPLEMENT", "13800000000", payload));
+
+        var rows = jdbc.queryForList("SELECT channel,status,sent_at FROM merchant_notification_outbox WHERE biz_id IN (9001,9002) ORDER BY id");
+        assertEquals(3, rows.size());
+        var inapp = rows.get(0);
+        assertEquals("INAPP", inapp.get("CHANNEL"));
+        assertEquals("SENT", inapp.get("STATUS"));
+        assertNotNull(inapp.get("SENT_AT"));
+        var sms = rows.get(1);
+        assertEquals("SMS", sms.get("CHANNEL"));
+        assertEquals("SKIPPED", sms.get("STATUS"), "SMS 通道默认禁用必须落 SKIPPED，绝不发送");
+        assertNull(sms.get("SENT_AT"));
+
+        // 密码红线：含 password 键的负载 fail-fast 且不写库。
+        var ex = assertThrows(BusinessException.class,
+                () -> notificationService.notify("ONBOARDING_OPENED", 9003L,
+                        "INAPP", "ONBOARDING_OPENED", "MERCHANT:1",
+                        Map.of("username", "merchant1", "initialPassword", "abc123")));
+        assertEquals(500, ex.getCode());
+        assertEquals(3, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM merchant_notification_outbox WHERE biz_id IN (9001,9002,9003)", Integer.class));
     }
 
     // 在真实Spring事务中暂停旧读取，另一路提交后才允许其UPDATE；不用sleep猜测交错。

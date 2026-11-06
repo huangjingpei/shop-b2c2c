@@ -135,6 +135,8 @@ public class MerchantOnboardingService {
     private final FinanceApprovalGuard approvalGuard;
     /** O4 开通闸门：协议是否签署齐全的唯一判定来源，open/openIfConsentsComplete 都必须经它校验。 */
     private final MerchantAgreementService agreementService;
+    /** O8 通知发件箱：开店各节点通知统一入口；通知与业务状态同事务提交。 */
+    private final MerchantNotificationService notificationService;
 
     @Data
     public static class ApplicationForm {
@@ -302,7 +304,15 @@ public class MerchantOnboardingService {
         application.setSubmittedAt(LocalDateTime.now());
         application.setVersion((application.getVersion() == null ? 0 : application.getVersion()) + 1);
         applicationMapper.updateById(application);
-        writeAudit(application, "SUBMIT", fromStatus, STATUS_SUBMITTED, operatorId, null, null);
+        Long auditId = writeAudit(application, "SUBMIT", fromStatus, STATUS_SUBMITTED, operatorId, null, null);
+        // O8：提交成功通知（站内）；biz_id 用审计行ID，补件重提每次都会生成新审计行，互不冲突。
+        notificationService.notify(MerchantNotificationService.BIZ_ONBOARDING_SUBMITTED, auditId,
+                MerchantNotificationService.CHANNEL_INAPP, MerchantNotificationService.BIZ_ONBOARDING_SUBMITTED,
+                application.getContactPhone(),
+                notifyPayload("applicationId", application.getId(),
+                        "storeName", application.getStoreName(),
+                        "status", STATUS_SUBMITTED,
+                        "tip", "已提交审核，预计 24 小时内开始处理"));
         return application;
     }
 
@@ -419,7 +429,16 @@ public class MerchantOnboardingService {
         application.setInitialPasswordRevealedAt(null);
         application.setVersion((application.getVersion() == null ? 0 : application.getVersion()) + 1);
         applicationMapper.updateById(application);
-        writeAudit(application, ACTION_APPROVE, fromStatus, STATUS_APPROVED, reviewerId, reason, null);
+        Long approveAuditId = writeAudit(application, ACTION_APPROVE, fromStatus, STATUS_APPROVED, reviewerId, reason, null);
+        // O8：审核通过通知（站内）；初始密码只走审核响应/首次进度查询一次性交付，绝不进通知（密码红线）。
+        notificationService.notify(MerchantNotificationService.BIZ_ONBOARDING_APPROVED, approveAuditId,
+                MerchantNotificationService.CHANNEL_INAPP, MerchantNotificationService.BIZ_ONBOARDING_APPROVED,
+                application.getContactPhone(),
+                notifyPayload("applicationId", application.getId(),
+                        "storeCode", storeCode,
+                        "storeName", application.getStoreName(),
+                        "merchantId", store.getId(),
+                        "tip", "审核已通过，请尽快签署开店协议并登录商家后台完成开店"));
         return application;
     }
 
@@ -441,7 +460,15 @@ public class MerchantOnboardingService {
         application.setReviewerId(reviewerId);
         application.setVersion((application.getVersion() == null ? 0 : application.getVersion()) + 1);
         applicationMapper.updateById(application);
-        writeAudit(application, ACTION_REJECT, fromStatus, STATUS_REJECTED, reviewerId, reason, code);
+        Long rejectAuditId = writeAudit(application, ACTION_REJECT, fromStatus, STATUS_REJECTED, reviewerId, reason, code);
+        // O8：驳回通知（站内 + 可选短信，短信默认禁用置 SKIPPED）；携带原因码与原因便于申请人整改。
+        notificationService.notifyAll(MerchantNotificationService.BIZ_ONBOARDING_REJECTED, rejectAuditId,
+                MerchantNotificationService.BIZ_ONBOARDING_REJECTED, application.getContactPhone(),
+                notifyPayload("applicationId", application.getId(),
+                        "storeName", application.getStoreName(),
+                        "rejectCode", code,
+                        "reason", application.getRejectReason()),
+                MerchantNotificationService.CHANNEL_INAPP, MerchantNotificationService.CHANNEL_SMS);
         return application;
     }
 
@@ -465,7 +492,15 @@ public class MerchantOnboardingService {
         application.setReviewerId(reviewerId);
         application.setVersion((application.getVersion() == null ? 0 : application.getVersion()) + 1);
         applicationMapper.updateById(application);
-        writeAudit(application, ACTION_SUPPLEMENT_REQUIRED, fromStatus, STATUS_SUPPLEMENT_REQUIRED, reviewerId, reason, code);
+        Long supplementAuditId = writeAudit(application, ACTION_SUPPLEMENT_REQUIRED, fromStatus, STATUS_SUPPLEMENT_REQUIRED, reviewerId, reason, code);
+        // O8：补件通知（站内 + 可选短信，短信默认禁用置 SKIPPED）；biz_id 为本次审计行ID，多次补件各自通知一次。
+        notificationService.notifyAll(MerchantNotificationService.BIZ_ONBOARDING_SUPPLEMENT, supplementAuditId,
+                MerchantNotificationService.BIZ_ONBOARDING_SUPPLEMENT, application.getContactPhone(),
+                notifyPayload("applicationId", application.getId(),
+                        "storeName", application.getStoreName(),
+                        "rejectCode", code,
+                        "reason", application.getRejectReason()),
+                MerchantNotificationService.CHANNEL_INAPP, MerchantNotificationService.CHANNEL_SMS);
         return application;
     }
 
@@ -553,7 +588,22 @@ public class MerchantOnboardingService {
         application.setOpenedAt(LocalDateTime.now());
         application.setVersion((application.getVersion() == null ? 0 : application.getVersion()) + 1);
         applicationMapper.updateById(application);
-        writeAudit(application, ACTION_OPEN, fromStatus, STATUS_OPENED, operatorId, null, null);
+        Long openAuditId = writeAudit(application, ACTION_OPEN, fromStatus, STATUS_OPENED, operatorId, null, null);
+        // O8：开通成功通知（站内 + 可选短信，短信默认禁用置 SKIPPED）；内容只含登录地址与账号，密码红线不落通知。
+        String loginAccount = userMapper.selectList(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SysUser>()
+                        .eq(SysUser::getMerchantId, merchantId).eq(SysUser::getRoleCode, "MERCHANT_ADMIN"))
+                .stream().findFirst().map(SysUser::getUsername).orElse(application.getContactPhone());
+        notificationService.notifyAll(MerchantNotificationService.BIZ_ONBOARDING_OPENED, openAuditId,
+                MerchantNotificationService.BIZ_ONBOARDING_OPENED,
+                MerchantNotificationService.merchantRecipient(merchantId),
+                notifyPayload("applicationId", application.getId(),
+                        "merchantId", merchantId,
+                        "storeCode", application.getStoreCode(),
+                        "storeName", application.getStoreName(),
+                        "username", loginAccount,
+                        "loginPath", "/merchant/login",
+                        "tip", "店铺已开通营业，首次登录请使用审核交付的初始密码并及时修改"),
+                MerchantNotificationService.CHANNEL_INAPP, MerchantNotificationService.CHANNEL_SMS);
         return application;
     }
 
@@ -836,7 +886,8 @@ public class MerchantOnboardingService {
         return code;
     }
 
-    private void writeAudit(MerchantOnboardingApplication application, String action,
+    /** 追加审核/生命周期审计；返回审计行ID（O8 通知 biz_id 锚点）。 */
+    private Long writeAudit(MerchantOnboardingApplication application, String action,
                             String fromStatus, String toStatus, Long operatorId, String reason, String rejectCode) {
         MerchantOnboardingAudit audit = new MerchantOnboardingAudit();
         audit.setApplicationId(application.getId());
@@ -852,10 +903,22 @@ public class MerchantOnboardingService {
                 application.getSubjectType() + "|" + application.getIdCardFingerprint()
                         + "|" + application.getSubjectName() + "|" + application.getContactPhone()));
         auditMapper.insert(audit);
+        return audit.getId();
     }
 
     private String blankToNull(String value) {
         return value == null || value.isBlank() ? null : value.trim();
+    }
+
+    /** O8 通知负载：键值成对、跳过 null 值（Map.of 不接受 null，手工构造的申请字段可能缺省）。 */
+    private static Map<String, Object> notifyPayload(Object... kv) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2) {
+            if (kv[i + 1] != null) {
+                payload.put(String.valueOf(kv[i]), kv[i + 1]);
+            }
+        }
+        return payload;
     }
 
     private String firstNonBlank(String preferred, String fallback) {

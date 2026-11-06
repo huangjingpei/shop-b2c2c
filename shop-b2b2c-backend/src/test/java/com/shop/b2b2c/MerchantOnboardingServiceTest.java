@@ -57,14 +57,17 @@ class MerchantOnboardingServiceTest {
     private final MerchantFeePolicyService feePolicyService = mock(MerchantFeePolicyService.class);
     private final com.shop.b2b2c.service.MerchantAgreementService agreementService =
             mock(com.shop.b2b2c.service.MerchantAgreementService.class);
+    /** O8：通知发件箱只验证协作契约（节点调用次数），投递语义由 MerchantNotificationService 自身测试覆盖。 */
+    private final com.shop.b2b2c.service.MerchantNotificationService notificationService =
+            mock(com.shop.b2b2c.service.MerchantNotificationService.class);
     /** 开发形态：双人复核关闭，单次 APPROVE 直接通过。 */
     private final MerchantOnboardingService service = new MerchantOnboardingService(
             applicationMapper, auditMapper, storeMapper, userMapper, cipherService, feePolicyService,
-            new FinanceApprovalGuard(false, userMapper), agreementService);
+            new FinanceApprovalGuard(false, userMapper), agreementService, notificationService);
     /** 生产形态：双人复核开启，初审只推进阶段，终审必须换不同超管。 */
     private final MerchantOnboardingService dualService = new MerchantOnboardingService(
             applicationMapper, auditMapper, storeMapper, userMapper, cipherService, feePolicyService,
-            new FinanceApprovalGuard(true, userMapper), agreementService);
+            new FinanceApprovalGuard(true, userMapper), agreementService, notificationService);
 
     @Test
     void individualApplicationStoresCipherAndFingerprintNotPlaintext() {

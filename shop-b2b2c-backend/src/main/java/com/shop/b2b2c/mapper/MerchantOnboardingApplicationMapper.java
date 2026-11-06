@@ -45,4 +45,26 @@ public interface MerchantOnboardingApplicationMapper extends BaseMapper<Merchant
     java.util.List<Long> findExpirableIds(@Param("approvedBefore") java.time.LocalDateTime approvedBefore,
                                           @Param("supplementBefore") java.time.LocalDateTime supplementBefore,
                                           @Param("limit") int limit);
+
+    /**
+     * O8 SLA：已提交超时的待审申请（SUBMITTED 且 submitted_at < 阈值），按 id 升序限量。
+     * 提醒(24h)/升级(48h)两档用不同阈值分别扫描；每档通知靠 outbox 四元组唯一键保证只发一次。
+     */
+    @Select("SELECT * FROM merchant_onboarding_application "
+            + "WHERE status = 'SUBMITTED' AND submitted_at < #{threshold} "
+            + "ORDER BY id LIMIT #{limit}")
+    java.util.List<MerchantOnboardingApplication> findSubmittedBefore(
+            @Param("threshold") java.time.LocalDateTime threshold, @Param("limit") int limit);
+
+    /**
+     * O8 SLA：初审阶段滞留超时的申请（REVIEWING + PRIMARY 且最近一次 START_REVIEW 审计早于阈值）。
+     * 计时以 START_REVIEW 审计为准：startReview 不写 reviewed_at，复审推进/补件会重置阶段，语义不混淆。
+     */
+    @Select("SELECT a.* FROM merchant_onboarding_application a "
+            + "WHERE a.status = 'REVIEWING' AND a.review_stage = 'PRIMARY' "
+            + "AND EXISTS (SELECT 1 FROM merchant_onboarding_audit au "
+            + "  WHERE au.application_id = a.id AND au.action = 'START_REVIEW' AND au.created_at < #{threshold}) "
+            + "ORDER BY a.id LIMIT #{limit}")
+    java.util.List<MerchantOnboardingApplication> findPrimaryReviewStale(
+            @Param("threshold") java.time.LocalDateTime threshold, @Param("limit") int limit);
 }

@@ -58,6 +58,28 @@ CREATE TABLE IF NOT EXISTS `merchant_store_status_audit` (
   CONSTRAINT fk_store_status_audit_store FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='店铺状态流转审计';
 
+-- 1b. 通知发件箱（O8）：站内通知(INAPP)落库即送达；SMS 通道默认禁用置 SKIPPED，接入服务商前不得发送；
+--     uk_notification_event 保证同一业务事件同渠道同模板只发一次（定时任务重扫/失败重试幂等）；
+--     payload_json 严禁写入密码、证件号、银行卡号等敏感字段（应用层校验拒绝 password 键）
+CREATE TABLE IF NOT EXISTS `merchant_notification_outbox` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `biz_type` VARCHAR(32) NOT NULL COMMENT 'ONBOARDING_SUBMITTED/ONBOARDING_SUPPLEMENT/ONBOARDING_REJECTED/ONBOARDING_APPROVED/ONBOARDING_OPENED/LICENSE_EXPIRING/REVIEW_SLA_BREACH/STORE_STATUS_CHANGED',
+  `biz_id` BIGINT UNSIGNED NOT NULL COMMENT '业务事件ID：开店节点=开店审计行ID，店铺状态=店铺状态审计行ID，SLA=申请ID',
+  `channel` VARCHAR(16) NOT NULL COMMENT 'INAPP/SMS',
+  `template_code` VARCHAR(64) NOT NULL COMMENT '通知模板；SLA 分 REVIEW_SLA_REMINDER/REVIEW_SLA_ESCALATION/REVIEW_SLA_REVIEWER',
+  `recipient` VARCHAR(128) NOT NULL COMMENT '申请人手机号 / MERCHANT:{店铺ID} / ROLE:{角色码}',
+  `payload_json` JSON NULL COMMENT '通知内容快照；不含密码/证件/银行卡等敏感字段',
+  `status` VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/SENT/FAILED/SKIPPED',
+  `attempts` INT NOT NULL DEFAULT 0,
+  `next_retry_at` DATETIME NULL,
+  `last_error` VARCHAR(512) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `sent_at` DATETIME NULL,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_notification_event` (`biz_type`, `biz_id`, `channel`, `template_code`),
+  KEY `idx_notification_retry` (`status`, `next_retry_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='通知发件箱；SMS 通道默认禁用';
+
 -- 2. 微信/支付宝官方二级商户进件账户表
 CREATE TABLE IF NOT EXISTS `merchant_payment_account` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
