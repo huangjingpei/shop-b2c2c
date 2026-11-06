@@ -888,6 +888,8 @@ CREATE TABLE IF NOT EXISTS `merchant_settlement_account` (
   `reject_reason` VARCHAR(512) NULL,
   `is_default` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '同一商户默认账户唯一',
   `default_merchant_id` BIGINT UNSIGNED GENERATED ALWAYS AS (IF(`is_default` = 1, `merchant_id`, NULL)) STORED COMMENT '默认账户占位：仅默认账户非空，配合 uk_settlement_default 保证同店默认唯一',
+  `verify_method` VARCHAR(16) NOT NULL DEFAULT 'MANUAL' COMMENT 'O5 核验方式: MANUAL-人工核验, PAYOUT-小额打款验证；记录账户通过核验的方式',
+  `replaces_account_id` BIGINT UNSIGNED NULL COMMENT 'O5 变更申请指向的旧账户；核验通过事务内切换默认并停用旧账户默认位',
   `effective_from` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `effective_to` DATETIME NULL COMMENT '换账户时停用旧账户，不原地覆盖历史',
   `verified_at` DATETIME NULL,
@@ -899,6 +901,7 @@ CREATE TABLE IF NOT EXISTS `merchant_settlement_account` (
   UNIQUE KEY `uk_settlement_account_fingerprint` (`merchant_id`, `account_fingerprint`),
   UNIQUE KEY `uk_settlement_default` (`default_merchant_id`),
   KEY `idx_settlement_merchant_status` (`merchant_id`, `status`, `is_default`),
+  KEY `idx_settlement_replaces` (`replaces_account_id`),
   CONSTRAINT fk_settlement_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商家收款账户';
 
@@ -907,7 +910,7 @@ CREATE TABLE IF NOT EXISTS `merchant_settlement_account_audit` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   `account_id` BIGINT UNSIGNED NOT NULL,
   `merchant_id` BIGINT UNSIGNED NOT NULL,
-  `action` VARCHAR(32) NOT NULL COMMENT 'REGISTER/VERIFY/REJECT/DISABLE',
+  `action` VARCHAR(32) NOT NULL COMMENT 'REGISTER/VERIFY/REJECT/DISABLE；O5 新增 CHANGE_REQUESTED/CHANGE_VERIFIED/CHANGE_SWITCHED',
   `account_type` VARCHAR(16) NULL,
   `account_fingerprint` VARCHAR(128) NULL,
   `operator_id` BIGINT NULL,
@@ -917,6 +920,33 @@ CREATE TABLE IF NOT EXISTS `merchant_settlement_account_audit` (
   KEY `idx_settlement_audit_account` (`account_id`, `created_at`),
   CONSTRAINT fk_settlement_audit_account FOREIGN KEY (`account_id`) REFERENCES `merchant_settlement_account` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='收款账户审核审计';
+
+-- 31a. 收款账户打款验证（O5 可选增强）：平台向账户打随机小额，商家回填金额核验归属；
+--      金额只由服务端生成，(account_id, attempt_no) 唯一防重，每账户最多 3 次尝试
+CREATE TABLE IF NOT EXISTS `merchant_payout_verification` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `account_id` BIGINT UNSIGNED NOT NULL,
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `attempt_no` INT NOT NULL COMMENT '第几次验证尝试，1-3',
+  `amount` DECIMAL(12,2) NOT NULL COMMENT '服务端生成的校验金额，0.01-0.99；仅平台可见，不得透传给商家端',
+  `currency` CHAR(3) NOT NULL DEFAULT 'CNY',
+  `status` VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/SUCCESS/FAILED/EXPIRED',
+  `transfer_voucher_no` VARCHAR(128) NULL COMMENT '线下转账凭证号；通道接入前使用',
+  `requested_by` BIGINT NULL COMMENT '发起人（超管）；确认人不得与发起人同一人',
+  `requested_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `expires_at` DATETIME NOT NULL,
+  `confirmed_at` DATETIME NULL,
+  `confirmed_by` BIGINT NULL,
+  `failure_code` VARCHAR(32) NULL COMMENT 'AMOUNT_MISMATCH/EXPIRED/ATTEMPTS_EXCEEDED',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_payout_account_attempt` (`account_id`, `attempt_no`),
+  KEY `idx_payout_pending_expire` (`status`, `expires_at`),
+  KEY `idx_payout_merchant` (`merchant_id`, `created_at`),
+  CONSTRAINT fk_payout_account FOREIGN KEY (`account_id`) REFERENCES `merchant_settlement_account` (`id`),
+  CONSTRAINT chk_payout_amount CHECK (`amount` > 0.00 AND `amount` <= 1.00),
+  CONSTRAINT chk_payout_attempt CHECK (`attempt_no` BETWEEN 1 AND 3)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='收款账户打款验证';
 
 -- 32. 技术服务费率政策（T39）：1%~10% 正常费率 + 0% 独立推广状态；同商户同一时刻仅一套生效政策
 CREATE TABLE IF NOT EXISTS `merchant_fee_policy` (

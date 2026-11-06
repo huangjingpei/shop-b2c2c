@@ -31,6 +31,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -174,6 +175,124 @@ class MerchantSettlementAccountServiceTest {
         assertFalse(view.containsValue("6222021234567890"));
     }
 
+    @Test
+    void requestChangeCreatesPendingAccountLinkedToCurrentDefault() {
+        // O5：店长发起变更，新账户 PENDING 且指向当前默认账户，不抢占默认位（变更审核期间结算不中断）。
+        MerchantSettlementAccount oldDefault = verifiedDefaultAccount(20L, 10L);
+        when(accountMapper.findDefaultVerified(10L)).thenReturn(oldDefault);
+        when(onboardingService.findApprovedByMerchantId(10L)).thenReturn(approvedApplication("张三"));
+        when(accountMapper.findByMerchantIdAndFingerprint(eq(10L), any())).thenReturn(null);
+        when(accountMapper.countByMerchantId(10L)).thenReturn(1);
+
+        MerchantSettlementAccount created = service.requestChange(10L, registerForm("张三"), "原卡注销", 9L);
+
+        assertEquals("PENDING", created.getStatus());
+        assertEquals(20L, created.getReplacesAccountId());
+        assertFalse(created.getIsDefault());
+        org.mockito.ArgumentCaptor<MerchantSettlementAccountAudit> captor =
+                org.mockito.ArgumentCaptor.forClass(MerchantSettlementAccountAudit.class);
+        verify(auditMapper).insert(captor.capture());
+        assertEquals("CHANGE_REQUESTED", captor.getValue().getAction());
+    }
+
+    @Test
+    void requestChangeRequiresExistingVerifiedDefault() {
+        when(accountMapper.findDefaultVerified(10L)).thenReturn(null);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.requestChange(10L, registerForm("张三"), null, 9L));
+
+        assertEquals(409, ex.getCode());
+        verify(accountMapper, never()).insert(any(MerchantSettlementAccount.class));
+    }
+
+    @Test
+    void verifyChangeAccountSwitchesDefaultAndKeepsOldVerified() {
+        // O5：变更账户核验通过 -> 新账户 VERIFIED+默认，旧账户保持 VERIFIED 但取消默认并写 effectiveTo（同事务切换）。
+        MerchantSettlementAccount change = pendingAccount(21L, 10L, false);
+        change.setReplacesAccountId(20L);
+        MerchantSettlementAccount oldDefault = verifiedDefaultAccount(20L, 10L);
+        when(accountMapper.lockById(21L)).thenReturn(change);
+        when(accountMapper.lockById(20L)).thenReturn(oldDefault);
+
+        service.verify(21L, true, "人工核对一致", 7L);
+
+        assertEquals("VERIFIED", change.getStatus());
+        assertTrue(change.getIsDefault());
+        assertEquals("MANUAL", change.getVerifyMethod());
+        assertFalse(oldDefault.getIsDefault());
+        assertEquals("VERIFIED", oldDefault.getStatus());
+        assertNotNull(oldDefault.getEffectiveTo());
+        verify(accountMapper).updateById(oldDefault);
+        verify(accountMapper).updateById(change);
+        verify(accountMapper, never()).disableOtherDefaults(any(), any(), any());
+        org.mockito.ArgumentCaptor<MerchantSettlementAccountAudit> captor =
+                org.mockito.ArgumentCaptor.forClass(MerchantSettlementAccountAudit.class);
+        verify(auditMapper, times(2)).insert(captor.capture());
+        java.util.List<String> actions = captor.getAllValues().stream()
+                .map(MerchantSettlementAccountAudit::getAction).collect(java.util.stream.Collectors.toList());
+        assertTrue(actions.contains("CHANGE_VERIFIED"));
+        assertTrue(actions.contains("CHANGE_SWITCHED"));
+    }
+
+    @Test
+    void confirmPayoutSuccessMarksVerifyMethodPayout() {
+        // O5：打款验证金额匹配后账户通过，verify_method=PAYOUT；非变更账户走常规默认切换。
+        MerchantSettlementAccount account = pendingAccount(22L, 10L, false);
+        when(accountMapper.lockById(22L)).thenReturn(account);
+        when(accountMapper.findDefaultVerified(10L)).thenReturn(null);
+
+        service.confirmPayoutSuccess(22L, 7L);
+
+        assertEquals("VERIFIED", account.getStatus());
+        assertEquals("PAYOUT", account.getVerifyMethod());
+        assertTrue(account.getIsDefault());
+        verify(accountMapper).updateById(account);
+    }
+
+    @Test
+    void confirmPayoutSuccessRejectsNonPendingAccount() {
+        MerchantSettlementAccount account = pendingAccount(23L, 10L, false);
+        account.setStatus("REJECTED");
+        when(accountMapper.lockById(23L)).thenReturn(account);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.confirmPayoutSuccess(23L, 7L));
+
+        assertEquals(409, ex.getCode());
+        verify(accountMapper, never()).updateById(any());
+    }
+
+    @Test
+    void rejectForPayoutExceededRejectsPendingAccountWithReasonCode() {
+        // O5：累计 3 次失败 -> REJECTED + PAYOUT_ATTEMPTS_EXCEEDED，需重新登记或走人工核验。
+        MerchantSettlementAccount account = pendingAccount(24L, 10L, false);
+        when(accountMapper.lockById(24L)).thenReturn(account);
+
+        service.rejectForPayoutExceeded(24L, 7L);
+
+        assertEquals("REJECTED", account.getStatus());
+        assertEquals("PAYOUT_ATTEMPTS_EXCEEDED", account.getRejectReason());
+        assertFalse(account.getIsDefault());
+        verify(accountMapper).updateById(account);
+        org.mockito.ArgumentCaptor<MerchantSettlementAccountAudit> captor =
+                org.mockito.ArgumentCaptor.forClass(MerchantSettlementAccountAudit.class);
+        verify(auditMapper).insert(captor.capture());
+        assertEquals("REJECT", captor.getValue().getAction());
+    }
+
+    @Test
+    void rejectForPayoutExceededSkipsNonPendingAccount() {
+        MerchantSettlementAccount account = pendingAccount(25L, 10L, false);
+        account.setStatus("VERIFIED");
+        when(accountMapper.lockById(25L)).thenReturn(account);
+
+        service.rejectForPayoutExceeded(25L, 7L);
+
+        assertEquals("VERIFIED", account.getStatus());
+        verify(accountMapper, never()).updateById(any());
+    }
+
     private MerchantSettlementAccountService.RegisterForm registerForm(String holderName) {
         MerchantSettlementAccountService.RegisterForm form = new MerchantSettlementAccountService.RegisterForm();
         form.setAccountType("BANK");
@@ -207,6 +326,12 @@ class MerchantSettlementAccountServiceTest {
         account.setStatus("PENDING");
         account.setIsDefault(isDefault);
         account.setVersion(0);
+        return account;
+    }
+
+    private MerchantSettlementAccount verifiedDefaultAccount(Long id, Long merchantId) {
+        MerchantSettlementAccount account = pendingAccount(id, merchantId, true);
+        account.setStatus("VERIFIED");
         return account;
     }
 }

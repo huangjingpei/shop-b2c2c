@@ -629,6 +629,8 @@ CREATE TABLE IF NOT EXISTS merchant_settlement_account (
   status VARCHAR(24) NOT NULL DEFAULT 'PENDING',
   reject_reason VARCHAR(512) NULL,
   is_default TINYINT NOT NULL DEFAULT 0,
+  verify_method VARCHAR(16) NOT NULL DEFAULT 'MANUAL',
+  replaces_account_id BIGINT NULL,
   effective_from TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   effective_to TIMESTAMP NULL,
   verified_at TIMESTAMP NULL,
@@ -650,6 +652,28 @@ CREATE TABLE IF NOT EXISTS merchant_settlement_account_audit (
   operator_id BIGINT NULL,
   reason VARCHAR(512) NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 31a. 收款账户打款验证（O5）
+CREATE TABLE IF NOT EXISTS merchant_payout_verification (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  account_id BIGINT NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  attempt_no INT NOT NULL,
+  amount DECIMAL(12,2) NOT NULL,
+  currency CHAR(3) NOT NULL DEFAULT 'CNY',
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  transfer_voucher_no VARCHAR(128) NULL,
+  requested_by BIGINT NULL,
+  requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  expires_at TIMESTAMP NOT NULL,
+  confirmed_at TIMESTAMP NULL,
+  confirmed_by BIGINT NULL,
+  failure_code VARCHAR(32) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_payout_account_attempt UNIQUE (account_id, attempt_no),
+  CONSTRAINT chk_payout_amount CHECK (amount > 0.00 AND amount <= 1.00),
+  CONSTRAINT chk_payout_attempt CHECK (attempt_no BETWEEN 1 AND 3)
 );
 
 -- 32. 技术服务费率政策（T39）

@@ -6,6 +6,8 @@
  * 2. holderName 必须等于已审核入驻主体名称（硬校验），不允许人工放行或改主体后绕过。
  * 3. status 只允许 PENDING/VERIFIED/REJECTED/DISABLED；换账户采用新增 + 停用旧账户，不原地改历史。
  * 4. merchant_payment_account.settlement_account_id 为阶段二渠道绑定预留，本表不写渠道进件号。
+ * 5. O5：verifyMethod 记录核验方式（MANUAL/PAYOUT）；replacesAccountId 标记变更申请指向的旧账户，
+ *    变更核验通过时在同一事务内切换默认位并写旧账户 effectiveTo，旧账户保持 VERIFIED 不原地禁用。
  */
 package com.shop.b2b2c.entity;
 
@@ -44,6 +46,12 @@ public class MerchantSettlementAccount {
     private String rejectReason;
 
     private Boolean isDefault;
+
+    /** O5 核验方式：MANUAL-人工核验（默认），PAYOUT-小额打款验证。 */
+    private String verifyMethod;
+
+    /** O5 变更申请指向的旧账户；null 表示首次登记。 */
+    private Long replacesAccountId;
 
     private LocalDateTime effectiveFrom;
 
