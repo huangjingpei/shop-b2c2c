@@ -309,28 +309,43 @@
     冲突只在独立事务完成后回查：同单 → 幂等重放，跨单 → 400 归属冲突；主事务内不再捕获唯一键异常。
   - `recordInitialEvent` 已删除；`recordEventStatus` 仍随主事务提交 SUCCESS，失败审计仍走 `recordFailureAudit` 独立事务。
   - `DUPLICATE_PAYMENT` 判定改为“本次新建事件且订单实际渠道+流水号不同”，避免占位线程被并发重放线程抢先履约时误判第二笔资金。
-  - PROCESSING 残留窗口（本次补齐，不再留到后续）：新增 `PaymentEventReconcileService`，在
+  - PROCESSING 残留窗口（G34 后续修复，不再留到后续）：新增 `PaymentEventReconcileService`，在
     `ReservationExpiryJob.reconcilePaymentEvents()` 的**同一轮**内先处理“超过阈值仍 PROCESSING”的事件，再执行既有
-    `reconcileSuccessfulWithoutFulfillment`，不新增第二个调度任务，两条查询均排除已 PAID/COMPLETED/SHIPPED 的订单，
-    避免互相干扰或重复履约。陈旧 PROCESSING 先按事件渠道调用 `PaymentGatewayService.queryChannelPayment` 回查渠道事实；
-    只有渠道 `SUCCESS` 且渠道流水号与本地事件一致时，才交给 `PaymentEventService.processPaymentEvent` 补履约，
-    复用既有占位/订单行锁/CAS/卡密认领幂等路径，不允许第二次交付。渠道无法确认、流水号/金额不一致或补履约异常时，
-    通过 `PaymentEventRecorder.recordFailureAudit` 写 `FULFILLMENT_FAILED`（保留“SUCCESS 不降级”保护）并以 ERROR 日志告警。
+    `reconcileSuccessfulWithoutFulfillment`，不新增第二个调度任务；两条查询均排除已 PAID/COMPLETED/SHIPPED 的订单，
+    避免互相干扰或重复履约。
+  - 陈旧 PROCESSING 的状态流转（下发前口径，避免把“查询异常”和“明确未支付”混为一谈）：
+    | 渠道回查结果 | 判定 | 状态流转 |
+    | --- | --- | --- |
+    | SUCCESS 且流水号一致、金额/币种齐全 | 确认已支付 | 复用 `processPaymentEvent` 幂等履约 → `SUCCESS`；业务校验拒绝 → 对应失败态 |
+    | `PENDING`（NOTPAY/USERPAYING/WAIT_BUYER_PAY）、`CLOSED`、`REFUNDED`、`FAILED`（PAYERROR）、`NOT_EXIST`（微信 404/ORDER_NOT_EXIST、支付宝 ACQ.TRADE_NOT_EXIST），或 400/401/403/404 | 渠道明确未支付/查无此单 | 落 `FULFILLMENT_FAILED` + ERROR 告警；失败态不阻止后续真实成功通知重新履约 |
+    | 超时、网络、限流、5xx、空响应/解析失败、未知 trade_state、SUCCESS 但流水号/金额不一致 | 查询异常或答复不确定 | **保持 PROCESSING**，`reconcile_attempts+1`、写 `next_reconcile_at` 指数退避；到期前不再回查 |
+    | 上述不确定结果达到 `payment.reconcile.max-attempts` | 重试耗尽 | 转 `MANUAL_REVIEW` 人工队列 + ERROR 告警，不静默失败 |
+  - 失败态不锁死资金：`processPaymentEvent` 对已存在的 `FULFILLMENT_FAILED` 事件没有“禁止重放”的短路，后续收到真实
+    渠道 SUCCESS 通知会再次走占位/订单行锁/CAS/卡密认领并提交 SUCCESS；同一订单仍不会第二次交付。
+  - 结构变更：`payment_event` 新增 `reconcile_attempts`、`next_reconcile_at` 与补偿索引；新库由 `db/schema.sql` 建列，
+    保留数据的存量库由 `db/migrations/V5__g34_payment_event_reconcile_retry.sql` 幂等补列/索引，失败阻断启动，不回填历史事件。
 - 配置项：
   - `payment.reconcile.processing-threshold-minutes`（环境变量 `PAYMENT_RECONCILE_PROCESSING_THRESHOLD_MINUTES`，
     默认 **5 分钟**）：超过该阈值仍 PROCESSING 才进入渠道回查。
+  - `payment.reconcile.max-attempts`（`PAYMENT_RECONCILE_MAX_ATTEMPTS`，默认 **5 次**）：渠道回查最大尝试次数，
+    超过转 `MANUAL_REVIEW` 人工队列。
+  - `payment.reconcile.retry-backoff-seconds`（`PAYMENT_RECONCILE_RETRY_BACKOFF_SECONDS`，默认 **60 秒**）：
+    首次退避时长，之后按 2 倍递增，单次最长 30 分钟。
   - 扫描频率沿用 `inventory.expiry-delay-ms`（默认 **30000ms / 30 秒**）：补偿与预占到期、超时关单共用同一调度轮次。
 - 语义保持：同单重放幂等成功、跨单流水号盗用仍拒绝、订单已支付后的第二笔资金仍落 `DUPLICATE_PAYMENT`、
   金额/币种/迟到款/履约失败仍落对应失败态且不把 SUCCESS 降级。
 - 用例：`concurrentNotificationsFulfillExactlyOnce` 增断言“并发同单只落 1 条事件且最终 SUCCESS”，
-  `race()` 任一线程抛 `UnexpectedRollbackException` 即失败；跨单冲突沿用既有用例。新增 4 条 G34 用例：
-  `g34StaleProcessingEventFulfilledAfterChannelConfirmation`（陈旧 PROCESSING 经渠道确认后补履约且只发一次卡）、
-  `g34StaleProcessingWithoutChannelConfirmationBecomesFailed`（渠道未确认落 `FULFILLMENT_FAILED` 且不交付）、
+  `race()` 任一线程抛 `UnexpectedRollbackException` 即失败；跨单冲突沿用既有用例。G34 补偿用例：
+  `g34StaleProcessingEventFulfilledAfterChannelConfirmation`（确认后补履约且只发一次卡）、
+  `g34StaleProcessingWithoutChannelConfirmationBecomesFailed`（明确未支付落 `FULFILLMENT_FAILED` 且不交付）、
+  `g34QueryExceptionKeepsEventRetryable`（查询异常保留 PROCESSING、写入尝试数/退避且在到期前不重复查单）、
+  `g34ExceedingRetryLimitMovesToManualReview`（超过上限转 MANUAL_REVIEW 并告警）、
   `g34FreshProcessingEventBelowThresholdIsNotScanned`（未到阈值不扫描）、
-  `g34ProcessingEventOnFulfilledOrderIsNotTouched`（主事务已正常履约的订单不被误处理）。
+  `g34ProcessingEventOnFulfilledOrderIsNotTouched`（主事务已正常履约的订单不被误处理）、
+  `g34FailedEventIsFulfilledByLaterRealSuccessNotification`（失败态后收到真实 SUCCESS 通知仍能幂等履约）。
 - 残余风险：
-  - ①补偿依赖渠道查单可用性：单次查单失败（含渠道临时不可用）即落 `FULFILLMENT_FAILED` 并告警，不会自动重试，
-    需要人工或对账按告警重新驱动；这是按“补不了即失败并告警”的口径刻意设计，不是静默丢弃。
+  - ①`MANUAL_REVIEW` 是人工队列状态，不是自动终态：重试耗尽后需要运维按 ERROR 日志处理；补偿依赖渠道查单可用性，
+    但查询异常不再直接判死，明确未支付才落失败态。
   - ②**真实 MySQL REPEATABLE READ 下并发用例仍未验证**：主事务首条普通读会建立快照，若交付明细在行锁后被普通读读取，
     极端交错时可能读到旧明细；H2 为 READ COMMITTED，不代表生产行为。该条保留为“未验证”，不得记为已验证。
 - 验证：代理未运行 mvn/编译/测试/构建，也未连库；上述结论为静态核对的**已实现·待人工验证**，复跑入口

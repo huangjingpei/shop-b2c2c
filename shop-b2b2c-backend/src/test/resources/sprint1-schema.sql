@@ -401,6 +401,8 @@ CREATE TABLE IF NOT EXISTS payment_event (
   event_status VARCHAR(32) NOT NULL,
   error_message VARCHAR(512) NULL,
   raw_payload TEXT NULL,
+  reconcile_attempts INT NOT NULL DEFAULT 0,
+  next_reconcile_at TIMESTAMP NULL,
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT uk_channel_trade_no UNIQUE (channel, pay_trade_no)

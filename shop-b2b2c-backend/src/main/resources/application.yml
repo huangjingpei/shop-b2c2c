@@ -1,6 +1,6 @@
 # 文件：application.yml
 # 用途：Spring Boot数据源、会话、SQL初始化、前台地址和认证/CORS边界配置。
-# 维护注意：升级至令牌级授权快照后旧登录需重新登录；生产必须注入SPRING_DATASOURCE_USERNAME/PASSWORD且不得回退root，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一结构入口，演示账号/商品仅由db/demo-seed.sql在显式开关下加载，生产profile禁用SQL初始化；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；新库靠schema.sql，存量库靠db/migrations/Vxxx脚本（app.schema-migration）且失败阻断启动；不得开启记录卡密/领取凭证的SQL参数日志。shop.settlement.fee-tax-rate 是服务费价税分离税率，默认0.06，不得把税额默认0；monthly-cron 只生成结算草稿，确认仍须人工。payment.reconcile.processing-threshold-minutes 是陈旧PROCESSING支付事件补偿阈值（默认5分钟），扫描频率沿用inventory.expiry-delay-ms（默认30秒），不得另起第二套补偿调度。
+# 维护注意：升级至令牌级授权快照后旧登录需重新登录；生产必须注入SPRING_DATASOURCE_USERNAME/PASSWORD且不得回退root，审查默认凭据及演示种子；开发重建以db/schema.sql为唯一结构入口，演示账号/商品仅由db/demo-seed.sql在显式开关下加载，生产profile禁用SQL初始化；关闭SQL初始化时须显式导入完整结构。payment.mock不能恢复已删除的Mock路由；新库靠schema.sql，存量库靠db/migrations/Vxxx脚本（app.schema-migration）且失败阻断启动；不得开启记录卡密/领取凭证的SQL参数日志。shop.settlement.fee-tax-rate 是服务费价税分离税率，默认0.06，不得把税额默认0；monthly-cron 只生成结算草稿，确认仍须人工。payment.reconcile.processing-threshold-minutes 是陈旧PROCESSING支付事件补偿阈值（默认5分钟），max-attempts 是渠道回查最大次数（默认5），retry-backoff-seconds 是首次指数退避秒数（默认60），超限转MANUAL_REVIEW人工队列并告警；扫描频率沿用inventory.expiry-delay-ms（默认30秒），不得另起第二套补偿调度。
 server:
   port: ${SERVER_PORT:8080}
   servlet:
@@ -70,9 +70,12 @@ sa-token:
 payment:
   mock: false # 公开 Mock 支付入口已移除；此配置不能开启模拟付款
   default-commission-rate: 3.00
-  # G34：支付事件补偿扫描。陈旧 PROCESSING 超过阈值后按渠道流水回查，确认成功才补履约，否则落 FULFILLMENT_FAILED 并告警。
+  # G34：支付事件补偿扫描。陈旧 PROCESSING 超过阈值后按渠道流水回查；明确未支付落 FULFILLMENT_FAILED 并告警，
+  # 查询异常/答复不确定保留 PROCESSING 并按指数退避重试，超过上限转 MANUAL_REVIEW 人工队列。
   reconcile:
     processing-threshold-minutes: ${PAYMENT_RECONCILE_PROCESSING_THRESHOLD_MINUTES:5}
+    max-attempts: ${PAYMENT_RECONCILE_MAX_ATTEMPTS:5}
+    retry-backoff-seconds: ${PAYMENT_RECONCILE_RETRY_BACKOFF_SECONDS:60}
   # T32 阶段一真实支付渠道（商家直收）：凭据只来自环境变量，缺失时对应渠道拒绝下单。
   channel:
     mock-enabled: ${PAYMENT_CHANNEL_MOCK_ENABLED:false} # 生产禁用；即使开启也不存在 MOCK 落账适配器

@@ -107,11 +107,12 @@ class ReservationExpiryJobTest {
     @Test
     @DisplayName("T05/G34: 每轮只调用一次合并补偿扫描并限制批量，异常不阻断主扫描")
     void paymentReconcileScanIsBoundedAndErrorIsolated() {
-        when(paymentEventReconcileService.reconcile(eq(50), any(Duration.class))).thenReturn(3);
+        when(paymentEventReconcileService.reconcile(eq(50), any(Duration.class), eq(5), any(Duration.class)))
+                .thenReturn(3);
         assertEquals(3, job.reconcilePaymentEvents());
 
         reset(paymentEventReconcileService);
-        when(paymentEventReconcileService.reconcile(eq(50), any(Duration.class)))
+        when(paymentEventReconcileService.reconcile(eq(50), any(Duration.class), eq(5), any(Duration.class)))
                 .thenThrow(new IllegalStateException("补偿队列暂时不可用"));
         assertEquals(0, job.reconcilePaymentEvents());
     }

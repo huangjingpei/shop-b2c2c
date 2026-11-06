@@ -1,7 +1,9 @@
 /*
  * 文件：PaymentEvent.java
- * 用途：支付渠道到账事件流水实体模型，持久化外部支付机构确认事实与资金要素 (R13)。
+ * 用途：支付渠道到账事件流水实体模型，持久化外部支付机构确认事实与资金要素 (R13/G34)。
  * 维护注意：T32 新增 collection_mode（货款归集模式）、platform_trade_no（阶段二平台流水，阶段一为空）、channel_merchant_id（渠道商户号）；merchant_id 仍为平台内部店铺ID。
+ * G34 新增 reconcile_attempts（陈旧 PROCESSING 渠道回查已重试次数）与 next_reconcile_at（下次允许回查时间，NULL 表示立即可扫）。
+ * event_status 中的 MANUAL_REVIEW 是超过重试上限后的人工队列状态，不得当作已履约或终态成功。
  */
 package com.shop.b2b2c.entity;
 
@@ -29,9 +31,11 @@ public class PaymentEvent {
     private BigDecimal payAmount;  // 实付金额
     private String currency;       // 币种 (默认 CNY)
     private String payerId;        // 付款人渠道标识 (OpenID/UID/CustomerId)
-    private String eventStatus;    // SUCCESS, AMOUNT_MISMATCH, CURRENCY_MISMATCH, MERCHANT_MISMATCH, LATE_PAYMENT, FULFILLMENT_FAILED
+    private String eventStatus;    // PROCESSING, SUCCESS, MANUAL_REVIEW, DUPLICATE_PAYMENT, AMOUNT_MISMATCH, CURRENCY_MISMATCH, MERCHANT_MISMATCH, LATE_PAYMENT, FULFILLMENT_FAILED
     private String errorMessage;   // 异常说明
     private String rawPayload;     // 原始回调报文快照
+    private Integer reconcileAttempts; // G34：陈旧 PROCESSING 渠道回查已重试次数
+    private LocalDateTime nextReconcileAt; // G34：下次允许回查时间，NULL 表示立即可扫
 
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

@@ -7,6 +7,7 @@
  *  3. 商户渠道号使用订单所属商家的 seller_id，不使用平台内部 merchantId；私钥只来自配置，不写日志。
  *  4. 请求签名统一 RSA2，参数按字典序拼接；不要对 biz_content 二次转义。
  *  5. 异步通知 notify_time 必须落在 ±300 秒窗口内，超窗按重放拒绝并留审计；口径与微信一致。
+ *  6. G34：查单 ACQ.TRADE_NOT_EXIST 返回 tradeState=NOT_EXIST（明确查无此单），其余渠道错误/空响应抛出供补偿扫描重试。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -167,8 +168,11 @@ public class AlipayPaymentChannelAdapter implements PaymentChannelAdapter {
         } catch (Exception e) {
             throw new BusinessException(500, "支付宝查单报文生成失败");
         }
-        JsonNode node = responseNode(postSigned(params), RESPONSE_QUERY);
-        String tradeState = mapTradeState(text(node, "trade_status"));
+        // G34：ACQ.TRADE_NOT_EXIST 是渠道确定的“查无此单”，返回 NOT_EXIST 让补偿扫描落失败态，不混入查询异常重试。
+        JsonNode node = responseNode(postSigned(params), RESPONSE_QUERY, true);
+        String code = text(node, "code");
+        String tradeState = "ACQ.TRADE_NOT_EXIST".equals(code)
+                ? "NOT_EXIST" : mapTradeState(text(node, "trade_status"));
         BigDecimal amount = null;
         if (node.hasNonNull("total_amount")) {
             amount = new BigDecimal(node.get("total_amount").asText()).setScale(2, RoundingMode.HALF_UP);
@@ -314,6 +318,10 @@ public class AlipayPaymentChannelAdapter implements PaymentChannelAdapter {
     }
 
     private JsonNode responseNode(String response, String rootName) {
+        return responseNode(response, rootName, false);
+    }
+
+    private JsonNode responseNode(String response, String rootName, boolean allowTradeNotExist) {
         if (response == null || response.isBlank()) {
             throw new BusinessException(502, "支付宝渠道返回空响应");
         }
@@ -324,7 +332,7 @@ public class AlipayPaymentChannelAdapter implements PaymentChannelAdapter {
                 throw new BusinessException(502, "支付宝响应缺少 " + rootName);
             }
             String code = text(node, "code");
-            if (!"10000".equals(code)) {
+            if (!"10000".equals(code) && !(allowTradeNotExist && "ACQ.TRADE_NOT_EXIST".equals(code))) {
                 throw new BusinessException(502, "支付宝渠道返回失败: " + code + " " + text(node, "msg"));
             }
             return node;
@@ -384,7 +392,8 @@ public class AlipayPaymentChannelAdapter implements PaymentChannelAdapter {
             case "TRADE_SUCCESS", "TRADE_FINISHED" -> "SUCCESS";
             case "TRADE_CLOSED" -> "CLOSED";
             case "WAIT_BUYER_PAY" -> "PENDING";
-            default -> "FAILED";
+            // G34：未识别的交易状态按答复不确定保留可重试，不冒充“明确未支付”。
+            default -> "UNKNOWN";
         };
     }
 

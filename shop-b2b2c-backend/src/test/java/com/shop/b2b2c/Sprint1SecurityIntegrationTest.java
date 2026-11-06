@@ -1862,7 +1862,7 @@ class Sprint1SecurityIntegrationTest {
         when(paymentGateway.queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn())))
                 .thenReturn(channelQuerySuccess(order.getOrderSn(), "TX_G34_STALE", "g34-payer"));
 
-        int processed = paymentEventReconcile.reconcile(10, Duration.ofMinutes(5));
+        int processed = paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
 
         assertTrue(processed >= 1);
         assertEquals("COMPLETED", orders.selectById(order.getId()).getOrderStatus());
@@ -1879,9 +1879,9 @@ class Sprint1SecurityIntegrationTest {
         when(paymentGateway.queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn())))
                 .thenReturn(com.shop.b2b2c.dto.PaymentChannelDTOs.ChannelQueryResult.builder()
                         .channel("WECHAT").orderSn(order.getOrderSn()).payTradeNo("TX_G34_NOPAY")
-                        .tradeState("NOTPAY").currency("CNY").build());
+                        .tradeState("PENDING").currency("CNY").build());
 
-        paymentEventReconcile.reconcile(10, Duration.ofMinutes(5));
+        paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
 
         assertEquals("FULFILLMENT_FAILED",
                 paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_NOPAY").getEventStatus());
@@ -1895,7 +1895,7 @@ class Sprint1SecurityIntegrationTest {
         TradeOrder order = unpaid("g34-fresh", 1);
         insertProcessingEvent(order, "TX_G34_FRESH", LocalDateTime.now());
 
-        int processed = paymentEventReconcile.reconcile(10, Duration.ofMinutes(5));
+        int processed = paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
 
         assertEquals(0, processed);
         assertEquals("PROCESSING",
@@ -1911,7 +1911,7 @@ class Sprint1SecurityIntegrationTest {
         assertEquals("COMPLETED", pay("g34-done").getOrderStatus());
         insertProcessingEvent(order, "TX_G34_ORPHAN", LocalDateTime.now().minusMinutes(10));
 
-        int processed = paymentEventReconcile.reconcile(10, Duration.ofMinutes(5));
+        int processed = paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
 
         assertEquals(0, processed);
         assertEquals("PROCESSING",
@@ -1919,8 +1919,69 @@ class Sprint1SecurityIntegrationTest {
         verify(paymentGateway, never()).queryChannelPayment(any(), any(), any());
     }
 
+    @Test
+    @DisplayName("G34: 渠道查询异常不当终态，保留可重试 PROCESSING 并按退避时间安排下次回查")
+    void g34QueryExceptionKeepsEventRetryable() {
+        TradeOrder order = unpaid("g34-retry", 1);
+        insertProcessingEvent(order, "TX_G34_RETRY", LocalDateTime.now().minusMinutes(10));
+        when(paymentGateway.queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn())))
+                .thenThrow(new com.shop.b2b2c.common.BusinessException(502, "渠道查单超时"));
+
+        paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
+
+        com.shop.b2b2c.entity.PaymentEvent event =
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_RETRY");
+        assertEquals("PROCESSING", event.getEventStatus());
+        assertEquals(1, event.getReconcileAttempts().intValue());
+        assertNotNull(event.getNextReconcileAt());
+        assertTrue(event.getNextReconcileAt().isAfter(LocalDateTime.now()));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+
+        // 未到 next_reconcile_at 时不得重复查单，保留状态等待退避到期
+        paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
+        verify(paymentGateway, times(1))
+                .queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn()));
+    }
+
+    @Test
+    @DisplayName("G34: 超过重试上限转 MANUAL_REVIEW 人工队列，不静默失败")
+    void g34ExceedingRetryLimitMovesToManualReview() {
+        TradeOrder order = unpaid("g34-manual", 1);
+        insertPaymentEvent(order, "TX_G34_MANUAL", LocalDateTime.now().minusMinutes(10), "PROCESSING", 2);
+        when(paymentGateway.queryChannelPayment(eq(1L), eq("WECHAT"), eq(order.getOrderSn())))
+                .thenThrow(new com.shop.b2b2c.common.BusinessException(503, "渠道持续不可用"));
+
+        paymentEventReconcile.reconcile(10, Duration.ofMinutes(5), 3, Duration.ofSeconds(60));
+
+        com.shop.b2b2c.entity.PaymentEvent stored =
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "TX_G34_MANUAL");
+        assertEquals("MANUAL_REVIEW", stored.getEventStatus());
+        assertEquals(3, stored.getReconcileAttempts().intValue());
+        assertNull(stored.getNextReconcileAt());
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        verify(cards, never()).claimCard(anyLong(), anyLong(), anyLong(), anyString());
+    }
+
+    @Test
+    @DisplayName("G34: 事件已落 FULFILLMENT_FAILED 后收到真实 SUCCESS 通知仍能幂等履约")
+    void g34FailedEventIsFulfilledByLaterRealSuccessNotification() {
+        TradeOrder order = unpaid("g34-replay", 1);
+        insertPaymentEvent(order, "trade-g34-replay", LocalDateTime.now(), "FULFILLMENT_FAILED", null);
+
+        assertEquals("COMPLETED", pay("g34-replay").getOrderStatus());
+        assertEquals("SUCCESS",
+                paymentEvents.findByChannelAndTradeNo("WECHAT", "trade-g34-replay").getEventStatus());
+        verify(cards, times(1)).claimCard(anyLong(), anyLong(), anyLong(), anyString());
+    }
+
     private com.shop.b2b2c.entity.PaymentEvent insertProcessingEvent(TradeOrder order, String tradeNo,
                                                                      LocalDateTime createdAt) {
+        return insertPaymentEvent(order, tradeNo, createdAt, "PROCESSING", null);
+    }
+
+    private com.shop.b2b2c.entity.PaymentEvent insertPaymentEvent(TradeOrder order, String tradeNo,
+                                                                  LocalDateTime createdAt,
+                                                                  String status, Integer attempts) {
         var event = new com.shop.b2b2c.entity.PaymentEvent();
         event.setChannel("WECHAT");
         event.setPayTradeNo(tradeNo);
@@ -1929,7 +1990,8 @@ class Sprint1SecurityIntegrationTest {
         event.setPayAmount(order.getPayAmount());
         event.setCurrency("CNY");
         event.setPayerId("g34-payer");
-        event.setEventStatus("PROCESSING");
+        event.setEventStatus(status);
+        event.setReconcileAttempts(attempts);
         event.setCreatedAt(createdAt);
         event.setUpdatedAt(createdAt);
         paymentEvents.insert(event);

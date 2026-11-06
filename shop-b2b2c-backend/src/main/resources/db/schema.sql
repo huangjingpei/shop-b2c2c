@@ -482,14 +482,17 @@ CREATE TABLE IF NOT EXISTS `payment_event` (
   `pay_amount` DECIMAL(10,2) NOT NULL COMMENT '实付金额',
   `currency` VARCHAR(16) NOT NULL DEFAULT 'CNY' COMMENT '交易币种',
   `payer_id` VARCHAR(128) NULL COMMENT '付款人渠道标识',
-  `event_status` VARCHAR(32) NOT NULL COMMENT 'SUCCESS, AMOUNT_MISMATCH, CURRENCY_MISMATCH, MERCHANT_MISMATCH, LATE_PAYMENT, FULFILLMENT_FAILED',
+  `event_status` VARCHAR(32) NOT NULL COMMENT 'PROCESSING, SUCCESS, MANUAL_REVIEW, DUPLICATE_PAYMENT, AMOUNT_MISMATCH, CURRENCY_MISMATCH, MERCHANT_MISMATCH, LATE_PAYMENT, FULFILLMENT_FAILED',
   `error_message` VARCHAR(512) NULL COMMENT '异常描述',
   `raw_payload` TEXT NULL COMMENT '渠道回调原始报文快照',
+  `reconcile_attempts` INT NOT NULL DEFAULT 0 COMMENT 'G34：陈旧 PROCESSING 渠道回查已重试次数',
+  `next_reconcile_at` DATETIME NULL COMMENT 'G34：下次允许回查时间，NULL 表示立即可扫；超过上限转 MANUAL_REVIEW',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   UNIQUE KEY `uk_channel_trade_no` (`channel`, `pay_trade_no`),
   KEY `idx_order_sn` (`order_sn`),
   KEY `idx_merchant_event` (`merchant_id`, `event_status`),
+  KEY `idx_event_reconcile` (`event_status`, `next_reconcile_at`),
   CONSTRAINT fk_payment_event_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付渠道到账事件流水';
 

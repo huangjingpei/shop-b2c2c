@@ -7,6 +7,7 @@
  *  3. 商户号使用订单所属商家在渠道侧的 mchid，不使用平台内部 merchantId；凭据仅来自配置，不写日志。
  *  4. 微信请求签名串固定为“方法\\nURL\\n时间戳\\n随机串\\n报文\\n”，GET 的 URL 必须包含查询参数。
  *  5. 回调 Wechatpay-Timestamp 必须落在 ±300 秒窗口内，超窗按重放拒绝并在审计日志留痕。
+ *  6. G34：查单 404/ORDER_NOT_EXIST 返回 tradeState=NOT_EXIST（明确查无此单），其余 HTTP/网络错误抛出供补偿扫描重试。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -228,6 +229,19 @@ public class WeChatPaymentChannelAdapter implements PaymentChannelAdapter {
                     .build();
         } catch (BusinessException e) {
             throw e;
+        } catch (RestClientResponseException e) {
+            // G34：微信查单 404/ORDER_NOT_EXIST 是渠道确定的“查无此单”，返回 NOT_EXIST 供补偿扫描落失败态；
+            // 其余 HTTP 错误（限流/5xx/鉴权）仍按查询异常处理，保留可重试状态。
+            if (e.getStatusCode().value() != 404) {
+                ChannelHttpClient.handleRestFailure("微信支付", e);
+                return null;
+            }
+            return PaymentChannelDTOs.ChannelQueryResult.builder()
+                    .channel(PayChannel.WECHAT)
+                    .orderSn(command.getOrderSn())
+                    .tradeState("NOT_EXIST")
+                    .currency("CNY")
+                    .build();
         } catch (RestClientException e) {
             ChannelHttpClient.handleRestFailure("微信支付", e);
             return null;
@@ -436,7 +450,9 @@ public class WeChatPaymentChannelAdapter implements PaymentChannelAdapter {
             case "CLOSED", "REVOKED" -> "CLOSED";
             case "NOTPAY", "USERPAYING" -> "PENDING";
             case "REFUND" -> "REFUNDED";
-            default -> "FAILED";
+            case "PAYERROR" -> "FAILED";
+            // G34：未识别的交易状态不能冒充“明确未支付”，按答复不确定保留可重试，避免误判终态。
+            default -> "UNKNOWN";
         };
     }
 

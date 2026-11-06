@@ -3,7 +3,8 @@
  * 用途：支付到账事件数据访问，支撑支付流水唯一排重、补偿扫描与核对查询 (R13/T05/G34)。
  * 维护注意：补偿查询只读取事件 SUCCESS 但订单未支付/未交付，以及超过阈值仍 PROCESSING 的记录；
  * 不得把缺失订单纳入自动补履约，避免无限重试；已 PAID/COMPLETED/SHIPPED 的订单不得再次进入两条补偿查询，
- * 避免与主事务正常履约重复处理。
+ * 避免与主事务正常履约重复处理。陈旧 PROCESSING 的退避与人工队列更新必须带 event_status = 'PROCESSING' 条件，
+ * 防止把并发已成功的事件改回失败/人工态。
  */
 package com.shop.b2b2c.mapper;
 
@@ -56,15 +57,51 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
 
     /**
      * G34 陈旧 PROCESSING 补偿扫描：占位事务已提交，但业务事务崩溃或未收敛，事件长期停留在 PROCESSING。
-     * 只选取超过截止时间的时间点仍 PROCESSING、且关联订单尚未 PAID/COMPLETED/SHIPPED 的记录；
-     * INNER JOIN 排除订单缺失的历史脏数据，已履约订单不进入本查询，避免重复交付。
+     * 只选取超过截止时间的时间点仍 PROCESSING、已到下次回查时间（NULL 视为立即可扫）、且关联订单尚未
+     * PAID/COMPLETED/SHIPPED 的记录；INNER JOIN 排除订单缺失的历史脏数据，已履约订单不进入本查询，避免重复交付。
      */
     @Select("SELECT e.* FROM payment_event e INNER JOIN trade_order o ON o.order_sn = e.order_sn "
             + "WHERE e.event_status = 'PROCESSING' AND e.created_at <= #{cutoff} "
+            + "AND (e.next_reconcile_at IS NULL OR e.next_reconcile_at <= #{now}) "
             + "AND o.order_status NOT IN ('PAID', 'COMPLETED', 'SHIPPED') "
             + "ORDER BY e.id LIMIT #{limit}")
     List<PaymentEvent> findStaleProcessingEvents(@Param("cutoff") java.time.LocalDateTime cutoff,
+                                                @Param("now") java.time.LocalDateTime now,
                                                 @Param("limit") int limit);
+
+    /**
+     * G34 可重试失败：只更新仍 PROCESSING 的事件，记录本次尝试数与下次回查时间。
+     * 返回 0 表示事件已被主事务/其它路径改为 SUCCESS 等状态，不再重试也不得覆盖。
+     */
+    @org.apache.ibatis.annotations.Update("UPDATE payment_event "
+            + "SET reconcile_attempts = #{attempts}, next_reconcile_at = #{nextReconcileAt}, "
+            + "error_message = #{message}, updated_at = CURRENT_TIMESTAMP "
+            + "WHERE id = #{id} AND event_status = 'PROCESSING'")
+    int recordReconcileAttempt(@Param("id") Long id,
+                               @Param("attempts") int attempts,
+                               @Param("nextReconcileAt") java.time.LocalDateTime nextReconcileAt,
+                               @Param("message") String message);
+
+    /**
+     * G34 超过重试上限：转人工队列 MANUAL_REVIEW。只允许从 PROCESSING 迁移，已被并发成功的事件不得降级。
+     */
+    @org.apache.ibatis.annotations.Update("UPDATE payment_event "
+            + "SET reconcile_attempts = #{attempts}, event_status = 'MANUAL_REVIEW', next_reconcile_at = NULL, "
+            + "error_message = #{message}, updated_at = CURRENT_TIMESTAMP "
+            + "WHERE id = #{id} AND event_status = 'PROCESSING'")
+    int markManualReview(@Param("id") Long id,
+                         @Param("attempts") int attempts,
+                         @Param("message") String message);
+
+    /**
+     * G34 明确未支付/查无此单：只允许从 PROCESSING 迁移到 FULFILLMENT_FAILED。
+     * 返回 0 表示事件已被主事务并发收敛为 SUCCESS 等状态，不得降级。
+     */
+    @org.apache.ibatis.annotations.Update("UPDATE payment_event "
+            + "SET event_status = 'FULFILLMENT_FAILED', next_reconcile_at = NULL, "
+            + "error_message = #{message}, updated_at = CURRENT_TIMESTAMP "
+            + "WHERE id = #{id} AND event_status = 'PROCESSING'")
+    int markFulfillmentFailed(@Param("id") Long id, @Param("message") String message);
 
     /**
      * T34：结算明细回填支付事件ID；同一订单理论上只取最早的一条 SUCCESS 付款事件。

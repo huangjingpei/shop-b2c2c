@@ -4,9 +4,11 @@
  * 维护注意：
  *  1. 采用游标分页扫描，单条坏账异常不阻断饿死后续正常单据；统一扫描 HELD 预占与无预占超期未支付意向单。
  *  2. 支付补偿每轮只调用一次合并扫描：同时处理“事件 SUCCESS 但订单未履约”和“超过阈值的陈旧 PROCESSING”；
- *     失败记录由补偿服务写入 FULFILLMENT_FAILED 并告警，不在此重复处理。
- *  3. 扫描频率由 inventory.expiry-delay-ms 控制（默认 30 秒）；陈旧 PROCESSING 阈值由
- *     payment.reconcile.processing-threshold-minutes 控制（默认 5 分钟），不得为补偿另起第二套调度任务。
+ *     失败记录由补偿服务写入 FULFILLMENT_FAILED / MANUAL_REVIEW 并告警，不在此重复处理。
+ *  3. 扫描频率由 inventory.expiry-delay-ms 控制（默认 30 秒）；陈旧 PROCESSING 阈值、
+ *     最大重试次数与初始退避分别由 payment.reconcile.processing-threshold-minutes（默认 5 分钟）、
+ *     payment.reconcile.max-attempts（默认 5 次）、payment.reconcile.retry-backoff-seconds（默认 60 秒）控制，
+ *     不得为补偿另起第二套调度任务。
  *  4. T11：批量达到上限时输出 WARN 积压告警，便于监控；扫描使用固定批大小，不随请求量放大。
  */
 package com.shop.b2b2c.config;
@@ -42,6 +44,12 @@ public class ReservationExpiryJob {
     @Value("${payment.reconcile.processing-threshold-minutes:5}")
     private long processingThresholdMinutes = 5L;
 
+    @Value("${payment.reconcile.max-attempts:5}")
+    private int processingMaxAttempts = 5;
+
+    @Value("${payment.reconcile.retry-backoff-seconds:60}")
+    private long processingRetryBackoffSeconds = 60L;
+
     private volatile long reservationCursor = 0L;
     private volatile long orderCursor = 0L;
 
@@ -59,7 +67,9 @@ public class ReservationExpiryJob {
     public int reconcilePaymentEvents() {
         try {
             return paymentEventReconcileService.reconcile(PAYMENT_RECONCILE_BATCH_SIZE,
-                    Duration.ofMinutes(processingThresholdMinutes));
+                    Duration.ofMinutes(processingThresholdMinutes),
+                    processingMaxAttempts,
+                    Duration.ofSeconds(processingRetryBackoffSeconds));
         } catch (Exception e) {
             log.error("支付事件补偿扫描异常，等待下一轮重试", e);
             return 0;
