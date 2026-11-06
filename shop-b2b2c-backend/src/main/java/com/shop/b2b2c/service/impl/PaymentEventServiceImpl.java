@@ -122,6 +122,10 @@ public class PaymentEventServiceImpl implements PaymentEventService {
         pe.setPayTradeNo(payTradeNo);
         pe.setOrderSn(orderSn);
         pe.setMerchantId(order.getMerchantId());
+        // T32：货款归集模式取订单快照；渠道商户号只作审计与核验，不能替换平台内部商户ID。
+        pe.setCollectionMode(order.getCollectionMode());
+        pe.setChannelMerchantId(event.getChannelMerchantId());
+        pe.setPlatformTradeNo(null); // 阶段一平台不代收，平台流水号为空
         pe.setPayAmount(event.getPayAmount());
         pe.setCurrency(event.getCurrency().trim().toUpperCase());
         pe.setPayerId(event.getPayerId());

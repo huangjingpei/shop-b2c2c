@@ -1,0 +1,96 @@
+/*
+ * 文件：PaymentChannelDTOs.java
+ * 用途：真实支付渠道适配器、回调与查单的内部契约 DTO (T32)。
+ * 维护注意：
+ *  1. ChannelCallback 只能由验签通过后的适配器构造；payAmount 必须来自渠道报文，禁止由订单金额反填。
+ *  2. merchantChannelId 是商户在渠道侧的商户号（微信 mchid / 支付宝 seller_id），与平台内部 merchantId 不是同一概念。
+ *  3. 金额统一使用元、两位小数 BigDecimal；渠道分/币种换算只在适配器内部完成。
+ */
+package com.shop.b2b2c.dto;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.math.BigDecimal;
+import java.util.Map;
+
+public class PaymentChannelDTOs {
+
+    /** 发起支付尝试所需的最小上下文；不含密钥，只含商户渠道号。 */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PaymentCreateCommand {
+        private String orderSn;
+        private BigDecimal amount;
+        private String subject;
+        private String merchantChannelId;
+        private String clientIp;
+    }
+
+    /** 支付尝试结果：codeUrl 用于二维码收银，payParams 留给后续 JSAPI/APP 扩展。 */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class PaymentAttemptView {
+        private String orderSn;
+        private String payChannel;
+        private String collectionMode;
+        private BigDecimal amount;
+        private String currency;
+        private String tradeType;
+        private String codeUrl;
+        private Map<String, String> payParams;
+    }
+
+    /** 验签并解密后的渠道到账事实；只在服务端内部流转。 */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ChannelCallback {
+        private String channel;
+        private String payTradeNo;
+        private String orderSn;
+        private String channelMerchantId;
+        private BigDecimal payAmount;
+        private String currency;
+        private String payerId;
+        private String rawPayload;
+    }
+
+    /** 主动查单结果；SUCCESS 才允许进入本地落账。 */
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ChannelQueryResult {
+        private String channel;
+        private String orderSn;
+        private String payTradeNo;
+        private String tradeState;
+        private String channelMerchantId;
+        private BigDecimal payAmount;
+        private String currency;
+        private String payerId;
+        private String rawPayload;
+
+        public boolean isSuccess() {
+            return "SUCCESS".equals(tradeState);
+        }
+    }
+
+    /** 买家端发起支付尝试的入参。 */
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class CreatePaymentRequest {
+        private String orderSn;
+        private String accessToken;
+        private String payChannel;
+    }
+}

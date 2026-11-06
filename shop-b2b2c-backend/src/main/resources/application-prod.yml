@@ -1,6 +1,6 @@
 # 文件：application-prod.yml
 # 用途：生产profile覆盖，关闭自动SQL初始化与演示种子，仅允许受控管理员初始化。
-# 维护注意：生产启动必须显式设置SPRING_PROFILES_ACTIVE=prod；建表由发布流程独立导入schema.sql，绝不能导入demo-seed.sql；管理员仅通过BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD首次创建，口令不得为admin123；缺少数据源凭据时启动失败，不回退默认root。
+# 维护注意：生产启动必须显式设置SPRING_PROFILES_ACTIVE=prod；建表由发布流程独立导入schema.sql，绝不能导入demo-seed.sql；管理员仅通过BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD首次创建，口令不得为admin123；缺少数据源凭据时启动失败，不回退默认root。T32：生产强制关闭支付渠道 mock，真实渠道凭据只能由环境变量注入。
 spring:
   config:
     activate:
@@ -8,3 +8,6 @@ spring:
   sql:
     init:
       mode: never # 生产禁止自动执行schema/demo种子，避免误写演示账号与虚构卡密
+payment:
+  channel:
+    mock-enabled: false # T32：生产硬关闭模拟渠道，不存在 MOCK 落账适配器

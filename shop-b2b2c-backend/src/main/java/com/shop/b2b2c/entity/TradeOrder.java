@@ -33,6 +33,8 @@ public class TradeOrder {
     private String orderStatus = "UNPAID"; // UNPAID, PAID, SHIPPED, COMPLETED, REFUNDED, CLOSED
     private String sharingStatus = "PENDING"; // PENDING, PROCESSING, FINISHED, FAILED
     private String paymentChannel = "WECHAT";
+    private String collectionMode = "MERCHANT_DIRECT"; // T32 新增：MERCHANT_DIRECT / PLATFORM_COLLECT
+    private String payChannel = "WECHAT"; // T32 新增：真实支付渠道 WECHAT/ALIPAY，替代 A/B/C 一列双语义
     private String payTradeNo;
     private String logisticsCompany;
     private String trackingNumber;

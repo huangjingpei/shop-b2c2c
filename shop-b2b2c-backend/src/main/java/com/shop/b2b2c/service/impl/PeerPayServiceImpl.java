@@ -7,6 +7,8 @@
 package com.shop.b2b2c.service.impl;
 
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.CollectionMode;
+import com.shop.b2b2c.common.PayChannel;
 import com.shop.b2b2c.common.PeerStatus;
 import com.shop.b2b2c.common.TradeGuards;
 import com.shop.b2b2c.common.PosterUtils;
@@ -106,7 +108,13 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setMerchantSettleAmount(merchantSettleAmount);
         order.setOrderStatus("UNPAID");
         order.setSharingStatus("PENDING");
-        order.setPaymentChannel(store.getPaymentChannelType() != null ? store.getPaymentChannelType() : "WECHAT");
+        // T32：阶段一固定商家直收，真实渠道与 A/B/C 收款模式解耦；旧 payment_channel 仅保留迁移值。
+        String payChannel = PayChannel.normalize(
+                store.getPayChannel() == null || store.getPayChannel().isBlank()
+                        ? PayChannel.WECHAT : store.getPayChannel());
+        order.setCollectionMode(CollectionMode.MERCHANT_DIRECT);
+        order.setPayChannel(payChannel);
+        order.setPaymentChannel(payChannel);
         order.setQueryToken(queryToken);
 
         // 代付专属元数据
@@ -208,7 +216,13 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setMerchantSettleAmount(merchantSettleAmount);
         order.setOrderStatus("UNPAID");
         order.setSharingStatus("PENDING");
-        order.setPaymentChannel(store.getPaymentChannelType() != null ? store.getPaymentChannelType() : "WECHAT");
+        // T32：阶段一固定商家直收，真实渠道与 A/B/C 收款模式解耦；旧 payment_channel 仅保留迁移值。
+        String payChannel = PayChannel.normalize(
+                store.getPayChannel() == null || store.getPayChannel().isBlank()
+                        ? PayChannel.WECHAT : store.getPayChannel());
+        order.setCollectionMode(CollectionMode.MERCHANT_DIRECT);
+        order.setPayChannel(payChannel);
+        order.setPaymentChannel(payChannel);
         order.setQueryToken(queryToken);
 
         order.setPeerPayToken(peerPayToken);

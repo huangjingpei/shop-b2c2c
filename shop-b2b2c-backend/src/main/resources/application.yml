@@ -70,6 +70,24 @@ sa-token:
 payment:
   mock: false # 公开 Mock 支付入口已移除；此配置不能开启模拟付款
   default-commission-rate: 3.00
+  # T32 阶段一真实支付渠道（商家直收）：凭据只来自环境变量，缺失时对应渠道拒绝下单。
+  channel:
+    mock-enabled: ${PAYMENT_CHANNEL_MOCK_ENABLED:false} # 生产禁用；即使开启也不存在 MOCK 落账适配器
+    notify-base-url: ${PAYMENT_NOTIFY_BASE_URL:}
+    wechat:
+      enabled: ${WECHAT_PAY_ENABLED:false}
+      app-id: ${WECHAT_PAY_APP_ID:}
+      serial-no: ${WECHAT_PAY_SERIAL_NO:}
+      api-v3-key: ${WECHAT_PAY_API_V3_KEY:}
+      private-key: ${WECHAT_PAY_PRIVATE_KEY:}
+      platform-public-key: ${WECHAT_PAY_PLATFORM_PUBLIC_KEY:}
+      api-base: ${WECHAT_PAY_API_BASE:https://api.mch.weixin.qq.com}
+    alipay:
+      enabled: ${ALIPAY_ENABLED:false}
+      app-id: ${ALIPAY_APP_ID:}
+      private-key: ${ALIPAY_PRIVATE_KEY:}
+      alipay-public-key: ${ALIPAY_PUBLIC_KEY:}
+      gateway-url: ${ALIPAY_GATEWAY_URL:https://openapi.alipay.com/gateway.do}
 
 # 平台前台访问地址 (代付短链与二维码海报基准地址)
 app:

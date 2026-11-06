@@ -6,7 +6,9 @@
 package com.shop.b2b2c.controller;
 
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.CollectionMode;
 import com.shop.b2b2c.common.OrderCursor;
+import com.shop.b2b2c.common.PayChannel;
 import com.shop.b2b2c.common.PeerStatus;
 import com.shop.b2b2c.common.R;
 import com.shop.b2b2c.common.SecurityUtils;
@@ -138,7 +140,15 @@ public class OrderController {
         order.setCommissionRate(commissionRate);
         order.setCommissionAmount(commissionAmount);
         order.setMerchantSettleAmount(merchantSettleAmount);
-        order.setPaymentChannel(dto.getPaymentChannel() != null ? dto.getPaymentChannel() : "WECHAT");
+        // T32：阶段一商家直收；渠道只接受 WECHAT/ALIPAY，不接受旧 A/B/C 或 MOCK。
+        String payChannel = PayChannel.normalize(
+                dto.getPaymentChannel() == null || dto.getPaymentChannel().isBlank()
+                        ? (store.getPayChannel() == null || store.getPayChannel().isBlank()
+                            ? PayChannel.WECHAT : store.getPayChannel())
+                        : dto.getPaymentChannel());
+        order.setCollectionMode(CollectionMode.MERCHANT_DIRECT);
+        order.setPayChannel(payChannel);
+        order.setPaymentChannel(payChannel);
         order.setOrderStatus("UNPAID");
         order.setPeerStatus(PeerStatus.INIT);
         order.setQueryToken(queryToken);

@@ -8,10 +8,13 @@
  *     截止时间由订单创建/预占路径写入 createdAt+15，迁移脚本不回填历史订单。
  *  4. T24 列表只走 keyset（created_at+id 游标）；T25 统计只走 aggregateOrderStatistics 的库内 GROUP BY，
  *     不再提供全表订单投影方法，金额异常必须在 SQL 里单独计数而不是并入汇总。
+ *  5. T32 允许未支付订单在首次真实支付尝试时切换 pay_channel；切换必须以 order_status=UNPAID 为条件，
+ *     与支付回调的 PAID 迁移互斥，避免付款后改渠道。
  */
 package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.shop.b2b2c.entity.TradeOrder;
 import com.shop.b2b2c.common.OrderCursor;
@@ -107,6 +110,17 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
         return Optional.ofNullable(selectOne(new LambdaQueryWrapper<TradeOrder>()
                 .select(TradeOrder.class, field -> !"posterUrl".equals(field.getProperty()))
                 .eq(TradeOrder::getPeerPayToken, peerPayToken)));
+    }
+
+    /**
+     * T32：首次真实支付尝试时把未支付订单的渠道快照切换到实际选择；已支付订单不做任何变更。
+     */
+    default int switchPayChannelIfUnpaid(Long id, String payChannel) {
+        return update(null, new LambdaUpdateWrapper<TradeOrder>()
+                .eq(TradeOrder::getId, id)
+                .eq(TradeOrder::getOrderStatus, "UNPAID")
+                .set(TradeOrder::getPayChannel, payChannel)
+                .set(TradeOrder::getPaymentChannel, payChannel));
     }
 
     default List<TradeOrder> findByMerchantIdOrderByCreatedAtDesc(Long merchantId) {
