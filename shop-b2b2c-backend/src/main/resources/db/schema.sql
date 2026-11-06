@@ -672,3 +672,50 @@ CREATE TABLE IF NOT EXISTS `reconciliation_difference` (
   KEY `idx_difference_merchant_status` (`merchant_id`, `status`, `created_at`),
   CONSTRAINT fk_difference_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='对账差异队列';
+
+-- 28. 商家入驻申请（T39）：实名材料、审核状态机；身份证/营业执照只存密文与去重指纹，接口一律脱敏
+CREATE TABLE IF NOT EXISTS `merchant_onboarding_application` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `merchant_id` BIGINT UNSIGNED NULL COMMENT '审核通过后关联店铺；提交时为空',
+  `subject_type` VARCHAR(16) NOT NULL COMMENT 'INDIVIDUAL/ENTERPRISE',
+  `subject_name` VARCHAR(128) NOT NULL COMMENT '实名主体：经营者姓名/企业名称',
+  `id_card_cipher` VARCHAR(512) NULL COMMENT '身份证号密文（复用 CardCipherService）',
+  `id_card_fingerprint` VARCHAR(128) NULL COMMENT '主体去重指纹：个人=身份证，企业=营业执照号',
+  `license_no_cipher` VARCHAR(512) NULL COMMENT '营业执照号密文',
+  `license_url` VARCHAR(512) NULL COMMENT '执照影像地址',
+  `legal_person` VARCHAR(64) NULL COMMENT '企业法定代表人/个人经营者',
+  `contact_phone` VARCHAR(32) NOT NULL,
+  `contact_email` VARCHAR(128) NULL,
+  `status` VARCHAR(24) NOT NULL DEFAULT 'DRAFT' COMMENT 'DRAFT/SUBMITTED/REVIEWING/APPROVED/REJECTED/SUPPLEMENT_REQUIRED/WITHDRAWN',
+  `verification_method` VARCHAR(24) NOT NULL DEFAULT 'MANUAL' COMMENT 'MANUAL/THIRD_PARTY；阶段一固定 MANUAL，不得把人工审核标成第三方实名',
+  `verification_source` VARCHAR(32) NULL COMMENT 'MANUAL_REVIEW 等；仅记录实际核验来源',
+  `reject_reason` VARCHAR(512) NULL,
+  `submitted_at` DATETIME NULL,
+  `reviewed_at` DATETIME NULL,
+  `reviewer_id` BIGINT NULL,
+  `version` INT NOT NULL DEFAULT 0 COMMENT '补件/状态推进版本，配合行锁防并发覆盖',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_onboarding_subject` (`subject_type`, `id_card_fingerprint`),
+  KEY `idx_onboarding_status_submitted` (`status`, `submitted_at`),
+  KEY `idx_onboarding_merchant` (`merchant_id`),
+  CONSTRAINT fk_onboarding_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商家入驻申请';
+
+-- 29. 入驻审核审计（T39）：每次状态推进、补件、驳回都留痕，不改历史申请
+CREATE TABLE IF NOT EXISTS `merchant_onboarding_audit` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `application_id` BIGINT UNSIGNED NOT NULL,
+  `merchant_id` BIGINT UNSIGNED NULL,
+  `action` VARCHAR(32) NOT NULL COMMENT 'CREATE/MATERIAL_UPDATED/SUBMIT/START_REVIEW/APPROVE/REJECT/SUPPLEMENT_REQUIRED/WITHDRAW',
+  `from_status` VARCHAR(24) NULL,
+  `to_status` VARCHAR(24) NULL,
+  `operator_id` BIGINT NULL,
+  `reason` VARCHAR(512) NULL,
+  `material_hash` VARCHAR(128) NULL COMMENT '材料摘要，不复制证件原文',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_onboarding_audit_app` (`application_id`, `created_at`),
+  CONSTRAINT fk_onboarding_audit_app FOREIGN KEY (`application_id`) REFERENCES `merchant_onboarding_application` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商家入驻审核审计';

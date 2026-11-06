@@ -557,3 +557,42 @@ CREATE TABLE IF NOT EXISTS reconciliation_difference (
   updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT uk_difference_key UNIQUE (difference_key)
 );
+
+-- 28. 商家入驻申请（T39）
+CREATE TABLE IF NOT EXISTS merchant_onboarding_application (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  merchant_id BIGINT NULL,
+  subject_type VARCHAR(16) NOT NULL,
+  subject_name VARCHAR(128) NOT NULL,
+  id_card_cipher VARCHAR(512) NULL,
+  id_card_fingerprint VARCHAR(128) NULL,
+  license_no_cipher VARCHAR(512) NULL,
+  license_url VARCHAR(512) NULL,
+  legal_person VARCHAR(64) NULL,
+  contact_phone VARCHAR(32) NOT NULL,
+  contact_email VARCHAR(128) NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'DRAFT',
+  verification_method VARCHAR(24) NOT NULL DEFAULT 'MANUAL',
+  verification_source VARCHAR(32) NULL,
+  reject_reason VARCHAR(512) NULL,
+  submitted_at TIMESTAMP NULL,
+  reviewed_at TIMESTAMP NULL,
+  reviewer_id BIGINT NULL,
+  version INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 29. 入驻审核审计（T39）
+CREATE TABLE IF NOT EXISTS merchant_onboarding_audit (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  application_id BIGINT NOT NULL,
+  merchant_id BIGINT NULL,
+  action VARCHAR(32) NOT NULL,
+  from_status VARCHAR(24) NULL,
+  to_status VARCHAR(24) NULL,
+  operator_id BIGINT NULL,
+  reason VARCHAR(512) NULL,
+  material_hash VARCHAR(128) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
