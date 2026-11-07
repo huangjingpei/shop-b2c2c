@@ -105,6 +105,7 @@ class Sprint1SecurityIntegrationTest {
     @Autowired com.shop.b2b2c.mapper.PaymentEventMapper paymentEvents;
     @Autowired com.shop.b2b2c.service.payment.PaymentEventReconcileService paymentEventReconcile;
     @Autowired com.shop.b2b2c.service.payment.PaymentCallbackAuditService callbackAudits;
+    @Autowired com.shop.b2b2c.service.payment.PaymentCloseReceiptService closeReceipts;
     @MockBean com.shop.b2b2c.service.payment.PaymentGatewayService paymentGateway;
     @MockBean com.shop.b2b2c.service.payment.PaymentChannelRegistry channelRegistry;
     @Autowired com.shop.b2b2c.service.MerchantNotificationService notificationService;
@@ -115,7 +116,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("payment_callback_audit", "complaint_event", "complaint", "refund_request", "billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("payment_close_receipt", "payment_callback_audit", "complaint_event", "complaint", "refund_request", "billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -2702,6 +2703,35 @@ class Sprint1SecurityIntegrationTest {
                 "原因摘要必须截断到 200 字符，不得因超长导致整条审计失败");
         assertNull(jdbc.queryForObject(
                 "SELECT processing_result FROM payment_callback_audit WHERE payload_sha256=?", String.class, "e".repeat(64)));
+    }
+
+    @Test
+    void closeReceiptRetryCandidatesOnlyLatestFailedWithinWindow() {
+        java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        insertCloseReceipt("SN-CLOSE-1", 1, "FAILED", now.minusMinutes(20));
+        insertCloseReceipt("SN-CLOSE-1", 2, "SKIPPED", now.minusMinutes(5));
+        insertCloseReceipt("SN-CLOSE-2", 5, "FAILED", now.minusMinutes(30));
+        insertCloseReceipt("SN-CLOSE-3", 1, "FAILED", now.minusMinutes(1));
+        insertCloseReceipt("SN-CLOSE-4", 1, "FAILED", now.minusHours(100));
+        insertCloseReceipt("SN-CLOSE-5", 1, "FAILED", now.minusMinutes(25));
+        insertCloseReceipt("SN-CLOSE-5", 2, "FAILED", now.minusMinutes(15));
+        insertCloseReceipt("SN-CLOSE-6", 1, "SUCCESS", now.minusMinutes(20));
+
+        List<String> candidates = closeReceipts.findRetryableOrderSn(now.minusHours(72), now.minusMinutes(10), 5, 100);
+
+        assertTrue(candidates.contains("SN-CLOSE-5"), "最新一次 FAILED 且已过退避间隔的订单应进入重试");
+        assertFalse(candidates.contains("SN-CLOSE-1"), "最新回执为 SKIPPED 时不得自动重试");
+        assertFalse(candidates.contains("SN-CLOSE-2"), "已达尝试上限的订单不得继续重试");
+        assertFalse(candidates.contains("SN-CLOSE-3"), "未过退避间隔的订单不得提前重试");
+        assertFalse(candidates.contains("SN-CLOSE-4"), "超出扫描窗口的历史回执不再重试");
+        assertFalse(candidates.contains("SN-CLOSE-6"), "SUCCESS 回执不进入重试");
+    }
+
+    private void insertCloseReceipt(String orderSn, int attemptNo, String result, java.time.LocalDateTime attemptedAt) {
+        jdbc.update("INSERT INTO payment_close_receipt "
+                        + "(order_sn, merchant_id, channel, attempt_no, result, reason, attempted_at, created_at) "
+                        + "VALUES (?,?,?,?,?,?,?,?)",
+                orderSn, 1L, "WECHAT", attemptNo, result, "fixture", attemptedAt, attemptedAt);
     }
 
     @Test

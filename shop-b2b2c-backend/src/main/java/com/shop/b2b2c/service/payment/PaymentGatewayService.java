@@ -10,6 +10,8 @@
  *     补偿扫描必须先确认 SUCCESS 且流水号与本地事件一致，再复用 PaymentEventService 的幂等履约路径。
  *  6. F01：每次渠道回调（含验签/归属/资金要素拒绝与未预期异常）都写 payment_callback_audit；
  *     审计写入失败只记 WARN，不得改变回调处理结果，也不得把审计故障返回给渠道触发重试。
+ *  7. F08：每次关单尝试都写 payment_close_receipt（SUCCESS/FAILED/SKIPPED），FAILED 由 PaymentCloseRetryJob 退避重试；
+ *     回执写入失败不影响本地订单关闭，重试只调用渠道关单，不改订单生命周期。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -41,6 +43,7 @@ public class PaymentGatewayService {
     private final PaymentChannelRegistry paymentChannelRegistry;
     private final PaymentEventService paymentEventService;
     private final PaymentCallbackAuditService paymentCallbackAuditService;
+    private final PaymentCloseReceiptService paymentCloseReceiptService;
 
     public PaymentChannelDTOs.PaymentAttemptView createPayment(PaymentChannelDTOs.CreatePaymentRequest request,
                                                                String clientIp) {
@@ -174,31 +177,58 @@ public class PaymentGatewayService {
 
     /**
      * F08：订单本地关闭后的渠道关单尽力而为调用。
-     * 渠道未配置、账户未登记/未审核、适配器未启用或调用失败时返回 false 并记录 WARN，不阻断本地关单；
+     * 渠道未配置、账户未登记/未审核、适配器未启用时返回 false 并记录 SKIPPED 回执（不自动重试）；
+     * 调用失败记录 FAILED 回执，由 PaymentCloseRetryJob 退避重试；不阻断本地关单。
      * 迟到支付仍由 PaymentEventService 拒绝并进入异常队列，不会因关单失败自动履约。
      */
     public boolean closePaymentBestEffort(TradeOrder order) {
         if (order == null || order.getPayChannel() == null || order.getPayChannel().isBlank()) {
             return false;
         }
+        String channel = order.getPayChannel().trim().toUpperCase();
         try {
-            String channel = PayChannel.normalize(order.getPayChannel());
+            channel = PayChannel.normalize(order.getPayChannel());
+        } catch (BusinessException e) {
+            recordCloseAttempt(order, channel, PaymentCloseReceiptService.RESULT_SKIPPED,
+                    "渠道编码不受支持: " + e.getMessage());
+            return false;
+        }
+        try {
             MerchantPaymentAccount account = merchantPaymentAccountMapper
                     .findByMerchantIdAndChannel(order.getMerchantId(), channel).orElse(null);
             if (account == null || !"PASSED".equals(account.getApplyStatus())
                     || account.getSubMchid() == null || account.getSubMchid().isBlank()) {
+                recordCloseAttempt(order, channel, PaymentCloseReceiptService.RESULT_SKIPPED,
+                        "渠道账户未登记或未审核通过");
                 return false;
             }
             PaymentChannelAdapter adapter = paymentChannelRegistry.require(channel);
             if (!adapter.enabled()) {
+                recordCloseAttempt(order, channel, PaymentCloseReceiptService.RESULT_SKIPPED,
+                        "渠道适配器未启用");
                 return false;
             }
             adapter.closePayment(commandOf(order, account));
+            recordCloseAttempt(order, channel, PaymentCloseReceiptService.RESULT_SUCCESS, null);
             return true;
         } catch (Exception e) {
-            log.warn("渠道关单失败，本地订单保持关闭，需人工核对渠道侧交易 orderSn={} channel={}",
-                    order.getOrderSn(), order.getPayChannel(), e);
+            recordCloseAttempt(order, channel, PaymentCloseReceiptService.RESULT_FAILED,
+                    "关单调用异常: " + e.getMessage());
+            log.warn("渠道关单失败，本地订单保持关闭，回执待重试 orderSn={} channel={}",
+                    order.getOrderSn(), channel, e);
             return false;
+        }
+    }
+
+    /**
+     * F08：回执写入尽力而为，任何异常只记 WARN，不覆盖关单结果与本地订单状态。
+     */
+    private void recordCloseAttempt(TradeOrder order, String channel, String result, String reason) {
+        try {
+            paymentCloseReceiptService.record(order, channel, result, reason);
+        } catch (RuntimeException receiptError) {
+            log.warn("关单回执写入失败，不影响本地关单 orderSn={} channel={}",
+                    order.getOrderSn(), channel, receiptError);
         }
     }
 
@@ -213,7 +243,14 @@ public class PaymentGatewayService {
         }
         String channel = PayChannel.normalize(order.getPayChannel());
         MerchantPaymentAccount account = requireAccount(order, channel);
-        paymentChannelRegistry.require(channel).closePayment(commandOf(order, account));
+        try {
+            paymentChannelRegistry.require(channel).closePayment(commandOf(order, account));
+            recordCloseAttempt(order, channel, PaymentCloseReceiptService.RESULT_SUCCESS, null);
+        } catch (RuntimeException e) {
+            recordCloseAttempt(order, channel, PaymentCloseReceiptService.RESULT_FAILED,
+                    "关单调用异常: " + e.getMessage());
+            throw e;
+        }
     }
 
     private PaymentChannelDTOs.PaymentAttemptView createPayment(TradeOrder order, String payChannel, String clientIp) {

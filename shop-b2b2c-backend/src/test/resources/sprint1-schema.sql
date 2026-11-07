@@ -939,4 +939,19 @@ CREATE TABLE IF NOT EXISTS payment_callback_audit (
 );
 CREATE INDEX IF NOT EXISTS idx_payment_callback_order ON payment_callback_audit(channel, order_sn, created_at);
 
+-- 39. 渠道关单回执（F08，H2 隔离夹具）：只增不改、不设外键，FAILED 供重试扫描
+CREATE TABLE IF NOT EXISTS payment_close_receipt (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  order_sn VARCHAR(64) NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  channel VARCHAR(32) NOT NULL,
+  attempt_no INT NOT NULL,
+  result VARCHAR(16) NOT NULL,
+  reason VARCHAR(255) NULL,
+  attempted_at TIMESTAMP NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_close_receipt_order ON payment_close_receipt(order_sn, channel, attempt_no);
+CREATE INDEX IF NOT EXISTS idx_close_receipt_retry ON payment_close_receipt(result, attempted_at);
+
 
