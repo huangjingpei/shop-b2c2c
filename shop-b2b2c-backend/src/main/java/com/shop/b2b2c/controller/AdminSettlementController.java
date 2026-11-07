@@ -1,12 +1,13 @@
 /*
  * 文件：AdminSettlementController.java
- * 用途：平台超管的充值确认/驳回、结算批次生成与确认、逐笔明细查询入口（T34）。
+ * 用途：平台超管的充值确认/驳回、结算批次生成与确认、逐笔明细查询入口（T34）；F10 追加 SaaS 月费账单生成、缴费确认与逾期扫描。
  * 维护注意：
  *  1. 路径位于 /api/v1/admin/**，由 SaTokenConfigure 统一要求 SUPERADMIN，控制器内仍显式校验一次。
  *  2. 充值确认以人工核对后的金额入账；确认接口幂等由充值单号+账本幂等键保证。
  *  3. 批次生成只生成/重算 DRAFT，确认后不可再改；跨店查询必须显式传 merchantId。
  *  4. 复核人候选只返回启用中的其他 SUPERADMIN，不返回密码；是否允许同人由 FinanceApprovalGuard 判定。
  *  5. T+1 跑批入口与记录查询只暴露跑批状态/计数，不返回渠道报文；业务日默认按 Asia/Shanghai 取昨天。
+ *  6. F10 SaaS 月费账单与交易抽佣/结算批次分离；缴费确认只接受线下 OFFLINE 凭证，不写 merchant_account 账本。
  */
 package com.shop.b2b2c.controller;
 
@@ -22,6 +23,7 @@ import com.shop.b2b2c.entity.MerchantSettlementItem;
 import com.shop.b2b2c.entity.PaymentChannelStatement;
 import com.shop.b2b2c.entity.ReconciliationBatchRun;
 import com.shop.b2b2c.entity.ReconciliationDifference;
+import com.shop.b2b2c.entity.SaasFeeBill;
 import com.shop.b2b2c.entity.SysUser;
 import com.shop.b2b2c.mapper.SysUserMapper;
 import com.shop.b2b2c.service.FinanceApprovalGuard;
@@ -62,6 +64,7 @@ public class AdminSettlementController {
     private final SettlementService settlementService;
     private final ReconciliationService reconciliationService;
     private final ReconciliationBatchService reconciliationBatchService;
+    private final com.shop.b2b2c.service.SaasFeeBillService saasFeeBillService;
     private final SysUserMapper userMapper;
     private final FinanceApprovalGuard approvalGuard;
     private final com.shop.b2b2c.mapper.PaymentEventMapper paymentEventMapper;
@@ -326,6 +329,54 @@ public class AdminSettlementController {
         LocalDate end = to == null ? YearMonth.now().plusMonths(1).atDay(1) : to;
         String csv = reconciliationService.ledgerCsv(merchantId, start.atStartOfDay(), end.atStartOfDay());
         return csvResponse("ledger-" + merchantId + ".csv", csv);
+    }
+
+    @Operation(summary = "SaaS 月费账单列表（与交易抽佣分离）")
+    @GetMapping("/saas-bills")
+    public R<Map<String, Object>> saasBills(@RequestParam(required = false) Long merchantId,
+                                            @RequestParam(required = false) String status,
+                                            @RequestParam(required = false) String month,
+                                            @RequestParam(defaultValue = "50") int limit,
+                                            @RequestParam(defaultValue = "0") long offset) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok(saasFeeBillService.adminBills(merchantId, status, month, limit, offset));
+    }
+
+    @Operation(summary = "手动生成单店 SaaS 月费账单（只能已结束月份，重复生成幂等）")
+    @PostMapping("/merchants/{merchantId}/saas-fee-bills/generate")
+    public R<SaasFeeBill> generateSaasFeeBill(@PathVariable Long merchantId,
+                                              @RequestParam String month) {
+        StpUtil.checkRole("SUPERADMIN");
+        YearMonth period;
+        try {
+            period = YearMonth.parse(month, java.time.format.DateTimeFormatter.ofPattern("yyyy-MM"));
+        } catch (java.time.format.DateTimeParseException e) {
+            throw new com.shop.b2b2c.common.BusinessException(400, "账期月份格式应为 yyyy-MM");
+        }
+        return R.ok("SaaS 月费账单已生成或已存在", saasFeeBillService.generateForMerchant(
+                merchantId, period, StpUtil.getLoginIdAsLong()));
+    }
+
+    @Operation(summary = "确认 SaaS 月费线下缴费（双人复核规则同财务基线 18）")
+    @PostMapping("/saas-bills/{billNo}/confirm")
+    public R<SaasFeeBill> confirmSaasFeeBill(@PathVariable String billNo,
+                                             @RequestBody(required = false) SettlementDTOs.SaasFeePaymentRequest request) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok("SaaS 月费已确认缴费", saasFeeBillService.confirmPayment(billNo,
+                StpUtil.getLoginIdAsLong(), request == null ? null : request.getConfirmedBy(),
+                request == null ? null : request.getPaymentMethod(),
+                request == null ? null : request.getVoucherNo(),
+                request == null ? null : request.getRemark()));
+    }
+
+    @Operation(summary = "手动触发 SaaS 月费逾期扫描（只改账单状态，不自动停复服）")
+    @PostMapping("/saas-bills/overdue-scan")
+    public R<Map<String, Object>> scanSaasFeeOverdue(
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate asOf) {
+        StpUtil.checkRole("SUPERADMIN");
+        Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("changed", saasFeeBillService.markOverdue(asOf));
+        return R.ok(result);
     }
 
     private ResponseEntity<byte[]> csvResponse(String filename, String csv) {

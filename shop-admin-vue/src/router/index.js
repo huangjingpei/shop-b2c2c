@@ -103,6 +103,13 @@ const routes = [
         meta: { title: '商户账单治理', role: 'SUPERADMIN' }
       },
       {
+        path: '/admin/saas-fee',
+        name: 'AdminSaasFee',
+        component: () => import('../views/admin/SaasFee.vue'),
+        // F10：SaaS 月费账单治理，仅超管；与交易抽佣分开，缴费确认需线下凭证。
+        meta: { title: 'SaaS 月费账单治理', role: 'SUPERADMIN' }
+      },
+      {
         path: '/admin/complaints',
         name: 'AdminComplaints',
         component: () => import('../views/admin/Complaints.vue'),
@@ -154,6 +161,13 @@ const routes = [
         component: () => import('../views/merchant/Billing.vue'),
         // F09：账单属财务展示数据，仅店长可见（与卡密库同口径，路由守卫与后端接口双重校验）。
         meta: { title: '本店账单', requiresMerchant: true, role: 'MERCHANT_ADMIN' }
+      },
+      {
+        path: '/merchant/saas-fee',
+        name: 'MerchantSaasFee',
+        component: () => import('../views/merchant/SaasFee.vue'),
+        // F10：SaaS 月费账单只读，仅店长可见；缴费为平台线下人工确认。
+        meta: { title: 'SaaS 月费账单', requiresMerchant: true, role: 'MERCHANT_ADMIN' }
       },
       {
         path: '/merchant/complaints',

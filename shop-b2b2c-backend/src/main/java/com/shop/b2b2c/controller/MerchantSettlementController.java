@@ -1,12 +1,13 @@
 /*
  * 文件：MerchantSettlementController.java
- * 用途：商家服务费账户、账本、充值申请、结算批次查询与账单 CSV 导出入口（T34/T35）。
+ * 用途：商家服务费账户、账本、充值申请、结算批次查询与账单 CSV 导出入口（T34/T35）；F10 追加本店 SaaS 月费账单只读查询。
  * 维护注意：
  *  1. 路径位于 /api/v1/merchant/**，由 SaTokenConfigure 统一拦截登录与商家角色。
  *  2. 充值申请只允许店长/超管；普通员工只能查看账户、账本与结算单。
  *  3. 当前商户一律取会话店铺，不接受客户端传 merchantId；跨店查询只走管理员接口。
  *  4. 批次明细/导出查询复用结算服务与对账服务做归属校验，禁止用 batchId 直接跨店读取。
  *  5. T35 导出复用 ReconciliationService 的 CSV 方法，只读本店数据；CSV 转义与公式注入防护在服务层统一处理。
+ *  6. F10 SaaS 月费账单只读，缴费确认仅超管线下人工登记；账单查询固定本店，不返回跨店数据。
  */
 package com.shop.b2b2c.controller;
 
@@ -52,6 +53,7 @@ public class MerchantSettlementController {
     private final MerchantAccountService accountService;
     private final SettlementService settlementService;
     private final ReconciliationService reconciliationService;
+    private final com.shop.b2b2c.service.SaasFeeBillService saasFeeBillService;
 
     @Operation(summary = "查询服务费账户余额与欠费")
     @GetMapping("/account")
@@ -129,6 +131,18 @@ public class MerchantSettlementController {
         LocalDate end = to == null ? YearMonth.now().plusMonths(1).atDay(1) : to;
         String csv = reconciliationService.ledgerCsv(merchantId, start.atStartOfDay(), end.atStartOfDay());
         return csvResponse("ledger-" + merchantId + ".csv", csv);
+    }
+
+    @Operation(summary = "查询本店 SaaS 月费账单")
+    @GetMapping("/saas-bills")
+    public R<List<com.shop.b2b2c.entity.SaasFeeBill>> saasBills(@RequestParam(defaultValue = "24") int limit) {
+        return R.ok(saasFeeBillService.merchantBills(requireMerchantId(), limit));
+    }
+
+    @Operation(summary = "查询本店 SaaS 月费账单详情")
+    @GetMapping("/saas-bills/{billNo}")
+    public R<com.shop.b2b2c.entity.SaasFeeBill> saasBill(@PathVariable String billNo) {
+        return R.ok(saasFeeBillService.requireOwnedBill(billNo, requireMerchantId()));
     }
 
     private ResponseEntity<byte[]> csvResponse(String filename, String csv) {

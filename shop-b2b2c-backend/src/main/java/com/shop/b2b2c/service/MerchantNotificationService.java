@@ -41,6 +41,10 @@ public class MerchantNotificationService {
     public static final String BIZ_COMPLAINT_SUBMITTED = "COMPLAINT_SUBMITTED";
     public static final String BIZ_COMPLAINT_ESCALATED = "COMPLAINT_ESCALATED";
     public static final String BIZ_COMPLAINT_DECIDED = "COMPLAINT_DECIDED";
+    // F10 SaaS 月费账单：出账、逾期、缴费完成均只发站内信，不与交易抽佣账务混发。
+    public static final String BIZ_SAAS_FEE_ISSUED = "SAAS_FEE_ISSUED";
+    public static final String BIZ_SAAS_FEE_OVERDUE = "SAAS_FEE_OVERDUE";
+    public static final String BIZ_SAAS_FEE_PAID = "SAAS_FEE_PAID";
 
     public static final String CHANNEL_INAPP = "INAPP";
     public static final String CHANNEL_SMS = "SMS";

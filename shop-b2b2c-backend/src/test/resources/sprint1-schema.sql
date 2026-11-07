@@ -896,3 +896,30 @@ CREATE TABLE IF NOT EXISTS split_reverse (
   CONSTRAINT uk_split_reverse_refund UNIQUE (split_detail_id, refund_id),
   CONSTRAINT chk_split_reverse_amount CHECK (reverse_amount > 0.00)
 );
+
+-- 37. SaaS 月度技术服务费账单（F10，H2 隔离夹具；不含外键，语义同 MySQL 基线）
+CREATE TABLE IF NOT EXISTS saas_fee_bill (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  bill_no VARCHAR(64) NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  billing_month VARCHAR(7) NOT NULL,
+  standard_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  waive_reason VARCHAR(128) NULL,
+  due_date DATE NOT NULL,
+  issued_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  paid_at TIMESTAMP NULL,
+  paid_by BIGINT NULL,
+  confirmed_by BIGINT NULL,
+  approval_mode VARCHAR(16) NULL,
+  payment_method VARCHAR(16) NULL,
+  voucher_no VARCHAR(64) NULL,
+  remark VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_saas_fee_bill_no UNIQUE (bill_no),
+  CONSTRAINT uk_saas_fee_merchant_month UNIQUE (merchant_id, billing_month)
+);
+CREATE INDEX IF NOT EXISTS idx_saas_fee_status_due ON saas_fee_bill(status, due_date);
+

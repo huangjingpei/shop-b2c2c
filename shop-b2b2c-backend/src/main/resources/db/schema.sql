@@ -1222,3 +1222,33 @@ CREATE TABLE IF NOT EXISTS `split_reverse` (
   CONSTRAINT fk_split_reverse_refund FOREIGN KEY (`refund_id`) REFERENCES `trade_refund` (`id`),
   CONSTRAINT fk_split_reverse_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='退分账本（骨架，不调用真实退分通道）';
+
+-- 37. SaaS 月度技术服务费账单（F10）：与交易抽佣/结算批次分离，按月对店铺收取固定月费；
+--     同店同月唯一，重复生成幂等返回既有账单；WAIVED 表示试用/豁免/0 月费，不产生应收；
+--     本表只记录账单与人工线下缴费确认，不自动扣减 merchant_account，也不自动停复服。
+CREATE TABLE IF NOT EXISTS `saas_fee_bill` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `bill_no` VARCHAR(64) NOT NULL COMMENT '账单号：SAAS-{merchantId}-{yyyyMM}',
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `billing_month` VARCHAR(7) NOT NULL COMMENT '账期月份 yyyy-MM（自然月，Asia/Shanghai）',
+  `standard_amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '按店铺月度费配置的标准应收，保留豁免前金额',
+  `amount` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '本账单实际应收；WAIVED 时为 0.00',
+  `status` VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/PAID/WAIVED/OVERDUE',
+  `waive_reason` VARCHAR(128) NULL COMMENT '免收原因：0 月费/EXEMPTED/试用期',
+  `due_date` DATE NOT NULL COMMENT '缴费到期日（次月 10 日，代理细化规则待业务确认）',
+  `issued_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `paid_at` DATETIME NULL,
+  `paid_by` BIGINT NULL COMMENT '发起缴费确认的操作人',
+  `confirmed_by` BIGINT NULL COMMENT '复核人；双人复核开关开启时必须与 paid_by 不同',
+  `approval_mode` VARCHAR(16) NULL COMMENT 'SAME_OPERATOR/DUAL_APPROVAL',
+  `payment_method` VARCHAR(16) NULL COMMENT '本期仅 OFFLINE（线下转账人工确认）',
+  `voucher_no` VARCHAR(64) NULL COMMENT '线下转账凭证号',
+  `remark` VARCHAR(255) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_saas_fee_bill_no` (`bill_no`),
+  UNIQUE KEY `uk_saas_fee_merchant_month` (`merchant_id`, `billing_month`),
+  KEY `idx_saas_fee_status_due` (`status`, `due_date`),
+  CONSTRAINT fk_saas_fee_bill_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SaaS 月度技术服务费账单（与交易抽佣分离）';

@@ -96,6 +96,11 @@
               <el-icon><Money /></el-icon>
               <span>商户账单治理</span>
             </el-menu-item>
+            <!-- F10：SaaS 月费账单与交易抽佣分开，仅超管视角可见；后端二次校验 SUPERADMIN。 -->
+            <el-menu-item index="/admin/saas-fee">
+              <el-icon><Coin /></el-icon>
+              <span>SaaS 月费账单</span>
+            </el-menu-item>
             <!-- F06：平台投诉仲裁，仅超管视角可见；后端 /api/v1/admin/complaints 二次校验。 -->
             <el-menu-item index="/admin/complaints">
               <el-icon><ChatDotRound /></el-icon>
@@ -135,6 +140,11 @@
             <el-menu-item v-if="roleCode !== 'MERCHANT_STAFF'" index="/merchant/billing">
               <el-icon><Money /></el-icon>
               <span>本店账单</span>
+            </el-menu-item>
+            <!-- F10：SaaS 月费账单只读，仅店长可见；员工直接输入地址也会被路由守卫与后端拒绝。 -->
+            <el-menu-item v-if="roleCode !== 'MERCHANT_STAFF'" index="/merchant/saas-fee">
+              <el-icon><Coin /></el-icon>
+              <span>SaaS 月费账单</span>
             </el-menu-item>
             <!-- F06：投诉答复与举证仅店长可见；商家只能处理本店工单。 -->
             <el-menu-item v-if="roleCode !== 'MERCHANT_STAFF'" index="/merchant/complaints">
