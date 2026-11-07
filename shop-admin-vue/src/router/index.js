@@ -136,6 +136,12 @@ const routes = [
         meta: { title: '本店订单与履约', requiresMerchant: true }
       },
       {
+        path: '/merchant/refund-requests',
+        name: 'MerchantRefundRequests',
+        component: () => import('../views/merchant/RefundRequests.vue'),
+        meta: { title: '退款申请审批', requiresMerchant: true, role: 'MERCHANT_ADMIN' }
+      },
+      {
         path: '/merchant/billing',
         name: 'MerchantBilling',
         component: () => import('../views/merchant/Billing.vue'),

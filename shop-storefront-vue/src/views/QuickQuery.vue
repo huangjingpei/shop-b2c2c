@@ -82,6 +82,23 @@
         </div>
       </div>
 
+      <!-- 退款申请入口：仅已支付/已发货/已完成可申请 -->
+      <div v-if="canRefund" class="py-3 border-b border-slate-100 flex items-center justify-between">
+        <div class="text-xs text-slate-600">实付 ￥{{ orderResult.order.payAmount }}，可申请退款</div>
+        <button @click="openRefund" class="px-3 py-1.5 rounded bg-red-50 text-red-600 text-xs font-bold hover:bg-red-100">
+          申请退款
+        </button>
+      </div>
+
+      <!-- 退款申请记录 -->
+      <div v-if="refundRequests.length" class="py-3 border-b border-slate-100">
+        <div class="text-xs font-bold text-slate-700 mb-2">退款申请记录</div>
+        <div v-for="rr in refundRequests" :key="rr.id" class="text-xs py-1.5 flex justify-between border-b border-slate-50 last:border-0">
+          <span>￥{{ rr.refundAmount }} · {{ rr.reason }}</span>
+          <span :class="refundStatusClass(rr.status)">{{ refundStatusLabel(rr.status) }}</span>
+        </div>
+      </div>
+
       <!-- 所属店铺 -->
       <div v-if="orderResult.store" class="py-3 flex items-center justify-between text-xs text-slate-600 border-b border-slate-100">
         <span>出货店铺：<strong class="text-slate-800">{{ orderResult.store.storeName }}</strong></span>
@@ -127,13 +144,36 @@
         </div>
       </div>
     </div>
+
+    <!-- 退款申请对话框 -->
+    <div v-if="refundDialog" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" @click.self="refundDialog = false">
+      <div class="bg-white rounded-xl p-5 w-full max-w-sm shadow-lg">
+        <h3 class="font-bold text-slate-900 mb-3">申请退款</h3>
+        <div class="text-xs text-slate-500 mb-3">订单 {{ orderResult?.order.orderSn }}，实付 ￥{{ orderResult?.order.payAmount }}</div>
+        <label class="block text-xs font-bold text-slate-700 mb-1">退款金额</label>
+        <input v-model.number="refundForm.amount" type="number" step="0.01" min="0.01"
+               :max="orderResult?.order.payAmount"
+               class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm mb-3" />
+        <label class="block text-xs font-bold text-slate-700 mb-1">退款原因</label>
+        <textarea v-model="refundForm.reason" rows="3" maxlength="256"
+                  class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm mb-4"
+                  placeholder="请说明退款原因"></textarea>
+        <div class="flex justify-end gap-2">
+          <button @click="refundDialog = false" class="px-4 py-2 rounded border border-slate-300 text-sm">取消</button>
+          <button @click="submitRefund" :disabled="refunding"
+                  class="px-4 py-2 rounded bg-red-500 text-white text-sm font-bold disabled:bg-slate-300">
+            {{ refunding ? '提交中...' : '提交申请' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { receiptRequest, receiptRouteQuery } from '../utils/buyerReceipt.mjs'
 import { serviceVoucherText } from '../utils/goodsType.mjs'
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
 
@@ -144,6 +184,61 @@ const orderSn = ref('')
 const contact = ref('')
 const queryToken = ref('')
 const orderResult = ref(null)
+const refundDialog = ref(false)
+const refunding = ref(false)
+const refundRequests = ref([])
+const refundForm = { amount: 0, reason: '' }
+
+const REFUNDABLE = new Set(['PAID', 'SHIPPED', 'COMPLETED'])
+const canRefund = computed(() => orderResult.value && REFUNDABLE.has(orderResult.value.order.orderStatus))
+
+const refundStatusLabel = s => ({ PENDING: '待商家处理', APPROVED: '已同意退款', REJECTED: '已拒绝', CANCELLED: '已撤回' }[s] || s)
+const refundStatusClass = s => ({
+  PENDING: 'text-amber-600', APPROVED: 'text-green-600', REJECTED: 'text-red-600', CANCELLED: 'text-slate-400'
+}[s] || 'text-slate-500')
+
+const openRefund = () => {
+  refundForm.amount = Number(orderResult.value.order.payAmount)
+  refundForm.reason = ''
+  refundDialog.value = true
+}
+
+const submitRefund = async () => {
+  const amount = Number(refundForm.amount)
+  if (!amount || amount <= 0) { alert('请输入退款金额'); return }
+  if (amount > Number(orderResult.value.order.payAmount)) { alert('退款金额不能超过实付金额'); return }
+  if (!refundForm.reason.trim()) { alert('请填写退款原因'); return }
+  refunding.value = true
+  try {
+    const res = await axios.post('/api/v1/public/orders/refund-requests', {
+      orderSn: orderResult.value.order.orderSn,
+      contact: contact.value,
+      queryToken: queryToken.value,
+      refundAmount: amount,
+      reason: refundForm.reason.trim()
+    })
+    if (res.data.code === 200) {
+      alert('退款申请已提交，等待商家处理')
+      refundDialog.value = false
+      await loadRefundRequests()
+    } else {
+      alert(res.data.message || '提交失败')
+    }
+  } catch (e) {
+    alert(e.response?.data?.message || '提交失败，请稍后重试')
+  } finally {
+    refunding.value = false
+  }
+}
+
+const loadRefundRequests = async () => {
+  try {
+    const res = await axios.get('/api/v1/public/orders/refund-requests', {
+      params: { orderSn: orderResult.value.order.orderSn, contact: contact.value, queryToken: queryToken.value }
+    })
+    refundRequests.value = res.data.code === 200 ? (res.data.data || []) : []
+  } catch { refundRequests.value = [] }
+}
 
 const handleSearch = async () => {
   let payload
@@ -155,6 +250,7 @@ const handleSearch = async () => {
     const res = await axios.post('/api/v1/public/orders/quick-search', payload)
     if (res.data.code !== 200) { alert(res.data.message || '查询失败'); return }
     orderResult.value = res.data.data
+    await loadRefundRequests()
   } catch (e) {
     alert(e.response?.data?.message || '未查询到订单信息，请确认订单号与联系方式')
   } finally {

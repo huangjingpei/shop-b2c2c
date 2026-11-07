@@ -121,6 +121,11 @@
               <el-icon><List /></el-icon>
               <span>订单履约与发货</span>
             </el-menu-item>
+            <!-- F05：退款申请审批仅店长可见；授权由后端接口强制。 -->
+            <el-menu-item v-if="roleCode !== 'MERCHANT_STAFF'" index="/merchant/refund-requests">
+              <el-icon><Refund /></el-icon>
+              <span>退款申请审批</span>
+            </el-menu-item>
             <!-- F09：账单与卡密库同口径，仅店长可见；员工直接输入地址也会被路由守卫与后端双重拒绝。 -->
             <el-menu-item v-if="roleCode !== 'MERCHANT_STAFF'" index="/merchant/billing">
               <el-icon><Money /></el-icon>

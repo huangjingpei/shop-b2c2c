@@ -103,13 +103,14 @@ class Sprint1SecurityIntegrationTest {
     @Autowired com.shop.b2b2c.mapper.PaymentEventMapper paymentEvents;
     @Autowired com.shop.b2b2c.service.payment.PaymentEventReconcileService paymentEventReconcile;
     @MockBean com.shop.b2b2c.service.payment.PaymentGatewayService paymentGateway;
+    @MockBean com.shop.b2b2c.service.payment.PaymentChannelRegistry channelRegistry;
     @Autowired com.shop.b2b2c.service.MerchantNotificationService notificationService;
     @Autowired com.shop.b2b2c.mapper.MerchantNotificationOutboxMapper notificationOutboxMapper;
 
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("refund_request", "billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -4754,6 +4755,124 @@ class Sprint1SecurityIntegrationTest {
         mvc.perform(get("/api/v1/public/products/1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.product.detailImages").isEmpty());
+    }
+
+    // ==================== F05 买家退款申请集成回归 ====================
+
+    private void paidOrderForRefund(String sn, long merchantId, String contact, String token, String pay) {
+        jdbc.update("INSERT INTO trade_order(order_sn,merchant_id,buyer_contact,query_token,goods_type,total_amount,pay_amount,fee_amount,commission_amount,collection_mode,pay_channel,order_status,peer_pay_type,created_at) "
+                        + "VALUES(?,?,?,?,1,?,?,?,?,'MERCHANT_DIRECT','WECHAT','PAID',0,?)",
+                sn, merchantId, contact, token, new java.math.BigDecimal(pay), new java.math.BigDecimal(pay),
+                java.math.BigDecimal.ZERO, java.math.BigDecimal.ZERO,
+                java.time.LocalDateTime.of(2026, 10, 15, 10, 0));
+    }
+
+    @Test
+    void buyerApplyRefundCreatesPendingRequest() throws Exception {
+        paidOrderForRefund("RF-O1", 1L, "13900000001", "tk-001", "100.00");
+
+        mvc.perform(post("/api/v1/public/orders/refund-requests").contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of(
+                                "orderSn", "RF-O1", "contact", "13900000001",
+                                "queryToken", "tk-001", "refundAmount", 30.00, "reason", "不想要了"))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("PENDING"))
+                .andExpect(jsonPath("$.data.refundAmount").value(30.0));
+
+        // 重复申请被拒
+        mvc.perform(post("/api/v1/public/orders/refund-requests").contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of(
+                                "orderSn", "RF-O1", "contact", "13900000001",
+                                "queryToken", "tk-001", "refundAmount", 10.00, "reason", "x"))))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409));
+    }
+
+    private void merchantPaymentAccount(long merchantId, String channel) {
+        jdbc.update("INSERT INTO merchant_payment_account(merchant_id,channel,sub_mchid,bank_account_name,bank_account_number,bank_name,apply_status) "
+                        + "VALUES(?,?,'SUB-TEST','测试户名','6222000000000001','测试支行','PASSED')",
+                merchantId, channel);
+    }
+
+    @Test
+    void merchantApproveThenRejectFlow() throws Exception {
+        paidOrderForRefund("RF-O2", 1L, "13900000002", "tk-002", "100.00");
+        merchantPaymentAccount(1L, "WECHAT");
+        // 申请
+        String applyRes = mvc.perform(post("/api/v1/public/orders/refund-requests").contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of(
+                                "orderSn", "RF-O2", "contact", "13900000002",
+                                "queryToken", "tk-002", "refundAmount", 100.00, "reason", "全额退"))))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        long requestId = com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
+                .readTree(applyRes).get("data").get("id").asLong();
+
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        // 退款通道用 mock 适配器返回成功，避免依赖真实微信配置。
+        com.shop.b2b2c.service.payment.PaymentChannelAdapter mockAdapter =
+                mock(com.shop.b2b2c.service.payment.PaymentChannelAdapter.class);
+        com.shop.b2b2c.dto.PaymentChannelDTOs.RefundResult refundOk =
+                new com.shop.b2b2c.dto.PaymentChannelDTOs.RefundResult();
+        refundOk.setStatus("SUCCESS");
+        refundOk.setChannelRefundNo("MOCK-REFUND-" + requestId);
+        when(channelRegistry.require(anyString())).thenReturn(mockAdapter);
+        when(mockAdapter.refundPayment(any())).thenReturn(refundOk);
+        // 同意退款
+        mvc.perform(post("/api/v1/merchant/refund-requests/" + requestId + "/approve")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("APPROVED"));
+        // 重复审批被拒
+        mvc.perform(post("/api/v1/merchant/refund-requests/" + requestId + "/approve")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM trade_refund WHERE order_sn='RF-O2'", Integer.class));
+    }
+
+    @Test
+    void merchantRejectAndBuyerCancel() throws Exception {
+        paidOrderForRefund("RF-O3", 1L, "13900000003", "tk-003", "50.00");
+        String applyRes = mvc.perform(post("/api/v1/public/orders/refund-requests").contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of(
+                                "orderSn", "RF-O3", "contact", "13900000003",
+                                "queryToken", "tk-003", "refundAmount", 50.00, "reason", "退"))))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        long requestId = com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
+                .readTree(applyRes).get("data").get("id").asLong();
+
+        // 商家拒绝
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        mvc.perform(post("/api/v1/merchant/refund-requests/" + requestId + "/reject")
+                        .header("Authorization", "Bearer " + token).contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of("rejectReason", "已发货"))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("REJECTED"));
+
+        // 已拒绝不能撤回
+        mvc.perform(post("/api/v1/public/orders/refund-requests/" + requestId + "/cancel")
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of(
+                                "orderSn", "RF-O3", "contact", "13900000003", "queryToken", "tk-003"))))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409));
+    }
+
+    @Test
+    void refundRequestMerchantEndpointRejectsAnonymousAndCrossShop() throws Exception {
+        paidOrderForRefund("RF-O4", 1L, "13900000004", "tk-004", "50.00");
+        // 匿名访问商家接口 401
+        mvc.perform(get("/api/v1/merchant/refund-requests")).andExpect(status().isUnauthorized());
+
+        String applyRes = mvc.perform(post("/api/v1/public/orders/refund-requests").contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of(
+                                "orderSn", "RF-O4", "contact", "13900000004",
+                                "queryToken", "tk-004", "refundAmount", 10.00, "reason", "x"))))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        long requestId = com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
+                .readTree(applyRes).get("data").get("id").asLong();
+
+        // 商家2无权处理商家1的申请
+        authUser("MERCHANT_ADMIN", 2L); String token2 = loginToken();
+        mvc.perform(post("/api/v1/merchant/refund-requests/" + requestId + "/approve")
+                        .header("Authorization", "Bearer " + token2))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value(403));
     }
 
     // ==================== F09 商户账单生成集成回归 ====================

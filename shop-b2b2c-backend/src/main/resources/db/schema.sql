@@ -359,6 +359,30 @@ CREATE TABLE IF NOT EXISTS `trade_refund` (
   CONSTRAINT `chk_refund_amount` CHECK (`refund_amount` > 0.00 AND `fee_refund_amount` >= 0.00)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='订单退款与重复付款补偿记录';
 
+-- F05：买家退款申请单（与 trade_refund 实际执行记录分离）。买家发起后进入 PENDING，商家审批同意才生成 trade_refund 并走渠道原路退回；拒绝/撤回即终态。
+CREATE TABLE IF NOT EXISTS `refund_request` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `order_id` BIGINT UNSIGNED NOT NULL,
+  `order_sn` VARCHAR(64) NOT NULL,
+  `merchant_id` BIGINT UNSIGNED NOT NULL,
+  `buyer_contact` VARCHAR(64) NOT NULL COMMENT '买家联系电话（脱敏存储校验用）',
+  `refund_amount` DECIMAL(10,2) NOT NULL COMMENT '申请退款金额，须 <= 订单可退余额',
+  `reason` VARCHAR(256) NOT NULL COMMENT '买家退款原因',
+  `status` VARCHAR(24) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/APPROVED/REJECTED/CANCELLED',
+  `reject_reason` VARCHAR(256) DEFAULT NULL,
+  `applied_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `decided_at` DATETIME NULL,
+  `decided_by` BIGINT UNSIGNED NULL,
+  `decided_role` VARCHAR(32) NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_rr_order` (`order_id`),
+  KEY `idx_rr_merchant_status` (`merchant_id`, `status`, `created_at`),
+  CONSTRAINT `fk_rr_order` FOREIGN KEY (`order_id`) REFERENCES `trade_order` (`id`),
+  CONSTRAINT `chk_rr_amount` CHECK (`refund_amount` > 0.00)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='买家退款申请单（F05）';
+
 -- 10. 代付成功页【我也想开店】平台运营广告配置表
 CREATE TABLE IF NOT EXISTS `platform_ad_config` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

@@ -307,6 +307,28 @@ CREATE TABLE IF NOT EXISTS `trade_refund` (
   KEY `idx_refund_status` (`status`)
 );
 
+-- F05：买家退款申请单
+CREATE TABLE IF NOT EXISTS `refund_request` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `order_id` BIGINT NOT NULL,
+  `order_sn` VARCHAR(64) NOT NULL,
+  `merchant_id` BIGINT NOT NULL,
+  `buyer_contact` VARCHAR(64) NOT NULL,
+  `refund_amount` DECIMAL(10,2) NOT NULL,
+  `reason` VARCHAR(256) NOT NULL,
+  `status` VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+  `reject_reason` VARCHAR(256) DEFAULT NULL,
+  `applied_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `decided_at` DATETIME DEFAULT NULL,
+  `decided_by` BIGINT DEFAULT NULL,
+  `decided_role` VARCHAR(32) DEFAULT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_rr_order` (`order_id`),
+  KEY `idx_rr_merchant_status` (`merchant_id`, `status`, `created_at`)
+);
+
 -- 10. 代付成功页【我也想开店】平台运营广告配置表
 CREATE TABLE IF NOT EXISTS `platform_ad_config` (
   `id` BIGINT  NOT NULL AUTO_INCREMENT PRIMARY KEY,
