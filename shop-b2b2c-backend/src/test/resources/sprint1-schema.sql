@@ -128,7 +128,7 @@ CREATE TABLE IF NOT EXISTS `product` (
   `sub_title` VARCHAR(255) DEFAULT NULL COMMENT '副标题/卖点',
   `goods_type` TINYINT NOT NULL DEFAULT 1 COMMENT '类型: 1-实物物流发货, 2-线上服务/虚拟免物流',
   `main_image` VARCHAR(255) NOT NULL COMMENT '主图封面URL',
-  `detail_images` JSON DEFAULT NULL COMMENT '轮播与富文本内容',
+  `detail_images` VARCHAR(60000) DEFAULT NULL COMMENT '详情图文JSON文本（夹具简化：生产为JSON列；H2 JSON列会把参数化字符串包成JSON字符串字面量，应用层把图文当规范JSON文本读写、不使用JSON操作符，故用VARCHAR保持文本语义一致，口径同spec_data）',
   `service_desc` TEXT NULL COMMENT '线上服务交付说明及不可逆防退款强警示',
   `min_price` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '最低显示售价',
   `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态: 0-已下架, 1-在售, 2-违规下架',

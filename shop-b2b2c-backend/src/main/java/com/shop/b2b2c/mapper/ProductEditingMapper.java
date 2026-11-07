@@ -1,7 +1,7 @@
 /*
  * 文件：ProductEditingMapper.java
  * 用途：为商品维护提供带租户条件的行锁查询、字段白名单更新及SKU增删SQL。
- * 维护注意：锁顺序为商品、按ID排序的SKU，必须置于Spring事务；售价更新不能写stock_quantity，避免覆盖预占/发卡库存。所有写入同时校验商品、SKU和商户归属，不调用整实体save。SKU编码同店唯一由唯一键uk_merchant_sku_code兜底；删除SKU前必须先在服务层确认零库存且无任何引用记录，外键仅作并发兜底。
+ * 维护注意：锁顺序为商品、按ID排序的SKU，必须置于Spring事务；售价更新不能写stock_quantity，避免覆盖预占/发卡库存。所有写入同时校验商品、SKU和商户归属，不调用整实体save。SKU编码同店唯一由唯一键uk_merchant_sku_code兜底；删除SKU前必须先在服务层确认零库存且无任何引用记录，外键仅作并发兜底。detail_images只接收服务层规范化后的JSON串（null表示清空），不做二次校验。
  */
 package com.shop.b2b2c.mapper;
 
@@ -21,10 +21,10 @@ public interface ProductEditingMapper {
     List<ProductSku> lockSkus(@Param("id") Long id, @Param("merchant") Long merchant);
 
     @Update("UPDATE product SET category_id=#{edit.categoryId},title=#{edit.title},sub_title=#{edit.subTitle},"
-            + "main_image=#{edit.mainImage},service_desc=#{edit.serviceDesc},min_price=#{minimum},updated_at=CURRENT_TIMESTAMP "
+            + "main_image=#{edit.mainImage},service_desc=#{edit.serviceDesc},detail_images=#{detailImagesJson},min_price=#{minimum},updated_at=CURRENT_TIMESTAMP "
             + "WHERE id=#{id} AND merchant_id=#{merchant}")
     int updateMetadata(@Param("id") Long id, @Param("merchant") Long merchant, @Param("edit") ProductEditingDTOs.Update edit,
-                       @Param("minimum") BigDecimal minimum);
+                       @Param("detailImagesJson") String detailImagesJson, @Param("minimum") BigDecimal minimum);
 
     @Update("UPDATE product_sku SET price=#{price} WHERE id=#{sku} AND product_id=#{id} AND merchant_id=#{merchant}")
     int updatePrice(@Param("id") Long id, @Param("merchant") Long merchant, @Param("sku") Long sku, @Param("price") BigDecimal price);

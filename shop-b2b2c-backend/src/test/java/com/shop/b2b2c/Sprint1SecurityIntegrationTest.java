@@ -273,7 +273,7 @@ class Sprint1SecurityIntegrationTest {
 
     private com.shop.b2b2c.dto.ProductEditingDTOs.Update productEdit(String revision, String title, String price) {
         jdbc.update("MERGE INTO category(id,parent_id,name,sort_order) KEY(id) VALUES(1,0,'standard',0)");
-        return new com.shop.b2b2c.dto.ProductEditingDTOs.Update(revision, 1L, title, null, "updated-image", null,
+        return new com.shop.b2b2c.dto.ProductEditingDTOs.Update(revision, 1L, title, null, "updated-image", null, null,
                 List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(1L, new java.math.BigDecimal(price))));
     }
 
@@ -578,7 +578,7 @@ class Sprint1SecurityIntegrationTest {
         String revision = editing.get(1L, 1L).revision();
         var partial = productEdit(revision, "partial", "9.00");
         assertEquals(400, assertThrows(BusinessException.class, () -> editing.update(1L, 1L, partial)).getCode());
-        var full = new com.shop.b2b2c.dto.ProductEditingDTOs.Update(revision, 1L, "complete", null, "image", null,
+        var full = new com.shop.b2b2c.dto.ProductEditingDTOs.Update(revision, 1L, "complete", null, "image", null, null,
                 List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(1L, new java.math.BigDecimal("9.00")),
                         new com.shop.b2b2c.dto.ProductEditingDTOs.Price(3L, new java.math.BigDecimal("7.00"))));
         var result = editing.update(1L, 1L, full);
@@ -732,7 +732,7 @@ class Sprint1SecurityIntegrationTest {
     @Test
     void editRollsBackAllSkuChangesWhenMetadataWriteFails() {
         var request = productEdit(editing.get(1L, 1L).revision(), "should-rollback", "15.00");
-        doReturn(0).when(editingMapper).updateMetadata(any(), any(), any(), any());
+        doReturn(0).when(editingMapper).updateMetadata(any(), any(), any(), any(), any());
         assertEquals(409, assertThrows(BusinessException.class, () -> editing.update(1L, 1L, request)).getCode());
         assertEquals(0, skus.selectById(1).getPrice().compareTo(java.math.BigDecimal.TEN));
         assertEquals("goods", jdbc.queryForObject("SELECT title FROM product WHERE id=1", String.class));
@@ -4701,5 +4701,58 @@ class Sprint1SecurityIntegrationTest {
                         .contentType("application/json").content("{}"))
                 .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value(404));
         assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM product_violation_audit", Integer.class));
+    }
+
+    // F11/Sprint 29：详情图文维护全链路 —— 编辑落库规范JSON、公开详情透出、清空与非法内容拒绝。
+    @Test
+    void detailImagesPersistClearAndRejectInvalid() throws Exception {
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+
+        // 合法图文：image + text，trim 后落规范JSON
+        String revision = editing.get(1L, 1L).revision();
+        var items = List.of(
+                new com.shop.b2b2c.dto.ProductEditingDTOs.DetailItem("image", "  https://cdn.example.com/d1.jpg ", null),
+                new com.shop.b2b2c.dto.ProductEditingDTOs.DetailItem("text", null, "  产地直发，支持验货  "));
+        var update = new com.shop.b2b2c.dto.ProductEditingDTOs.Update(revision, 1L, "custom dog tag", null, "image", null, items,
+                List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(1L, new java.math.BigDecimal("10.00"))));
+        mvc.perform(put("/api/v1/merchant/products/1").header("Authorization", "Bearer " + token)
+                        .contentType("application/json").content(json.writeValueAsString(update)))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200));
+        String canonical = "[{\"type\":\"image\",\"url\":\"https://cdn.example.com/d1.jpg\"}," +
+                "{\"type\":\"text\",\"content\":\"产地直发，支持验货\"}]";
+        assertEquals(canonical, jdbc.queryForObject("SELECT detail_images FROM product WHERE id=1", String.class));
+
+        // 商家编辑快照与公开详情同步透出
+        assertEquals(canonical, editing.get(1L, 1L).product().getDetailImages());
+        mvc.perform(get("/api/v1/public/products/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.product.detailImages").value(canonical));
+
+        // 非法内容一律 400 且不落库：坏协议、超长、超条数、未知类型
+        String rev2 = editing.get(1L, 1L).revision();
+        for (var bad : List.of(
+                List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.DetailItem("image", "javascript:alert(1)", null)),
+                List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.DetailItem("video", "/v.mp4", null)),
+                List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.DetailItem("text", null, "y".repeat(2001))),
+                java.util.Collections.nCopies(21, new com.shop.b2b2c.dto.ProductEditingDTOs.DetailItem("text", null, "段落")))) {
+            var badUpdate = new com.shop.b2b2c.dto.ProductEditingDTOs.Update(rev2, 1L, "custom dog tag", null, "image", null, bad,
+                    List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(1L, new java.math.BigDecimal("10.00"))));
+            mvc.perform(put("/api/v1/merchant/products/1").header("Authorization", "Bearer " + token)
+                            .contentType("application/json").content(json.writeValueAsString(badUpdate)))
+                    .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        }
+        assertEquals(canonical, jdbc.queryForObject("SELECT detail_images FROM product WHERE id=1", String.class));
+
+        // 空数组清空：落库 NULL，公开详情透出 null
+        String rev3 = editing.get(1L, 1L).revision();
+        var clearing = new com.shop.b2b2c.dto.ProductEditingDTOs.Update(rev3, 1L, "custom dog tag", null, "image", null,
+                List.of(), List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(1L, new java.math.BigDecimal("10.00"))));
+        mvc.perform(put("/api/v1/merchant/products/1").header("Authorization", "Bearer " + token)
+                        .contentType("application/json").content(json.writeValueAsString(clearing)))
+                .andExpect(status().isOk());
+        assertNull(jdbc.queryForObject("SELECT detail_images FROM product WHERE id=1", String.class));
+        mvc.perform(get("/api/v1/public/products/1"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.product.detailImages").isEmpty());
     }
 }

@@ -1,12 +1,50 @@
 /*
  * 文件：productEditing.mjs
  * 用途：商品发布初始库存、编辑表单快照、提交白名单、上下架、SKU增删及规格维护校验。
- * 维护注意：自动卡密发布数量为0，由导入生成；库存/类型/归属/SKU编码不进入编辑请求。revision必须来自服务端快照；前端规则不替代后端事务、租户和价格校验。SKU删除按钮只在零库存且非最后一个时可用，历史记录拦截由后端兜底；规格维护只提交spec_data，经行内单独保存。
+ * 维护注意：自动卡密发布数量为0，由导入生成；库存/类型/归属/SKU编码不进入编辑请求。revision必须来自服务端快照；前端规则不替代后端事务、租户和价格校验。SKU删除按钮只在零库存且非最后一个时可用，历史记录拦截由后端兜底；规格维护只提交spec_data，经行内单独保存。详情图文(detailImages)为image/text白名单条目，最多20条，url 1..255且须http(s)://或/开头，content 1..2000，口径与后端normalizeDetailImages一致；空数组提交为null（清空）。
  */
+export const DETAIL_ITEM_MAX = 20
+export const DETAIL_URL_MAX = 255
+export const DETAIL_TEXT_MAX = 2000
+
+/** 解析服务端detail_images JSON串为编辑条目；非法/空返回[]，绝不抛出（容错读取）。 */
+export function parseDetailImages(json) {
+  if (!json || typeof json !== 'string') return []
+  try {
+    const parsed = JSON.parse(json)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter(item => item && typeof item === 'object')
+      .map(item => item.type === 'image'
+        ? { type: 'image', url: String(item.url ?? ''), content: '' }
+        : { type: 'text', url: '', content: String(item.content ?? '') })
+      .filter(item => (item.type === 'image' ? item.url : item.content))
+  } catch { return [] }
+}
+
+/** 校验并规范化详情图文条目，非法抛Error；空数组返回null（清空语义）。 */
+export function detailImagesPayload(items) {
+  const list = Array.isArray(items) ? items : []
+  if (list.length === 0) return null
+  if (list.length > DETAIL_ITEM_MAX) throw new Error(`详情图文最多 ${DETAIL_ITEM_MAX} 条`)
+  return list.map(item => {
+    if (!item || (item.type !== 'image' && item.type !== 'text')) throw new Error('详情图文仅支持图片或文字条目')
+    if (item.type === 'image') {
+      const url = String(item.url ?? '').trim()
+      if (!url || url.length > DETAIL_URL_MAX || !(url.startsWith('https://') || url.startsWith('http://') || url.startsWith('/')))
+        throw new Error(`详情图片地址必填、不超过${DETAIL_URL_MAX}字符，且须以 http(s):// 或 / 开头`)
+      return { type: 'image', url }
+    }
+    const content = String(item.content ?? '').trim()
+    if (!content || content.length > DETAIL_TEXT_MAX) throw new Error(`详情文字必填且不超过${DETAIL_TEXT_MAX}字符`)
+    return { type: 'text', content }
+  })
+}
+
 export function editorForm(snapshot) {
   const p = snapshot.product
   return { revision: snapshot.revision, categoryId: p.categoryId, title: p.title, subTitle: p.subTitle ?? '',
-    mainImage: p.mainImage, serviceDesc: p.serviceDesc ?? '',
+    mainImage: p.mainImage, serviceDesc: p.serviceDesc ?? '', detailImages: parseDetailImages(p.detailImages),
     skus: snapshot.skus.map(s => ({ id: s.id, skuCode: s.skuCode, specData: s.specData, price: Number(s.price), stockQuantity: s.stockQuantity })) }
 }
 export function productCreationPayload(form) {
@@ -25,7 +63,7 @@ export function updatePayload(form) {
     return { id: s.id, price }
   })
   return { revision: form.revision, categoryId: form.categoryId, title: form.title, subTitle: form.subTitle,
-    mainImage: form.mainImage, serviceDesc: form.serviceDesc, skus }
+    mainImage: form.mainImage, serviceDesc: form.serviceDesc, detailImages: detailImagesPayload(form.detailImages), skus }
 }
 export function skuSpecPayload(specData) {
   const spec = String(specData ?? '').trim()

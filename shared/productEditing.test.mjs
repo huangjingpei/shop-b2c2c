@@ -5,7 +5,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload, skuCreatePayload, skuSpecPayload, canRemoveSku } from '../shop-admin-vue/src/utils/productEditing.mjs'
+import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload, skuCreatePayload, skuSpecPayload, canRemoveSku, parseDetailImages, detailImagesPayload, DETAIL_ITEM_MAX, DETAIL_URL_MAX, DETAIL_TEXT_MAX } from '../shop-admin-vue/src/utils/productEditing.mjs'
 function snapshot() {
   return { revision: 'revision', product: { id: 1, merchantId: 2, categoryId: 1, title: '商品', mainImage: 'image', goodsType: 2, status: 1 },
     skus: [{ id: 1, skuCode: 'code', specData: '{}', price: 10, stockQuantity: 9 }] }
@@ -29,7 +29,7 @@ test('保存请求只发送资料与售价，不能夹带库存、归属、类�
   const form = { ...editorForm(snapshot()), merchantId: 999, goodsType: 1, status: 1, minPrice: 1 }
   const payload = updatePayload(form)
   assert.deepEqual(payload.skus, [{ id: 1, price: 10 }])
-  assert.deepEqual(Object.keys(payload).sort(), ['revision', 'categoryId', 'title', 'subTitle', 'mainImage', 'serviceDesc', 'skus'].sort())
+  assert.deepEqual(Object.keys(payload).sort(), ['revision', 'categoryId', 'title', 'subTitle', 'mainImage', 'serviceDesc', 'detailImages', 'skus'].sort())
 })
 for (const price of [0, -1, 0.001, 100000000, NaN, Infinity, null, '']) test(`非法售价被拒绝：${String(price)}`, () => {
   const form = editorForm(snapshot()); form.skus[0].price = price
@@ -84,4 +84,55 @@ test('规格维护请求仅接受JSON对象且不超过255字符', () => {
   assert.deepEqual(skuSpecPayload('{}'), { specData: '{}' })
   for (const bad of ['', ' ', null, undefined, '[1]', 'not-json', 'x'.repeat(256), '"str"', '123'])
     assert.throws(() => skuSpecPayload(bad), String(bad))
+})
+
+test('详情图文解析容错：非法/空返回空数组，白名单字段抽取', () => {
+  assert.deepEqual(parseDetailImages(null), [])
+  assert.deepEqual(parseDetailImages(''), [])
+  assert.deepEqual(parseDetailImages('not-json'), [])
+  assert.deepEqual(parseDetailImages('{"a":1}'), [])
+  assert.deepEqual(parseDetailImages('[1,"x",null]'), [])
+  assert.deepEqual(
+    parseDetailImages('[{"type":"image","url":"/a.jpg","extra":1},{"type":"text","content":"段落"},{"type":"video","url":"/v.mp4"}]'),
+    [{ type: 'image', url: '/a.jpg', content: '' }, { type: 'text', url: '', content: '段落' }])
+})
+
+test('编辑表单从服务端JSON恢复详情图文，空值安全', () => {
+  const withDetail = snapshot()
+  withDetail.product.detailImages = '[{"type":"image","url":"/a.jpg"}]'
+  assert.deepEqual(editorForm(withDetail).detailImages, [{ type: 'image', url: '/a.jpg', content: '' }])
+  assert.deepEqual(editorForm(snapshot()).detailImages, [])
+})
+
+test('详情图文提交校验：trim、长度与协议白名单，空数组清空为null', () => {
+  assert.equal(detailImagesPayload([]), null)
+  assert.equal(detailImagesPayload(undefined), null)
+  assert.deepEqual(detailImagesPayload([
+    { type: 'image', url: '  https://cdn.example.com/a.jpg  ' },
+    { type: 'text', content: '  支持验货  ' }]),
+    [{ type: 'image', url: 'https://cdn.example.com/a.jpg' }, { type: 'text', content: '支持验货' }])
+  assert.equal(detailImagesPayload(Array(DETAIL_ITEM_MAX).fill({ type: 'text', content: 'x' })).length, DETAIL_ITEM_MAX)
+  assert.equal(detailImagesPayload([{ type: 'image', url: '/' + 'x'.repeat(DETAIL_URL_MAX - 1) }])[0].url.length, DETAIL_URL_MAX)
+  assert.equal(detailImagesPayload([{ type: 'text', content: 'y'.repeat(DETAIL_TEXT_MAX) }])[0].content.length, DETAIL_TEXT_MAX)
+})
+
+test('详情图文非法条目被拒绝', () => {
+  const bad = [
+    [{ type: 'video', url: '/v.mp4' }],
+    [{ type: 'image', url: '' }],
+    [{ type: 'image', url: '   ' }],
+    [{ type: 'image', url: 'ftp://a.jpg' }],
+    [{ type: 'image', url: 'x'.repeat(DETAIL_URL_MAX + 1) }],
+    [{ type: 'text', content: '' }],
+    [{ type: 'text', content: '  ' }],
+    [{ type: 'text', content: 'y'.repeat(DETAIL_TEXT_MAX + 1) }],
+    [null],
+    [{ url: '/a.jpg' }],
+    Array(DETAIL_ITEM_MAX + 1).fill({ type: 'text', content: 'x' }),
+  ]
+  for (const items of bad) assert.throws(() => detailImagesPayload(items), JSON.stringify(items))
+  // 保存请求同样拦截
+  const form = editorForm(snapshot())
+  form.detailImages = [{ type: 'image', url: 'javascript:alert(1)' }]
+  assert.throws(() => updatePayload(form))
 })

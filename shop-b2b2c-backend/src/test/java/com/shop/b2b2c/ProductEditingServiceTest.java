@@ -35,7 +35,7 @@ class ProductEditingServiceTest {
         when(categories.findById(1L)).thenReturn(Optional.of(new Category()));
         var store = new MerchantStore(); store.setStatus(1); when(stores.findById(1L)).thenReturn(Optional.of(store));
     }
-    Update edit(String revision, List<Price> prices) { return new Update(revision, 1L, "new", null, "new-image", null, prices); }
+    Update edit(String revision, List<Price> prices) { return new Update(revision, 1L, "new", null, "new-image", null, null, prices); }
     String revision() { return editing.get(1L, 1L).revision(); }
 
     @Test void revisionTracksEditableFieldsButNotLiveInventoryOrFormatting() {
@@ -46,17 +46,17 @@ class ProductEditingServiceTest {
     @Test void validUpdateUsesOnlyOwnedSkuPricesAndDerivedMinimum() {
         var update = edit(revision(), List.of(new Price(1L, new BigDecimal("2.50"))));
         when(mapper.updatePrice(1L, 1L, 1L, new BigDecimal("2.50"))).thenReturn(1);
-        when(mapper.updateMetadata(1L, 1L, update, new BigDecimal("2.50"))).thenReturn(1);
+        when(mapper.updateMetadata(1L, 1L, update, null, new BigDecimal("2.50"))).thenReturn(1);
         assertNotNull(editing.update(1L, 1L, update));
-        verify(mapper).updateMetadata(1L, 1L, update, new BigDecimal("2.50"));
+        verify(mapper).updateMetadata(1L, 1L, update, null, new BigDecimal("2.50"));
         assertEquals(7, sku.getStockQuantity());
     }
     @Test void unchangedFormSucceedsWithoutNoOpSqlWrites() {
         String original = revision();
-        var same = new Update(original, 1L, "old", null, "image", null, List.of(new Price(1L, new BigDecimal("10.00"))));
+        var same = new Update(original, 1L, "old", null, "image", null, null, List.of(new Price(1L, new BigDecimal("10.00"))));
         assertEquals(original, editing.update(1L, 1L, same).revision());
         verify(mapper, never()).updatePrice(any(), any(), any(), any());
-        verify(mapper, never()).updateMetadata(any(), any(), any(), any());
+        verify(mapper, never()).updateMetadata(any(), any(), any(), any(), any());
     }
     @ParameterizedTest @ValueSource(strings = {"0", "-1", "1.001", "100000000"})
     void illegalPriceDoesNotReadOrWriteDatabase(String price) {
@@ -66,7 +66,7 @@ class ProductEditingServiceTest {
     @Test void staleSnapshotAndForeignSkuNeverWrite() {
         assertEquals(409, assertThrows(BusinessException.class, () -> editing.update(1L, 1L, edit("a".repeat(64), List.of(new Price(1L, BigDecimal.ONE))))).getCode());
         assertEquals(400, assertThrows(BusinessException.class, () -> editing.update(1L, 1L, edit(revision(), List.of(new Price(2L, BigDecimal.ONE))))).getCode());
-        verify(mapper, never()).updatePrice(any(), any(), any(), any()); verify(mapper, never()).updateMetadata(any(), any(), any(), any());
+        verify(mapper, never()).updatePrice(any(), any(), any(), any()); verify(mapper, never()).updateMetadata(any(), any(), any(), any(), any());
     }
     @Test void foreignMerchantCannotLoadSnapshot() {
         assertEquals(404, assertThrows(BusinessException.class, () -> editing.get(2L, 1L)).getCode());
@@ -107,7 +107,7 @@ class ProductEditingServiceTest {
 
     @Test void nullFieldsAndDuplicateSkuAreRejected() {
         assertThrows(BusinessException.class, () -> editing.update(1L, 1L, null));
-        assertThrows(BusinessException.class, () -> editing.update(1L, 1L, new Update("a".repeat(64), 1L, " ", null, "image", null, List.of(new Price(1L, BigDecimal.ONE)))));
+        assertThrows(BusinessException.class, () -> editing.update(1L, 1L, new Update("a".repeat(64), 1L, " ", null, "image", null, null, List.of(new Price(1L, BigDecimal.ONE)))));
         assertThrows(BusinessException.class, () -> editing.update(1L, 1L, edit("a".repeat(64), List.of(new Price(1L, BigDecimal.ONE), new Price(1L, BigDecimal.TEN)))));
         verifyNoInteractions(mapper);
     }
@@ -221,5 +221,63 @@ class ProductEditingServiceTest {
                 .thenAnswer(call -> { sku.setSpecData("{\"规格\":\"年卡\"}"); return 1; }); // 模拟真实写后读到的最新快照
         var after = editing.updateSpec(1L, 1L, 1L, new SpecUpdate(before, "{\"规格\":\"年卡\"}"));
         assertNotEquals(before, after.revision());
+    }
+
+    @Test void detailImagesPersistAsCanonicalJsonAndEnterRevision() {
+        String before = revision();
+        var items = List.of(new DetailItem("image", " https://cdn.example.com/a.jpg ", null),
+                new DetailItem("text", null, "  产地直发，支持验货  "));
+        var update = new Update(before, 1L, "old", null, "image", null, items, List.of(new Price(1L, new BigDecimal("10.00"))));
+        String canonical = "[{\"type\":\"image\",\"url\":\"https://cdn.example.com/a.jpg\"}," +
+                "{\"type\":\"text\",\"content\":\"产地直发，支持验货\"}]";
+        when(mapper.updateMetadata(1L, 1L, update, canonical, new BigDecimal("10.00")))
+                .thenAnswer(call -> { product.setDetailImages(canonical); return 1; });
+        var after = editing.update(1L, 1L, update);
+        verify(mapper).updateMetadata(1L, 1L, update, canonical, new BigDecimal("10.00"));
+        assertNotEquals(before, after.revision()); // 图文纳入revision指纹
+    }
+
+    @Test void detailImagesUnchangedSkipsWriteAndNullClears() {
+        String canonical = "[{\"type\":\"image\",\"url\":\"/a.jpg\"}]";
+        product.setDetailImages(canonical);
+        String before = revision();
+        // 相同内容（即使字段顺序不同、含空白）不落库
+        var same = new Update(before, 1L, "old", null, "image", null,
+                List.of(new DetailItem("image", " /a.jpg ", null)), List.of(new Price(1L, new BigDecimal("10.00"))));
+        assertEquals(before, editing.update(1L, 1L, same).revision());
+        // null 清空
+        var clearing = new Update(revision(), 1L, "old", null, "image", null, null, List.of(new Price(1L, new BigDecimal("10.00"))));
+        when(mapper.updateMetadata(1L, 1L, clearing, null, new BigDecimal("10.00")))
+                .thenAnswer(call -> { product.setDetailImages(null); return 1; });
+        assertNotNull(editing.update(1L, 1L, clearing));
+        verify(mapper).updateMetadata(1L, 1L, clearing, null, new BigDecimal("10.00"));
+        verify(mapper, times(1)).updateMetadata(any(), any(), any(), any(), any());
+    }
+
+    @Test void detailImagesRejectInvalidEntriesBeforeDatabase() {
+        String rev = revision();
+        List<Price> prices = List.of(new Price(1L, new BigDecimal("10.00")));
+        List<List<DetailItem>> bad = List.of(
+                List.of(new DetailItem(null, "/a.jpg", null)),
+                List.of(new DetailItem("video", "/a.mp4", null)),
+                List.of(new DetailItem("image", null, null)),
+                List.of(new DetailItem("image", "   ", null)),
+                List.of(new DetailItem("image", "ftp://a.jpg", null)),
+                List.of(new DetailItem("image", "/" + "x".repeat(255), null)),
+                List.of(new DetailItem("text", null, null)),
+                List.of(new DetailItem("text", null, "  ")),
+                List.of(new DetailItem("text", null, "y".repeat(2001))),
+                java.util.Arrays.asList((DetailItem) null),
+                java.util.Collections.nCopies(21, new DetailItem("text", null, "段落")));
+        for (var items : bad) {
+            assertEquals(400, assertThrows(BusinessException.class, () -> editing.update(1L, 1L,
+                    new Update(rev, 1L, "old", null, "image", null, items, prices))).getCode(), String.valueOf(items));
+        }
+        verify(mapper, never()).updateMetadata(any(), any(), any(), any(), any());
+        // 边界：恰好20条通过
+        var ok = new Update(revision(), 1L, "old", null, "image", null,
+                java.util.Collections.nCopies(20, new DetailItem("text", null, "段落")), prices);
+        when(mapper.updateMetadata(eq(1L), eq(1L), eq(ok), anyString(), eq(new BigDecimal("10.00")))).thenReturn(1);
+        assertNotNull(editing.update(1L, 1L, ok));
     }
 }

@@ -8,7 +8,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { loadProductDetail, applyProductDetail, resetProductDetailState } from '../shop-storefront-vue/src/utils/productDetail.mjs'
+import { loadProductDetail, applyProductDetail, resetProductDetailState, parseDetailImages, isSkuSoldOut, isProductSoldOut } from '../shop-storefront-vue/src/utils/productDetail.mjs'
 
 const detailSource = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), '..', 'shop-storefront-vue', 'src', 'views', 'ProductDetail.vue'),
@@ -137,3 +137,36 @@ test('代付等视图绑定声明必须早于watch immediate执行', () => {
   }
   assert.equal(detailSource.split('const peerPayResult =').length - 1, 1, 'peerPayResult 不得重复声明')
 })
+
+test('F11 详情图文解析容错：非法输入返回空数组，仅保留image/text白名单', () => {
+  assert.deepEqual(parseDetailImages(null), [])
+  assert.deepEqual(parseDetailImages(''), [])
+  assert.deepEqual(parseDetailImages(123), [])
+  assert.deepEqual(parseDetailImages('not-json'), [])
+  assert.deepEqual(parseDetailImages('{"a":1}'), [])
+  assert.deepEqual(parseDetailImages('[1,"x",null,{},[]]'), [])
+  assert.deepEqual(parseDetailImages('[{"type":"video","url":"/v.mp4"}]'), [])
+  assert.deepEqual(parseDetailImages('[{"type":"image"},{"type":"text"}]'), [])
+  assert.deepEqual(
+    parseDetailImages('[{"type":"image","url":"/a.jpg","xss":"<script>"},{"type":"text","content":"<b>加粗</b>按纯文本展示"}]'),
+    [{ type: 'image', url: '/a.jpg' }, { type: 'text', content: '<b>加粗</b>按纯文本展示' }])
+})
+
+test('F11 售罄判定：单SKU与整品，缺省/非数按不可售处理', () => {
+  assert.equal(isSkuSoldOut({ stockQuantity: 0 }), true)
+  assert.equal(isSkuSoldOut({ stockQuantity: -1 }), true)
+  assert.equal(isSkuSoldOut({}), true)
+  assert.equal(isSkuSoldOut(null), true)
+  assert.equal(isSkuSoldOut({ stockQuantity: 'abc' }), true)
+  assert.equal(isSkuSoldOut({ stockQuantity: 5 }), false)
+  assert.equal(isProductSoldOut([]), true)
+  assert.equal(isProductSoldOut(null), true)
+  assert.equal(isProductSoldOut([{ stockQuantity: 0 }, { stockQuantity: 0 }]), true)
+  assert.equal(isProductSoldOut([{ stockQuantity: 0 }, { stockQuantity: 2 }]), false)
+})
+
+test('F11 详情页渲染侧不引入v-html，图文区按白名单渲染', () => {
+  assert.equal(detailSource.includes('v-html='), false, '详情图文禁止使用v-html指令渲染')
+  assert.ok(detailSource.includes('detailItems'), '必须经parseDetailImages容错解析后渲染')
+})
+

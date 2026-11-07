@@ -81,6 +81,12 @@ T30：交付标签与结算说明不得宣传未开通的支付直结、资金�
           <h1 class="text-lg md:text-xl font-black text-slate-900 leading-snug">{{ product.title }}</h1>
           <p class="text-xs text-slate-500 mt-1.5">{{ product.subTitle || '源头直发 · 一手批发底价' }}</p>
 
+          <!-- 整品售罄提示：全部规格无库存时阻断下单并明确告知 -->
+          <div v-if="productSoldOut" class="mt-4 p-3.5 rounded-xl bg-slate-100 border border-slate-200 text-xs text-slate-600 flex items-center space-x-2">
+            <span class="px-2 py-0.5 rounded bg-slate-700 text-white font-black text-[10px]">已售罄</span>
+            <span>本商品全部规格暂时售罄，暂不能下单；可联系店铺咨询补货。</span>
+          </div>
+
           <!-- 规格价格与可用库存展示卡片 -->
           <div class="mt-4 p-4 bg-orange-50/70 rounded-xl border border-orange-200/70">
             <div class="flex items-baseline justify-between">
@@ -107,9 +113,15 @@ T30：交付标签与结算说明不得宣传未开通的支付直结、资金�
                 :key="sku.id"
                 @click="currentSku = sku"
                 class="p-3 rounded-lg border text-left text-xs transition relative"
-                :class="currentSku?.id === sku.id ? 'border-orange-500 bg-orange-50/30 text-orange-950 font-bold ring-1 ring-orange-500 shadow-sm' : 'border-slate-200 hover:border-slate-300 text-slate-700'"
+                :class="[
+                  currentSku?.id === sku.id ? 'border-orange-500 bg-orange-50/30 text-orange-950 font-bold ring-1 ring-orange-500 shadow-sm' : 'border-slate-200 hover:border-slate-300 text-slate-700',
+                  isSkuSoldOut(sku) ? 'opacity-60' : ''
+                ]"
               >
-                <div>{{ formatSpec(sku.specData) }}</div>
+                <div class="flex items-center justify-between">
+                  <span>{{ formatSpec(sku.specData) }}</span>
+                  <span v-if="isSkuSoldOut(sku)" class="px-1.5 py-0.5 rounded bg-slate-700 text-white text-[10px] font-black">售罄</span>
+                </div>
                 <div class="flex items-center justify-between mt-1 text-[11px]">
                   <span class="text-orange-600 font-extrabold">￥{{ sku.price }}</span>
                   <span class="text-slate-400">库存: {{ sku.stockQuantity }}</span>
@@ -183,6 +195,23 @@ T30：交付标签与结算说明不得宣传未开通的支付直结、资金�
             </button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- 商家维护的详情图文：图片+纯文本段落按顺序渲染，不使用 v-html 杜绝 XSS -->
+    <div v-if="detailItems.length > 0" class="bg-white rounded-2xl border border-slate-100 shadow-sm mt-6 p-6">
+      <h2 class="text-base font-black text-slate-900 mb-4">商品详情</h2>
+      <div class="space-y-4">
+        <template v-for="(item, index) in detailItems" :key="index">
+          <img
+            v-if="item.type === 'image'"
+            :src="item.url"
+            :alt="`${product.title} 详情图 ${index + 1}`"
+            class="w-full rounded-xl border border-slate-100 object-contain bg-slate-50"
+            loading="lazy"
+          />
+          <p v-else class="text-sm text-slate-700 leading-relaxed whitespace-pre-line">{{ item.content }}</p>
+        </template>
       </div>
     </div>
 
@@ -422,10 +451,10 @@ import { receiptPath } from '../utils/buyerReceipt.mjs'
 import { createIdempotentSubmission } from '../utils/idempotency.mjs'
 const checkoutSubmission = createIdempotentSubmission()
 const peerSubmission = createIdempotentSubmission()
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import axios from 'axios'
-import { loadProductDetail } from '../utils/productDetail.mjs'
+import { loadProductDetail, parseDetailImages, isSkuSoldOut, isProductSoldOut } from '../utils/productDetail.mjs'
 import { copyText } from '@shared/clipboard.mjs'
 
 const route = useRoute()
@@ -441,6 +470,10 @@ const successResult = ref(null)
 const errorMsg = ref('')
 const retry = ref(0)
 let loadSequence = 0
+
+// 详情图文与售罄为纯展示派生：容错解析，不阻断页面加载；下单拦截仍以后端库存校验为准。
+const detailItems = computed(() => parseDetailImages(product.value?.detailImages))
+const productSoldOut = computed(() => skus.value.length > 0 && isProductSoldOut(skus.value))
 
 const currentPrice = () => {
   const base = currentSku.value?.price || product.value?.minPrice || 0

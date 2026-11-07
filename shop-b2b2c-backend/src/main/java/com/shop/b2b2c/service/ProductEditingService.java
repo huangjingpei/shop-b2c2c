@@ -8,6 +8,8 @@
  *  4. SKU增删共用商品行锁串行化；新增只写初始库存（自动卡密必须为0），不写库存调整流水；删除仅限零库存且无任何
  *     订单/卡密/预占/调整/审计等引用记录的SKU，外键与uk_merchant_sku_code唯一键作并发兜底。增删后按剩余SKU派生min_price。
  *  5. 规格维护只写spec_data：skuCode创建后不可改（代理细化）；规格本身不触发min_price变化。
+ *  6. 详情图文(detail_images)经 normalizeDetailImages 白名单校验（image/text、条数与长度上限）后存规范JSON，
+ *     null表示清空；该JSON串纳入revision指纹，并发编辑图文同样触发409冲突。
  */
 package com.shop.b2b2c.service;
 
@@ -56,6 +58,7 @@ public class ProductEditingService {
         }
         Editor current = snapshot(merchant, id);
         requireRevision(current, edit.revision());
+        String detailImagesJson = normalizeDetailImages(edit.detailImages());
         if (categories.findById(edit.categoryId()).isEmpty()) throw new BusinessException(400, "平台类目不存在");
         Set<Long> existing = new HashSet<>();
         current.skus().forEach(sku -> existing.add(sku.getId()));
@@ -69,10 +72,50 @@ public class ProductEditingService {
         var product = current.product();
         boolean metadataChanged = !Objects.equals(product.getCategoryId(), edit.categoryId()) || !Objects.equals(product.getTitle(), edit.title())
                 || !Objects.equals(product.getSubTitle(), edit.subTitle()) || !Objects.equals(product.getMainImage(), edit.mainImage())
-                || !Objects.equals(product.getServiceDesc(), edit.serviceDesc()) || !Objects.equals(money(product.getMinPrice()), money(minimum));
+                || !Objects.equals(product.getServiceDesc(), edit.serviceDesc()) || !Objects.equals(product.getDetailImages(), detailImagesJson)
+                || !Objects.equals(money(product.getMinPrice()), money(minimum));
         // 不把未变化的列写回：兼容MySQL useAffectedRows=true时无变化更新返回0。
-        if (metadataChanged && mapper.updateMetadata(id, merchant, edit, minimum) != 1) throw new BusinessException(409, "商品已变化，请刷新后重试");
+        if (metadataChanged && mapper.updateMetadata(id, merchant, edit, detailImagesJson, minimum) != 1) throw new BusinessException(409, "商品已变化，请刷新后重试");
         return snapshot(merchant, id);
+    }
+
+    /**
+     * 详情图文规范化：仅接受 image(url 1..255，http(s)://或/开头) 与 text(content 1..2000) 两种条目，
+     * 最多 20 条；null 或空列表表示清空（落库 NULL）。返回序列化后的规范 JSON（仅保留白名单字段），非法抛 400。
+     * 该JSON串同时进入 revision 指纹，商城端按纯文本/图片渲染，禁止 v-html。
+     */
+    private String normalizeDetailImages(List<DetailItem> items) {
+        if (items == null || items.isEmpty()) return null;
+        if (items.size() > 20) throw new BusinessException(400, "详情图文最多 20 条");
+        List<Map<String, String>> normalized = new ArrayList<>(items.size());
+        for (DetailItem item : items) {
+            if (item == null || item.type() == null) throw new BusinessException(400, "详情图文条目不合法");
+            switch (item.type()) {
+                case "image" -> {
+                    String url = item.url() == null ? "" : item.url().trim();
+                    if (url.isEmpty() || url.length() > 255
+                            || !(url.startsWith("https://") || url.startsWith("http://") || url.startsWith("/"))) {
+                        throw new BusinessException(400, "详情图片地址必填、不超过255字符，且须以 http(s):// 或 / 开头");
+                    }
+                    Map<String, String> entry = new LinkedHashMap<>();
+                    entry.put("type", "image"); entry.put("url", url);
+                    normalized.add(entry);
+                }
+                case "text" -> {
+                    String content = item.content() == null ? "" : item.content().trim();
+                    if (content.isEmpty() || content.length() > 2000) {
+                        throw new BusinessException(400, "详情文字必填且不超过2000字符");
+                    }
+                    Map<String, String> entry = new LinkedHashMap<>();
+                    entry.put("type", "text"); entry.put("content", content);
+                    normalized.add(entry);
+                }
+                default -> throw new BusinessException(400, "详情图文仅支持 image 或 text 条目");
+            }
+        }
+        try {
+            return json.writeValueAsString(normalized);
+        } catch (Exception e) { throw new IllegalStateException("序列化详情图文失败", e); }
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -192,7 +235,8 @@ public class ProductEditingService {
         var skus = mapper.lockSkus(id, merchant);
         try {
             var payload = Arrays.asList(product.getId(), product.getMerchantId(), product.getCategoryId(), product.getTitle(),
-                    product.getSubTitle(), product.getMainImage(), product.getServiceDesc(), product.getGoodsType(), product.getStatus(),
+                    product.getSubTitle(), product.getMainImage(), product.getServiceDesc(), product.getDetailImages(),
+                    product.getGoodsType(), product.getStatus(),
                     money(product.getMinPrice()), skus.stream().map(sku -> Arrays.asList(sku.getId(), sku.getSkuCode(), money(sku.getPrice()), sku.getSpecData())).toList());
             String revision = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(json.writeValueAsBytes(payload)));
             return new Editor(product, skus, revision);

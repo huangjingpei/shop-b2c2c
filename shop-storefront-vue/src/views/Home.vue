@@ -192,6 +192,10 @@
         <!-- 主图与属性徽标 -->
         <div class="relative aspect-video bg-slate-100 overflow-hidden">
           <img :src="p.mainImage" :alt="p.title" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
+          <!-- 售罄遮罩：总可用现货为0时置灰并醒目标记，仍允许进入详情查看 -->
+          <div v-if="Number(p.totalStock) <= 0" class="absolute inset-0 bg-slate-900/45 flex items-center justify-center z-10">
+            <span class="px-4 py-1.5 rounded-lg border-2 border-white text-white text-sm font-black tracking-widest rotate-[-8deg]">已售罄</span>
+          </div>
           <div class="absolute top-2.5 left-2.5 flex space-x-1.5">
             <span v-if="p.goodsType === 3" class="text-xs font-bold text-blue-700">定制服务 · 人工交付</span>
             <span

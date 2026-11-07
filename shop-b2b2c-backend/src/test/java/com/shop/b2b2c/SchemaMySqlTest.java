@@ -162,10 +162,10 @@ class SchemaMySqlTest {
             var original = mapper.lockProduct(1L, 1L);
             var sku = mapper.lockSkus(1L, 1L).get(0);
             int stock = sku.getStockQuantity();
-            var edit = new com.shop.b2b2c.dto.ProductEditingDTOs.Update("unused-at-mapper", 1L, "mysql-edited", null, "image", null,
+            var edit = new com.shop.b2b2c.dto.ProductEditingDTOs.Update("unused-at-mapper", 1L, "mysql-edited", null, "image", null, null,
                     List.of(new com.shop.b2b2c.dto.ProductEditingDTOs.Price(sku.getId(), new java.math.BigDecimal("3.50"))));
             assertEquals(1, mapper.updatePrice(1L, 1L, sku.getId(), new java.math.BigDecimal("3.50")));
-            assertEquals(1, mapper.updateMetadata(1L, 1L, edit, new java.math.BigDecimal("3.50")));
+            assertEquals(1, mapper.updateMetadata(1L, 1L, edit, null, new java.math.BigDecimal("3.50")));
             assertEquals(1, mapper.updateStatus(1L, 1L, 0));
             assertEquals(stock, mapper.lockSkus(1L, 1L).get(0).getStockQuantity());
             assertEquals("mysql-edited", mapper.lockProduct(1L, 1L).getTitle());

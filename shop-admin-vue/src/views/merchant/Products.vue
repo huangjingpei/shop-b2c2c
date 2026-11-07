@@ -1,7 +1,7 @@
 <!--
 文件：Products.vue
 用途：商家商品发布、资料/SKU售价编辑、上下架、SKU增删及独立库存调整记录入口。
-维护注意：卡密发布数量为0，由导入生成；资料保存不回写库存。实物/服务库存由店长或超管单独调整并留痕；网络失败保留幂等键，刷新不覆盖未保存资料。违规下架不可自行恢复，前端权限不替代服务端。SKU编码保存后不可改；删除仅限零库存且无历史记录的SKU，增删后仅替换SKU列表与版本号，保留未保存的资料输入。
+维护注意：卡密发布数量为0，由导入生成；资料保存不回写库存。实物/服务库存由店长或超管单独调整并留痕；网络失败保留幂等键，刷新不覆盖未保存资料。违规下架不可自行恢复，前端权限不替代服务端。SKU编码保存后不可改；删除仅限零库存且无历史记录的SKU，增删后仅替换SKU列表与版本号，保留未保存的资料输入。详情图文在编辑对话框维护（image/text条目、最多20条、可排序），空数组提交清空；渲染侧按纯文本展示杜绝XSS。
 -->
 <template>
   <div class="merchant-products">
@@ -74,6 +74,28 @@
         <el-form-item label="副标题"><el-input v-model="editForm.subTitle" maxlength="255" /></el-form-item>
         <el-form-item label="主图URL" required><el-input v-model="editForm.mainImage" maxlength="255" /></el-form-item>
         <el-form-item v-if="editingType === 3" label="服务交付说明"><el-input v-model="editForm.serviceDesc" type="textarea" :rows="4" maxlength="10000" /></el-form-item>
+        <el-form-item label="详情图文">
+          <div style="width: 100%;">
+            <div style="font-size: 12px; color: #64748b; margin-bottom: 8px;">
+              商城详情页按顺序展示；最多 20 条，图片地址须以 http(s):// 或 / 开头，文字不超过 2000 字；全部删除即清空详情。
+            </div>
+            <div v-for="(item, index) in editForm.detailImages" :key="index"
+              style="display: flex; gap: 8px; align-items: flex-start; margin-bottom: 8px;">
+              <el-select v-model="item.type" size="small" style="width: 90px;" @change="item.type === 'image' ? (item.content = '') : (item.url = '')">
+                <el-option label="图片" value="image" /><el-option label="文字" value="text" />
+              </el-select>
+              <el-input v-if="item.type === 'image'" v-model="item.url" size="small" maxlength="255" placeholder="图片地址，如 /detail-1.jpg" style="flex: 1;" />
+              <el-input v-else v-model="item.content" size="small" type="textarea" :rows="2" maxlength="2000" placeholder="详情文字段落（按纯文本展示）" style="flex: 1;" />
+              <el-button link size="small" :disabled="index === 0" @click="moveDetailItem(index, -1)">上移</el-button>
+              <el-button link size="small" :disabled="index === editForm.detailImages.length - 1" @click="moveDetailItem(index, 1)">下移</el-button>
+              <el-button link size="small" type="danger" @click="editForm.detailImages.splice(index, 1)">删除</el-button>
+            </div>
+            <div>
+              <el-button link type="primary" size="small" :disabled="editForm.detailImages.length >= 20" @click="editForm.detailImages.push({ type: 'image', url: '', content: '' })">+ 图片</el-button>
+              <el-button link type="primary" size="small" :disabled="editForm.detailImages.length >= 20" @click="editForm.detailImages.push({ type: 'text', url: '', content: '' })">+ 文字</el-button>
+            </div>
+          </div>
+        </el-form-item>
         <el-table :data="editForm.skus">
           <el-table-column prop="skuCode" label="SKU编码" />
           <el-table-column label="规格(JSON)" min-width="230"><template #default="{ row }">
@@ -268,6 +290,14 @@ const reloadEditor = async () => {
   try { await ElMessageBox.confirm('重新载入会覆盖当前未保存的修改，是否继续？', '重新载入', { type: 'warning' }) }
   catch { return }
   await openEditor({ id: editingId.value })
+}
+// 详情图文顺序调整：纯本地数组交换，保存时随 updatePayload 一起提交，非法内容由前后端双层校验拦截。
+const moveDetailItem = (index, offset) => {
+  const items = editForm.value.detailImages
+  const target = index + offset
+  if (target < 0 || target >= items.length) return
+  const [moved] = items.splice(index, 1)
+  items.splice(target, 0, moved)
 }
 const saveEditor = async () => {
   if (editSaving.value || editorLoading.value) return
