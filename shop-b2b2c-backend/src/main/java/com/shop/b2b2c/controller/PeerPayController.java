@@ -7,6 +7,7 @@
  *  3. T10：Idempotency-Key 只作为尝试键；恢复预占必须回传服务端上次签发的 X-Reservation-Token，最多重发 3 次。
  *  4. T36：建单、预占、海报限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。
  *  5. T26：建单幂等事务只落库返回 token；posterBase64 在 execute 返回后由 attachPoster 事务外补齐，失败不影响建单。
+ *  6. D27：公开详情可选接收 X-Reservation-Token，仅用于服务端比对 lockOwnedByCaller；响应不得回显 ownerToken。
  */
 package com.shop.b2b2c.controller;
 
@@ -56,11 +57,12 @@ public class PeerPayController {
 
     @Operation(summary = "【公开/免登录】查询代付详情 (含自愈到期、隐私脱敏、海报减载)")
     @GetMapping("/detail/{token}")
-    public R<PeerPayDTOs.DetailResponse> getPeerPayDetail(@PathVariable String token) {
+    public R<PeerPayDTOs.DetailResponse> getPeerPayDetail(@PathVariable String token,
+            @RequestHeader(value = "X-Reservation-Token", required = false) String reservationToken) {
         if (token == null || token.isBlank()) {
             throw new BusinessException(400, "代付凭证不能为空");
         }
-        PeerPayDTOs.DetailResponse detail = peerPayService.getPeerPayDetail(token);
+        PeerPayDTOs.DetailResponse detail = peerPayService.getPeerPayDetail(token, reservationToken);
         return R.ok("获取代付账单成功", detail);
     }
 

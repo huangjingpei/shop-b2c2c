@@ -435,6 +435,26 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    void detailLockOwnershipOnlyVisibleToOwner() throws Exception {
+        intent("owner-view");
+        var held = payments.preLockInventory("owner-view");
+        mvc.perform(get("/api/v1/peer-pay/detail/owner-view")
+                        .header("X-Reservation-Token", held.getOwnerToken()))
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.lockOwnedByCaller").value(true))
+                .andExpect(jsonPath("$.data.ownerToken").doesNotExist());
+        mvc.perform(get("/api/v1/peer-pay/detail/owner-view"))
+                .andExpect(jsonPath("$.data.lockOwnedByCaller").value(false));
+        mvc.perform(get("/api/v1/peer-pay/detail/owner-view")
+                        .header("X-Reservation-Token", "not-the-owner"))
+                .andExpect(jsonPath("$.data.lockOwnedByCaller").value(false));
+        payments.cancelPreLock("owner-view", held.getOwnerToken());
+        mvc.perform(get("/api/v1/peer-pay/detail/owner-view")
+                        .header("X-Reservation-Token", held.getOwnerToken()))
+                .andExpect(jsonPath("$.data.lockOwnedByCaller").doesNotExist());
+    }
+
+    @Test
     void legacyAndUnknownPeerStatesCannotBecomePaymentReservations() {
         for (String state : List.of("INTENT", "LOCKED", "UNKNOWN", "EXPIRED", "CANCELLED")) {
             String token = "state-" + state;

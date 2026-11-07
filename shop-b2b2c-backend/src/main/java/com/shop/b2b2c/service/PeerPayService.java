@@ -31,9 +31,14 @@ public interface PeerPayService {
     Map<String, Object> createPushPayOrder(PeerPayDTOs.PushPayCreateRequest req, Long merchantId);
 
     /**
-     * 免注册公开代付详情查询 (含自愈到期检查、脱敏买家隐私)
+     * 免注册公开代付详情查询 (含自愈到期检查、脱敏买家隐私)。
+     * D27：可选提交 X-Reservation-Token，服务端据此返回 lockOwnedByCaller，区分本人/其他付款人预占。
      */
-    PeerPayDTOs.DetailResponse getPeerPayDetail(String token);
+    default PeerPayDTOs.DetailResponse getPeerPayDetail(String token) {
+        return getPeerPayDetail(token, null);
+    }
+
+    PeerPayDTOs.DetailResponse getPeerPayDetail(String token, String presentedOwnerToken);
 
     /**
      * 两段式核心：调起支付收银台时原子预占库存 (锁 15 分钟)

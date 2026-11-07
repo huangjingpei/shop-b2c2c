@@ -289,6 +289,11 @@ public class PeerPayServiceImpl implements PeerPayService {
 
     @Override
     public PeerPayDTOs.DetailResponse getPeerPayDetail(String token) {
+        return getPeerPayDetail(token, null);
+    }
+
+    @Override
+    public PeerPayDTOs.DetailResponse getPeerPayDetail(String token, String presentedOwnerToken) {
         if (token == null || token.isBlank()) {
             throw new BusinessException(400, "代付凭证不能为空");
         }
@@ -358,6 +363,11 @@ public class PeerPayServiceImpl implements PeerPayService {
             } else {
                 resp.setLockSecondsRemaining(remaining);
                 resp.setLockExpireTime(order.getLockExpireTime());
+                // D27：服务端比对请求方凭证与预占所有者，前端不再仅靠 sessionStorage 猜测归属。
+                InventoryReservation held = reservationMapper.find(order.getId());
+                resp.setLockOwnedByCaller(held != null && "HELD".equals(held.getStatus())
+                        && presentedOwnerToken != null
+                        && presentedOwnerToken.trim().equals(held.getOwnerToken()));
             }
         } else if (PeerStatus.INIT.equals(order.getPeerStatus()) && order.getCreatedAt() != null) {
             LocalDateTime orderExpireAt = order.getCreatedAt().plusMinutes(15);
@@ -415,8 +425,9 @@ public class PeerPayServiceImpl implements PeerPayService {
         // T10/R10：仅当提交服务端上次签发的 ownerToken 时才允许恢复；同预占最多重发 3 次 (Q17)。
         if (PeerStatus.RESERVED_LOCK.equals(order.getPeerStatus())) {
             InventoryReservation existing = reservationMapper.find(order.getId());
-            if (existing != null && "HELD".equals(existing.getStatus())
-                    && existing.getExpiresAt() != null && existing.getExpiresAt().isAfter(LocalDateTime.now())) {
+            boolean activeHold = existing != null && "HELD".equals(existing.getStatus())
+                    && existing.getExpiresAt() != null && existing.getExpiresAt().isAfter(LocalDateTime.now());
+            if (activeHold) {
                 if (presented != null && presented.equals(existing.getOwnerToken())) {
                     if (reservationMapper.incrementReissue(order.getId()) != 1) {
                         throw new BusinessException(409, "预占凭据重发次数已达上限，请等待预占到期后重新发起");
@@ -431,8 +442,11 @@ public class PeerPayServiceImpl implements PeerPayService {
                     recovered.setMessage("已恢复现有库存预占状态");
                     return recovered;
                 }
+                throw new BusinessException("订单已被其他付款人预占中，请稍候再试");
             }
-            throw new BusinessException("订单已被其他付款人预占中，请稍候再试");
+            // D27：预占记录缺失/已释放/已过期但订单仍停留在 RESERVED_LOCK，属于本次预占已失效，
+            // 不能再提示“其他付款人预占”，避免同一付款人刷新后被误导。
+            throw new BusinessException(409, "本次预占已结束，请刷新账单后重试");
         }
 
         if (!PeerStatus.INIT.equals(order.getPeerStatus())) {

@@ -6,6 +6,8 @@
  *  - Idempotency-Key（尝试键）与 X-Reservation-Token（ownerToken）必须是两个独立值；尝试键只用于后端留痕。
  *  - 存储不可用（隐私模式/配额）时降级为内存 Map，保证当前页面仍能完成一次预占。
  *  - 刷新后必须带 ownerToken 再调 pre-lock，否则后端会把同一付款人误判为“已被其他付款人预占中”。
+ *  - D27：详情页带 ownerToken 调 GET detail，由服务端返回 lockOwnedByCaller；前端只在 true 时展示本人预占，
+ *    false 时显示“他人预占”并禁用抢锁。ownerToken 仍不得出现在任何响应/URL/日志中。
  *  - 上线顺序：后端 T10（8874b6a，X-Reservation-Token 契约）必须先于本前端发布；禁止前端先发，
  *    否则新前端向旧后端回传 ownerToken 不会被识别，刷新恢复仍会 409 误报。
  */

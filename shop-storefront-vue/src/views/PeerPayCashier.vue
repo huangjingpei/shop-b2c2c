@@ -4,6 +4,7 @@
 维护注意：本页不接收或展示领取凭证、卡密及服务交付内容；真实付款未开放，禁止恢复随机付款人Mock调用。将来取消预占须保存ownerToken并显式授权；本地倒计时不是库存锁或支付状态权威来源。
 T28：账单与海报请求使用序号，token 切换时立即清空旧海报并作废旧响应；失败态可重试；复制走 @shared/clipboard.mjs，失败只提示手动复制。
 T29：点击代付前调用 pre-lock 预占库存，ownerToken 存 sessionStorage（与 Idempotency-Key 尝试键分离），刷新恢复时回传 X-Reservation-Token；离开/超时/切换 token 调 cancel-lock 释放。上线顺序：后端 T10（8874b6a）必须先于本页发布，禁止前端先发，否则刷新恢复会被误判为“已被其他付款人预占中”。
+D27：详情请求带 X-Reservation-Token，由服务端返回 lockOwnedByCaller 区分本人/他人预占；他人预占时禁用抢锁按钮；pagehide/卸载使用 fetch keepalive 兜底释放。
 -->
 <template>
   <div class="min-h-screen bg-[#F5F5F7] text-slate-800 antialiased pb-12">
@@ -166,6 +167,12 @@ T29：点击代付前调用 pre-lock 预占库存，ownerToken 存 sessionStorag
               <p class="text-[11px] text-emerald-600 mt-1 leading-snug">支付通道暂未开放；离开页面或倒计时结束会自动释放库存，不会扣款。</p>
             </div>
 
+            <!-- D27：服务端确认预占属于其他付款人，避免本页重复抢锁或误报失败 -->
+            <div v-if="lockedByOther" role="status" class="rounded-xl bg-amber-50 border border-amber-100 px-3 py-2.5 text-left">
+              <p class="text-xs font-bold text-amber-700">订单已被其他付款人预占</p>
+              <p class="text-[11px] text-amber-600 mt-1 leading-snug">倒计时结束或对方主动释放后即可重新预占；本页不会重复占用商家库存。</p>
+            </div>
+
             <!-- T29：预占失败明确提示，并提供刷新账单路径 -->
             <div v-if="reserveError" role="alert" class="rounded-xl bg-rose-50 border border-rose-100 px-3 py-2.5 text-left">
               <p class="text-xs font-semibold text-rose-700">{{ reserveError }}</p>
@@ -181,13 +188,14 @@ T29：点击代付前调用 pre-lock 预占库存，ownerToken 存 sessionStorag
             <!-- 主按钮：美团经典亮黄 (#FFD101)；已预占时仅提示支付未开放 -->
             <button 
               @click="reservation ? notifyPaymentUnavailable() : startReservation()" 
-              :disabled="reserving"
+              :disabled="reserving || lockedByOther"
               class="w-full py-3.5 rounded-full bg-[#FFD101] hover:bg-[#FFC500] active:scale-[0.99] text-slate-900 font-bold text-base shadow-sm transition flex items-center justify-center space-x-1.5 disabled:opacity-50"
             >
               <span v-if="reserving" class="flex items-center space-x-2">
                 <div class="w-4 h-4 border-2 border-slate-900 border-t-transparent rounded-full animate-spin"></div>
                 <span>正在抢占锁定库存...</span>
               </span>
+              <span v-else-if="lockedByOther">等待其他付款人完成或释放</span>
               <span v-else-if="reservation">确认付款（暂未开放）</span>
               <span v-else>
                 立即代付（先预占库存，待付 ¥{{ Number(detail.payAmount).toFixed(2) }}）
@@ -400,6 +408,10 @@ const loading = ref(true)
 // T29：预占状态。ownerToken 只保存在 sessionStorage，尝试幂等键与 ownerToken 分离。
 const reserving = ref(false)
 const reservation = ref(null)
+// D27：服务端 lockOwnedByCaller=false 时标记“他人预占”，禁用本页重复抢锁。
+const lockedByOther = ref(false)
+// D27：本组件当前加载的分享 token；卸载兜底释放必须用加载时的 token，不能读可能已切换的路由参数。
+const activeToken = ref('')
 const reserveError = ref('')
 const errorMsg = ref('')
 const detail = ref(null)
@@ -520,17 +532,23 @@ const openPosterModal = async () => {
 
 const loadDetail = async (currentToken = route.params.token) => {
   if (!currentToken) return
+  activeToken.value = currentToken
   const sequence = ++detailSequence
   if (timer) clearInterval(timer)
   resetPoster()
   reservation.value = null
+  lockedByOther.value = false
   reserveError.value = ''
   loading.value = true
   errorMsg.value = ''
   detail.value = null
   isPaidSuccess.value = false
+  // D27：带着本地 ownerToken 查询详情，由服务端判定预占是否属于当前付款人。
+  const ownerToken = readOwnerToken(currentToken)
   try {
-    const res = await axios.get(`/api/v1/peer-pay/detail/${currentToken}`)
+    const res = await axios.get(`/api/v1/peer-pay/detail/${currentToken}`, {
+      headers: ownerToken ? { 'X-Reservation-Token': ownerToken } : {}
+    })
     // T28：旧账单响应不得覆盖当前 token 的详情。
     if (sequence !== detailSequence) return
     if (res.data.code === 200) {
@@ -538,10 +556,30 @@ const loadDetail = async (currentToken = route.params.token) => {
       if (detail.value.productTitle) {
         document.title = `【代付详情】需付款 ¥${Number(detail.value.payAmount).toFixed(2)} - ${detail.value.productTitle}`
       }
-      if (detail.value.lockSecondsRemaining > 0 && detail.value.peerStatus !== 'PAID') {
-        startCountdownTimer(detail.value.lockSecondsRemaining)
+      const seconds = Math.max(0, Number(detail.value.lockSecondsRemaining) || 0)
+      if (detail.value.peerStatus === 'RESERVED_LOCK' && seconds > 0) {
+        // 旧后端不返回 lockOwnedByCaller 时回退到本地凭据判断，避免部署顺序造成误判。
+        const ownedByCaller = detail.value.lockOwnedByCaller === true
+          || (detail.value.lockOwnedByCaller === undefined && Boolean(ownerToken))
+        if (ownedByCaller && ownerToken) {
+          reservation.value = {
+            ownerToken,
+            lockSeconds: seconds,
+            expireTime: detail.value.lockExpireTime
+          }
+        } else {
+          lockedByOther.value = true
+          // 本地残留的旧凭据不再有效，立即清理，避免后续误带。
+          if (ownerToken) {
+            clearOwnerToken(currentToken)
+            clearAttemptKey(currentToken)
+          }
+        }
+        startCountdownTimer(seconds)
       } else if (detail.value.peerStatus === 'PAID') {
         isPaidSuccess.value = true
+      } else if (seconds > 0) {
+        startCountdownTimer(seconds)
       }
     } else {
       errorMsg.value = res.data.message || '账单不存在'
@@ -563,17 +601,40 @@ const loadAdBanner = async () => {
   } catch (ignored) {}
 }
 
-// T29：取消/释放预占。带 X-Reservation-Token 头，403/404 视为已释放，不阻断本地清理。
+// T29/D27：取消/释放预占。带 X-Reservation-Token 头，403/404 视为已释放，不阻断本地清理。
 const releaseReservationFor = async (token, ownerToken) => {
   if (!token || !ownerToken) return
   try {
-    await axios.post(`/api/v1/peer-pay/cancel-lock/${token}`, null, { headers: buildCancelHeaders(ownerToken) })
+    await axios.post(`/api/v1/peer-pay/cancel-lock/${token}`, null, {
+      headers: buildCancelHeaders(ownerToken),
+      // 页面卸载时请求会被浏览器中止；keepalive 提高释放请求送达率。
+      keepalive: true
+    })
   } catch (e) {
     // 预占可能已到期或被服务端释放，忽略错误但继续清理本地凭据。
   } finally {
     clearOwnerToken(token)
     clearAttemptKey(token)
   }
+}
+
+// D27：pagehide/卸载兜底释放。fetch keepalive 不依赖组件生命周期，浏览器关闭页面前仍尽量发出。
+const releaseOnUnload = () => {
+  const token = activeToken.value || currentShareToken()
+  const ownerToken = reservation.value?.ownerToken || readOwnerToken(token)
+  if (!token || !ownerToken) return
+  try {
+    fetch(`/api/v1/peer-pay/cancel-lock/${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: buildCancelHeaders(ownerToken),
+      credentials: 'same-origin',
+      keepalive: true
+    })
+  } catch (e) {
+    // 忽略网络错误，服务端预占到期后也会自动释放。
+  }
+  clearOwnerToken(token)
+  clearAttemptKey(token)
 }
 
 const notifyPaymentUnavailable = () => {
@@ -587,7 +648,7 @@ const refreshBill = () => {
 
 const startReservation = async () => {
   const token = currentShareToken()
-  if (!token || reserving.value) return
+  if (!token || reserving.value || lockedByOther.value) return
   reserving.value = true
   reserveError.value = ''
   try {
@@ -642,12 +703,14 @@ watch(() => route.params.token, (newToken, oldToken) => {
   }
 }, { immediate: true })
 
+// D27：浏览器关闭/切后台/刷新时用 keepalive 兜底释放，避免把库存锁留到 15 分钟自然到期。
+window.addEventListener('pagehide', releaseOnUnload)
+
 onUnmounted(() => {
   if (timer) clearInterval(timer)
-  // T29：页面卸载（含浏览器返回）时释放当前预占。
-  const token = currentShareToken()
-  const ownerToken = reservation.value?.ownerToken || readOwnerToken(token)
-  if (token && ownerToken) releaseReservationFor(token, ownerToken)
+  // T29/D27：页面卸载（含浏览器返回）时释放当前预占。
+  releaseOnUnload()
+  window.removeEventListener('pagehide', releaseOnUnload)
   // T28：卸载后丢弃未完成的详情/海报响应
   detailSequence++
   posterSequence++
