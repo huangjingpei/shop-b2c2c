@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --port 3001 --host",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test ../shared/"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.1",

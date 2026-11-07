@@ -1,8 +1,9 @@
 # 文件：ci.yml
-# 用途：T38 最小只读 CI：后端 H2 单测、shared 前端规则用例、deploy 隔离用例；每次执行结果写入 Job Summary。
+# 用途：T38/D39 最小只读 CI：后端 H2 单测、shared 前端规则用例（经前端 npm test 入口）、deploy 隔离用例与已部署烟测框架；每次执行结果写入 Job Summary。
 # 维护注意：只在 GitHub 托管运行器执行，不连接业务数据库、不执行真实发布构建、不写生产目录。
+# 已部署烟测仅在设置 SMOKE_BASE_URL 时执行，未设置时 unittest 显式 skipped 且不得视为通过；不要在本工作流注入生产凭据。
 # H2 通过不能替代真实 MySQL；Nginx 用例依赖本步骤安装的系统 nginx，缺依赖时 unittest 显式 skipped 且不得视为通过。
-# CI 绿只表示对应隔离用例通过，不替代 V03–V07 的人工验收或前端生产构建。
+# CI 绿只表示对应隔离用例通过，不替代人工验收或前端生产构建。
 name: regression
 
 on:
@@ -44,8 +45,8 @@ jobs:
           cache-dependency-path: shop-storefront-vue/package-lock.json
       - name: 安装样式测试锁定依赖
         run: npm --prefix shop-storefront-vue ci
-      - name: shared 规则用例
-        run: node --test shared/*.test.mjs
+      - name: shared 规则用例（前端 test 入口）
+        run: npm --prefix shop-storefront-vue test
       - name: 记录执行结果
         if: always()
         run: echo "- shared-node-tests: ${{ job.status }}" >> "$GITHUB_STEP_SUMMARY"
