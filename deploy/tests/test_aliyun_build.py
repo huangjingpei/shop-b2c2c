@@ -99,12 +99,12 @@ printf 'fixture' > "$output/assets/main.js"
         release = self.latest.resolve()
         self.assertNotEqual(self.old, release)
         for name in ["app.jar", "schema.sql", "BUILD_ID", "www-admin/index.html",
-                     "www-admin/assets/main.js", "www-mobile/m/index.html", "www-mobile/m/assets/main.js"]:
+                     "www-admin/assets/main.js", "www-storefront/index.html", "www-storefront/assets/main.js"]:
             self.assertGreater((release / name).stat().st_size, 0)
         calls = (self.root / "calls").read_text(encoding="utf-8")
         self.assertEqual(2, calls.count("npm ci --no-audit --no-fund"))
         self.assertIn("base=/console/ project=shop-admin-vue", calls)
-        self.assertIn("base=/m/ project=shop-storefront-vue", calls)
+        self.assertIn("base=/ project=shop-storefront-vue", calls)
         self.assertNotIn("build:h5", calls)
         self.assertFalse((release / "BUILD_FAILED").exists())
 

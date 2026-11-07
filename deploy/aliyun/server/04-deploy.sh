@@ -11,7 +11,7 @@ GMALL_ROOT="${GMALL_ROOT:-/opt/gmall}"
 RELEASE_DIR="${GMALL_ROOT}/releases/latest"
 APP_DIR="${GMALL_ROOT}/app"
 WWW_ADMIN_DIR="${GMALL_ROOT}/www/admin"
-WWW_MOBILE_DIR="${GMALL_ROOT}/www/mobile"
+WWW_STOREFRONT_DIR="${GMALL_ROOT}/www/storefront"
 BACKUP_DIR="${GMALL_ROOT}/backups"
 SERVICE_NAME="gmall-backend"
 HEALTH_TIMEOUT="${HEALTH_TIMEOUT:-120}"
@@ -50,7 +50,7 @@ log "阶段 1/4：执行发布产物预检..."
 [[ ! -f "${RELEASE_DIR}/BUILD_FAILED" ]] || die "发布目录标记为构建失败，拒绝部署: ${RELEASE_DIR}"
 [[ -s "${RELEASE_DIR}/app.jar" ]] || die "版本目录缺少有效非空 app.jar: ${RELEASE_DIR}"
 [[ -s "${RELEASE_DIR}/www-admin/index.html" ]] || die "版本目录缺少有效管理端前端: ${RELEASE_DIR}/www-admin/index.html"
-[[ -s "${RELEASE_DIR}/www-mobile/m/index.html" ]] || die "版本目录缺少有效移动商城前端: ${RELEASE_DIR}/www-mobile/m/index.html"
+[[ -s "${RELEASE_DIR}/www-storefront/index.html" ]] || die "版本目录缺少有效商城前端: ${RELEASE_DIR}/www-storefront/index.html"
 [[ -s "${RELEASE_DIR}/schema.sql" ]] || die "版本目录缺少数据库表结构文件: ${RELEASE_DIR}/schema.sql"
 
 if [[ -f "${GMALL_ROOT}/.env" ]]; then set -a; . "${GMALL_ROOT}/.env"; set +a; fi
@@ -213,11 +213,11 @@ if [[ -d "${WWW_ADMIN_DIR}" && -n "$(ls -A "${WWW_ADMIN_DIR}" 2>/dev/null)" ]]; 
   HAD_ADMIN="yes"
 fi
 
-HAD_MOBILE="no"
-if [[ -d "${WWW_MOBILE_DIR}" && -n "$(ls -A "${WWW_MOBILE_DIR}" 2>/dev/null)" ]]; then
-  mkdir -p "${CURRENT_BACKUP}/www-mobile"
-  cp -r "${WWW_MOBILE_DIR}/." "${CURRENT_BACKUP}/www-mobile/"
-  HAD_MOBILE="yes"
+HAD_STOREFRONT="no"
+if [[ -d "${WWW_STOREFRONT_DIR}" && -n "$(ls -A "${WWW_STOREFRONT_DIR}" 2>/dev/null)" ]]; then
+  mkdir -p "${CURRENT_BACKUP}/www-storefront"
+  cp -r "${WWW_STOREFRONT_DIR}/." "${CURRENT_BACKUP}/www-storefront/"
+  HAD_STOREFRONT="yes"
 fi
 
 HAD_NGINX="no"
@@ -246,14 +246,10 @@ rollback_on_failure() {
       cp -r "${CURRENT_BACKUP}/www-admin/." "${WWW_ADMIN_DIR}/"
       log "已恢复旧版管理端前端"
     fi
-    if [[ "${HAD_MOBILE}" == "yes" && -d "${CURRENT_BACKUP}/www-mobile" ]]; then
-      rm -rf "${WWW_MOBILE_DIR:?}"/*
-      cp -r "${CURRENT_BACKUP}/www-mobile/." "${WWW_MOBILE_DIR}/"
-      ln -sfn "${GMALL_ROOT}/uploads" "${WWW_MOBILE_DIR}/uploads"
-      if [[ -d "${WWW_MOBILE_DIR}/m" ]]; then
-        ln -sfn "${GMALL_ROOT}/uploads" "${WWW_MOBILE_DIR}/m/uploads"
-      fi
-      log "已恢复旧版移动商城前端"
+    if [[ "${HAD_STOREFRONT}" == "yes" && -d "${CURRENT_BACKUP}/www-storefront" ]]; then
+      rm -rf "${WWW_STOREFRONT_DIR:?}"/*
+      cp -r "${CURRENT_BACKUP}/www-storefront/." "${WWW_STOREFRONT_DIR}/"
+      log "已恢复旧版商城前端"
     fi
 
     # 3. 恢复 Nginx；首次部署则移除本次新建站点，避免留下半配置
@@ -302,12 +298,8 @@ install -m 644 "${RELEASE_DIR}/app.jar" "${APP_DIR}/app.jar"
 log "部署 B 端管理后台 -> ${WWW_ADMIN_DIR}"
 rm -rf "${WWW_ADMIN_DIR:?}"/* && cp -r "${RELEASE_DIR}/www-admin/." "${WWW_ADMIN_DIR}/"
 
-log "部署 C 端移动商城 -> ${WWW_MOBILE_DIR}"
-rm -rf "${WWW_MOBILE_DIR:?}"/* && cp -r "${RELEASE_DIR}/www-mobile/." "${WWW_MOBILE_DIR}/"
-ln -sfn "${GMALL_ROOT}/uploads" "${WWW_MOBILE_DIR}/uploads"
-if [[ -d "${WWW_MOBILE_DIR}/m" ]]; then
-  ln -sfn "${GMALL_ROOT}/uploads" "${WWW_MOBILE_DIR}/m/uploads"
-fi
+log "部署 C 端商城 -> ${WWW_STOREFRONT_DIR}"
+rm -rf "${WWW_STOREFRONT_DIR:?}"/* && cp -r "${RELEASE_DIR}/www-storefront/." "${WWW_STOREFRONT_DIR}/"
 
 # 配置 systemd 服务：专用非 root 用户 + 最小权限加固
 APP_SERVICE_USER="${APP_SERVICE_USER:-gmall}"
@@ -316,7 +308,7 @@ if ! id -u "${APP_SERVICE_USER}" >/dev/null 2>&1; then
   useradd --system --home "${GMALL_ROOT}" --shell /usr/sbin/nologin "${APP_SERVICE_USER}" \
     || die "创建服务用户 ${APP_SERVICE_USER} 失败"
 fi
-chown -R "${APP_SERVICE_USER}" "${APP_DIR}" "${WWW_ADMIN_DIR}" "${WWW_MOBILE_DIR}" \
+chown -R "${APP_SERVICE_USER}" "${APP_DIR}" "${WWW_ADMIN_DIR}" "${WWW_STOREFRONT_DIR}" \
   "${GMALL_ROOT}/logs" "${GMALL_ROOT}/uploads"
 
 JAVA_BIN="$(readlink -f "$(command -v java)")"
@@ -549,7 +541,7 @@ cat <<EOF
 
 $(printf '\033[0;32m[deploy]\033[0m') GMall 部署成功上线！
   B 端管理后台: ${PROTO}://${SERVER_NAME}${ADMIN_PORTAL_PATH:-/console}/
-  C 端移动商城: ${PROTO}://${SERVER_NAME}/m/
+  C 端商城: ${PROTO}://${SERVER_NAME}/
   API 接口前缀: ${PROTO}://${SERVER_NAME}/api/
   服务运行状态: $(systemctl is-active ${SERVICE_NAME})
   日志文件路径: ${GMALL_ROOT}/logs/backend.log

@@ -31,7 +31,8 @@ class CloudEnvTemplateContractTest(unittest.TestCase):
         for cloud, cfg in CLOUDS.items():
             with self.subTest(cloud=cloud):
                 script = (cfg["server_dir"] / "02-init-infra.sh").read_text(encoding="utf-8")
-                self.assertIn("APP_FRONTEND_STOREFRONT_URL=https://${%s}/m/" % cfg["server_name_key"], script)
+                self.assertIn("APP_FRONTEND_STOREFRONT_URL=https://${%s}" % cfg["server_name_key"], script)
+                self.assertNotIn("APP_FRONTEND_STOREFRONT_URL=https://${%s}/m/" % cfg["server_name_key"], script)
                 self.assertIn("useUnicode=true", script)
                 self.assertNotIn("useUNICODE", script)
 

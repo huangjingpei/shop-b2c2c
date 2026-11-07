@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文件：01-prepare-server.sh
 # 用途：服务器依赖、目录及基础运行环境准备。
-# 维护注意：会安装或调整系统组件，先确认目标主机与权限；不可为验证注释而实际执行。 阿里云目录仍含GMall/PDK等历史工程路径，使用前必须对照当前项目核对，详见D34/D35。
+# 维护注意：会安装或调整系统组件，先确认目标主机与权限；不可为验证注释而实际执行。D35起商城为根路径www/storefront，历史GMall/PDK目录仅作参考。
 # ============================================================================
 # GMall 服务器环境检查与骨架创建
 # 用法：sudo bash /opt/gmall/scripts/01-prepare-server.sh
@@ -22,7 +22,7 @@ die()  { printf '\033[0;31m[prepare][ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ---------------- 目录骨架 ----------------
 log "创建目录骨架 ${GMALL_ROOT}/..."
-mkdir -p "${GMALL_ROOT}"/{src,app,releases,www/admin,www/mobile,logs,config,scripts,backups}
+mkdir -p "${GMALL_ROOT}"/{src,app,releases,www/admin,www/storefront,logs,config,scripts,backups}
 chmod 755 "${GMALL_ROOT}"
 
 # ---------------- 虚拟内存 (Swap) 自动检测与配置 ----------------

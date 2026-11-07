@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文件：02-init-infra.sh
 # 用途：初始化数据库账号/表结构和检查Redis等基础设施。
-# 维护注意：涉及真实凭据与数据库写入；确认目标库、权限和备份，不能将演示初始化当成存量迁移或恢复验证。只导入schema.sql结构，禁止导入demo-seed.sql；.env必须写入SPRING_DATASOURCE_USERNAME/PASSWORD供应用显式注入，不允许回退root；首次管理员通过BOOTSTRAP_ADMIN_USERNAME/PASSWORD受控创建，禁止使用admin123。GMALL_SERVER_NAME/CERTBOT_EMAIL/DB_NAME/DB_USER/REDIS_PASS/BOOTSTRAP_ADMIN_* 必须由调用方显式提供，缺失即终止，不再写回任何默认口令。 阿里云目录仍含GMall/PDK等历史工程路径，使用前必须对照当前项目核对，详见D34/D35。
+# 维护注意：涉及真实凭据与数据库写入；确认目标库、权限和备份，不能将演示初始化当成存量迁移或恢复验证。只导入schema.sql结构，禁止导入demo-seed.sql；.env必须写入SPRING_DATASOURCE_USERNAME/PASSWORD供应用显式注入，不允许回退root；首次管理员通过BOOTSTRAP_ADMIN_USERNAME/PASSWORD受控创建，禁止使用admin123。GMALL_SERVER_NAME/CERTBOT_EMAIL/DB_NAME/DB_USER/REDIS_PASS/BOOTSTRAP_ADMIN_* 必须由调用方显式提供，缺失即终止，不再写回任何默认口令；APP_FRONTEND_STOREFRONT_URL 由域名派生为商城根地址。
 # ============================================================================
 # GMall 基础设施初始化 —— 生成 .env 配置 / 创建 MySQL 数据库 / 导入 schema
 #
@@ -80,7 +80,7 @@ SPRING_DATA_REDIS_DATABASE=${REDIS_DB_VALUE}
 GMALL_SERVER_NAME=${GMALL_SERVER_NAME}
 CERTBOT_EMAIL=${CERTBOT_EMAIL}
 ADMIN_PORTAL_PATH=${ADMIN_PORTAL_PATH_VALUE}
-APP_FRONTEND_STOREFRONT_URL=https://${GMALL_SERVER_NAME}/m/
+APP_FRONTEND_STOREFRONT_URL=https://${GMALL_SERVER_NAME}
 
 # ---- 财务双人复核（生产必须开启；需至少两个具备财务权限的后台账号）----
 # 关闭时仅允许开发/试点单管理员模式，同人复核会落 SAME_OPERATOR 并打 WARN，禁止用于生产。

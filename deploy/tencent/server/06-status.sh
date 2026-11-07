@@ -48,7 +48,7 @@ ADMIN_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SE
 ok "B 端管理后台首页响应: HTTP ${ADMIN_RESP}"
 
 STORE_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SERVER_DOMAIN}" "http://127.0.0.1/" || echo 000)"
-ok "C 端移动商城首页响应: HTTP ${STORE_RESP}"
+ok "C 端商城首页响应: HTTP ${STORE_RESP}"
 
 sec "数据库与缓存连接"
 if [[ -n "${DB_PASS:-}" ]] && mysql -u"${DB_USER:-shop_b2b2c}" -p"${DB_PASS}" -h127.0.0.1 "${DB_NAME:-shop_b2b2c}" -e "SELECT COUNT(*) FROM trade_order;" >/dev/null 2>&1; then

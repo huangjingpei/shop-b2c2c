@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文件：deploy.sh
 # 用途：组织源码打包、远程上传及分阶段部署；源码布局由package-source.sh统一为当前三个工程。
-# 维护注意：执行会连接远端并可能覆盖源码/重启服务；核对主机、环境和打包清单，不要把bash语法检查变成真实发布。 阿里云目录仍含GMall/PDK等历史工程路径，使用前必须对照当前项目核对，详见D34/D35。
+# 维护注意：执行会连接远端并可能覆盖源码/重启服务；核对主机、环境和打包清单，不要把bash语法检查变成真实发布。D35起商城为根路径www/storefront，历史GMall/PDK目录仅作参考，以当前脚本为准。
 # ============================================================================
 # GMall 阿里云一键部署脚本
 # 适用环境：Windows Git Bash / macOS / Linux
@@ -173,7 +173,7 @@ case "${MODE}" in
       run_remote 01-prepare-server.sh
     else
       log "SKIP_PREPARE=yes，跳过系统环境初始化"
-      ssh "${SSH_OPTS[@]}" "${REMOTE_HOST}" "mkdir -p ${REMOTE_ROOT}/{src,app,releases,www/admin,www/mobile,logs,config,scripts,backups}"
+      ssh "${SSH_OPTS[@]}" "${REMOTE_HOST}" "mkdir -p ${REMOTE_ROOT}/{src,app,releases,www/admin,www/storefront,logs,config,scripts,backups}"
     fi
     upload_source
     run_remote 02-init-infra.sh "${COMMON_ENVS[@]}"
@@ -189,7 +189,7 @@ if [[ "${MODE}" == "full" || "${MODE}" == "deploy" ]]; then
 
 $(printf '\033[0;32m[deploy]\033[0m') GMall 部署完成！
   B 端管理后台: ${GMALL_PUBLIC_BASE_URL}${ADMIN_PORTAL_PATH:-/console}/
-  C 端移动商城: ${GMALL_PUBLIC_BASE_URL}/m/
+  C 端商城: ${GMALL_PUBLIC_BASE_URL}/
   管理员账号  : ${BOOTSTRAP_ADMIN_USERNAME}（首次部署由 BOOTSTRAP_ADMIN_PASSWORD 创建，口令不在日志输出）
   
   查看状态命令: bash deploy/aliyun/deploy.sh --status

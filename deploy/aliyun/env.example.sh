@@ -1,6 +1,6 @@
 # 文件：env.example.sh
 # 用途：云部署参数填写示例。
-# 维护注意：由部署脚本source读取；保留变量名、引号和格式，不公开真实密钥，不要把示例默认值直接用于生产。CERTBOT_EMAIL/DB_NAME/DB_USER/REDIS_PASS/BOOTSTRAP_ADMIN_* 为必填项，留空时初始化与部署预检直接终止，不再回退默认口令。 阿里云目录仍含GMall/PDK等历史工程路径，使用前必须对照当前项目核对，详见D34/D35。
+# 维护注意：由部署脚本source读取；保留变量名、引号和格式，不公开真实密钥，不要把示例默认值直接用于生产。CERTBOT_EMAIL/DB_NAME/DB_USER/REDIS_PASS/BOOTSTRAP_ADMIN_* 为必填项，留空时初始化与部署预检直接终止，不再回退默认口令。D35起商城为根路径www/storefront，历史GMall/PDK目录仅作参考。
 # ============================================================================
 # GMall 阿里云部署配置示例
 # 复制为 env.sh 后修改: cp env.example.sh env.sh

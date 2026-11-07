@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文件：06-status.sh
 # 用途：只读汇总服务、代理及基础设施状态。
-# 维护注意：探针成功只能说明相应检查通过，不能证明真实支付、渠道结算或备份恢复正常；不要输出凭据。 阿里云目录仍含GMall/PDK等历史工程路径，使用前必须对照当前项目核对，详见D34/D35。
+# 维护注意：探针成功只能说明相应检查通过，不能证明真实支付、渠道结算或备份恢复正常；不要输出凭据。D35起商城为根路径www/storefront，历史GMall/PDK目录仅作参考，以当前脚本为准。
 # ============================================================================
 # GMall 服务状态自检脚本
 # 用法：sudo bash /opt/gmall/scripts/06-status.sh
@@ -47,8 +47,8 @@ fi
 ADMIN_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SERVER_DOMAIN}" "http://127.0.0.1/console/" || echo 000)"
 ok "B 端管理后台首页响应: HTTP ${ADMIN_RESP}"
 
-MOBILE_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SERVER_DOMAIN}" "http://127.0.0.1/m/" || echo 000)"
-ok "C 端移动商城首页响应: HTTP ${MOBILE_RESP}"
+STORE_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SERVER_DOMAIN}" "http://127.0.0.1/" || echo 000)"
+ok "C 端商城首页响应: HTTP ${STORE_RESP}"
 
 sec "数据库与缓存连接"
 if [[ -n "${DB_PASS:-}" ]] && mysql -u"${DB_USER:-shop_b2b2c}" -p"${DB_PASS}" -h127.0.0.1 "${DB_NAME:-shop_b2b2c}" -e "SELECT COUNT(*) FROM trade_order;" >/dev/null 2>&1; then

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文件：02-init-infra.sh
 # 用途：初始化数据库账号/表结构和检查Redis等基础设施。
-# 维护注意：涉及真实凭据与数据库写入；确认目标库、权限和备份，不能将演示初始化当成存量迁移或恢复验证。Redis检查不修改持久化写保护配置，故障须修复根因。SHOP_SERVER_NAME/CERTBOT_EMAIL/DB_NAME/DB_USER/REDIS_PASS/BOOTSTRAP_ADMIN_* 必须由调用方显式提供，缺失即终止，不再写回任何默认口令；APP_FRONTEND_STOREFRONT_URL 由域名派生为 /m/ 基准地址。
+# 维护注意：涉及真实凭据与数据库写入；确认目标库、权限和备份，不能将演示初始化当成存量迁移或恢复验证。Redis检查不修改持久化写保护配置，故障须修复根因。SHOP_SERVER_NAME/CERTBOT_EMAIL/DB_NAME/DB_USER/REDIS_PASS/BOOTSTRAP_ADMIN_* 必须由调用方显式提供，缺失即终止，不再写回任何默认口令；APP_FRONTEND_STOREFRONT_URL 由域名派生为商城根地址。
 # ============================================================================
 # Shop-B2B2C 基础设施初始化 —— 生成 .env 配置 / 创建 MySQL 数据库 / 导入 schema
 #
@@ -80,7 +80,7 @@ SPRING_DATA_REDIS_DATABASE=${REDIS_DB_VALUE}
 SHOP_SERVER_NAME=${SHOP_SERVER_NAME}
 CERTBOT_EMAIL=${CERTBOT_EMAIL}
 ADMIN_PORTAL_PATH=${ADMIN_PORTAL_PATH_VALUE}
-APP_FRONTEND_STOREFRONT_URL=https://${SHOP_SERVER_NAME}/m/
+APP_FRONTEND_STOREFRONT_URL=https://${SHOP_SERVER_NAME}
 
 # ---- 财务双人复核（生产必须开启；需至少两个具备财务权限的后台账号）----
 # 关闭时仅允许开发/试点单管理员模式，同人复核会落 SAME_OPERATOR 并打 WARN，禁止用于生产。

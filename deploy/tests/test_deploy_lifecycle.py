@@ -55,7 +55,7 @@ class _DeployFixture(unittest.TestCase):
 
     SCRIPT = TENCENT_SCRIPT          # 子类可覆盖
     ROOT_VAR = "SHOP_ROOT"           # 或 GMALL_ROOT
-    FRONTEND_B = "www-storefront"    # 子类可改 www-mobile
+    FRONTEND_B = "www-storefront"  # 两云统一根路径商城；D35 已移除 www-mobile/m
     FRONTEND_B_INDEX = "www-storefront/index.html"
     SERVICE_NAME = "shop-b2b2c"
 
@@ -87,7 +87,7 @@ class _DeployFixture(unittest.TestCase):
             "DB_PASS=testpass\nDB_USER=shop_b2b2c\nDB_NAME=shop_b2b2c\n"
             "SPRING_DATASOURCE_USERNAME=shop_b2b2c\nSPRING_DATASOURCE_PASSWORD=testpass\n"
             "REDIS_PASS=testredispass\n"
-            "APP_FRONTEND_STOREFRONT_URL=https://shop.example.com/m/\n"
+            "APP_FRONTEND_STOREFRONT_URL=https://shop.example.com\n"
             "BOOTSTRAP_ADMIN_USERNAME=bootstrapadmin\nBOOTSTRAP_ADMIN_PASSWORD=Bootstrap#2026\n"
             "GMALL_SERVER_NAME=shop.example.com\nSHOP_SERVER_NAME=shop.example.com\n"
             "CERTBOT_EMAIL=ops@example.com\n",
@@ -203,14 +203,9 @@ class _DeployFixture(unittest.TestCase):
             (rel / "www-admin" / "index.html").write_text("<html>ADMIN</html>", encoding="utf-8")
 
         storefront_base = rel / self.FRONTEND_B
-        if self.FRONTEND_B == "www-mobile":
-            (rel / "www-mobile" / "m").mkdir(parents=True, exist_ok=True)
-            if storefront:
-                (rel / "www-mobile" / "m" / "index.html").write_text("<html>MOBILE</html>", encoding="utf-8")
-        else:
-            storefront_base.mkdir(exist_ok=True)
-            if storefront:
-                (storefront_base / "index.html").write_text("<html>STORE</html>", encoding="utf-8")
+        storefront_base.mkdir(exist_ok=True)
+        if storefront:
+            (storefront_base / "index.html").write_text("<html>STORE</html>", encoding="utf-8")
 
         if schema:
             (rel / "schema.sql").write_text(
@@ -573,14 +568,14 @@ class TencentDeployLifecycleTest(_DeployFixture):
 class AliyunDeployLifecycleTest(_DeployFixture):
     SCRIPT = ALIYUN_SCRIPT
     ROOT_VAR = "GMALL_ROOT"
-    FRONTEND_B = "www-mobile"
+    FRONTEND_B = "www-storefront"
     SERVICE_NAME = "gmall-backend"
 
     def setUp(self):
         super().setUp()
-        # 阿里云 www 结构
-        self.www_mobile = self.root / "www/mobile"
-        self.www_mobile.mkdir(parents=True, exist_ok=True)
+        # 阿里云 www 结构（D35 起与腾讯云一致：商城根路径）
+        self.www_storefront = self.root / "www/storefront"
+        self.www_storefront.mkdir(parents=True, exist_ok=True)
 
     def _run(self, extra_env=None, capture=True):
         result = super()._run(extra_env=extra_env, capture=capture)
@@ -603,12 +598,12 @@ class AliyunDeployLifecycleTest(_DeployFixture):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("app.jar", result.stderr)
 
-    def test_preflight_rejects_missing_mobile(self):
-        """R29 阿里云预检：缺少 www-mobile/m/index.html 应阻断部署。"""
+    def test_preflight_rejects_missing_storefront(self):
+        """R29/D35 阿里云预检：缺少 www-storefront/index.html 应阻断部署。"""
         self._make_release(storefront=False)
         result = self._run()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("www-mobile", result.stderr)
+        self.assertIn("www-storefront", result.stderr)
 
     def test_preflight_uses_schema_sql_not_mysql(self):
         """R29 阿里云预检：必须使用 schema.sql，不再接受 schema-mysql.sql 名称。"""
@@ -619,8 +614,8 @@ class AliyunDeployLifecycleTest(_DeployFixture):
         (rel / "app.jar").write_bytes(b"PK fake")
         (rel / "www-admin").mkdir(exist_ok=True)
         (rel / "www-admin" / "index.html").write_text("<html>A</html>", encoding="utf-8")
-        (rel / "www-mobile" / "m").mkdir(parents=True, exist_ok=True)
-        (rel / "www-mobile" / "m" / "index.html").write_text("<html>M</html>", encoding="utf-8")
+        (rel / "www-storefront").mkdir(parents=True, exist_ok=True)
+        (rel / "www-storefront" / "index.html").write_text("<html>S</html>", encoding="utf-8")
         # 只放 schema-mysql.sql，不放 schema.sql
         (rel / "schema-mysql.sql").write_text("CREATE TABLE t (id INT);", encoding="utf-8")
         result = self._run()
@@ -646,7 +641,7 @@ class AliyunDeployLifecycleTest(_DeployFixture):
             "DB_USER=shop_b2b2c\nDB_PASS=testpass\nDB_NAME=shop_b2b2c\n"
             "SPRING_DATASOURCE_USERNAME=shop_b2b2c\n"
             "REDIS_PASS=testredispass\n"
-            "APP_FRONTEND_STOREFRONT_URL=https://shop.example.com/m/\n"
+            "APP_FRONTEND_STOREFRONT_URL=https://shop.example.com\n"
             "BOOTSTRAP_ADMIN_USERNAME=bootstrapadmin\nBOOTSTRAP_ADMIN_PASSWORD=Bootstrap#2026\n"
             "SHOP_SERVER_NAME=shop.example.com\nGMALL_SERVER_NAME=shop.example.com\n"
             "CERTBOT_EMAIL=ops@example.com\n",

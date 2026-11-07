@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # 文件：03-build.sh
 # 用途：为当前B2B2C后端、管理端和商城生成完整的阿里云候选发布产物。
-# 维护注意：保留GMALL_ROOT及www-mobile/m布局以兼容历史调用；不执行部署、迁移或测试。
+# 维护注意：产物为www-admin与www-storefront，商城在根路径/；不执行部署、迁移或测试。
 # 三个工程与锁文件必须齐全，全部产物校验后才原子切换latest，失败保留旧指针及排错目录。
-# 管理端base默认/console/，商城为/m/；D35旧部署脚本及Nginx尚需核对，构建成功不代表可上线。
+# 管理端base默认/console/，商城base为/；网关模板需与该布局一致（见D35/部署入口与路径约定）。
 set -euo pipefail
 
 GMALL_ROOT="${GMALL_ROOT:-/opt/gmall}"
@@ -13,10 +13,13 @@ ADMIN_PORTAL_PATH="${ADMIN_PORTAL_PATH%/}"
 [[ "${ADMIN_PORTAL_PATH}" =~ ^(/[A-Za-z0-9_-]+)+$ ]] || {
   printf '[build][ERROR] ADMIN_PORTAL_PATH必须是非根目录路径\n' >&2; exit 1;
 }
-[[ "${ADMIN_PORTAL_PATH}" != /m && "${ADMIN_PORTAL_PATH}" != /m/* && \
-   "${ADMIN_PORTAL_PATH}" != /api && "${ADMIN_PORTAL_PATH}" != /api/* ]] || {
-  printf '[build][ERROR] 管理端路径不能占用商城或API路径\n' >&2; exit 1;
-}
+case "${ADMIN_PORTAL_PATH}" in
+  /api|/api/*|/m|/m/*|/invite|/invite/*|/actuator|/actuator/*|\
+  /assets|/assets/*|/uploads|/uploads/*|/healthz|/readyz)
+    printf '[build][ERROR] 管理端路径不能占用API、商城或网关保留路径\n' >&2
+    exit 1
+    ;;
+esac
 
 log() { printf '[build] %s\n' "$*"; }
 die() { printf '[build][ERROR] %s\n' "$*" >&2; exit 1; }
@@ -83,7 +86,7 @@ build_frontend() {
   [[ -n "${asset}" && -s "${asset}" ]] || die "${project}缺少非空JavaScript产物"
 }
 build_frontend shop-admin-vue "${ADMIN_PORTAL_PATH}/" "${RELEASE_DIR}/www-admin"
-build_frontend shop-storefront-vue /m/ "${RELEASE_DIR}/www-mobile/m"
+build_frontend shop-storefront-vue / "${RELEASE_DIR}/www-storefront"
 
 basename "${RELEASE_DIR}" > "${RELEASE_DIR}/BUILD_ID"
 ln -s -- "${RELEASE_DIR}" "${TEMP_LINK}"

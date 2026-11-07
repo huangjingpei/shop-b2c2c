@@ -1,7 +1,8 @@
 # 文件：test_deploy_build_contract.py
 # 用途：不依赖 Linux/Bash 的静态契约用例，锁定两云构建脚本仍指向当前三个工程、当前npm脚本，且产物目录与部署预检一致。
 # 维护注意：只读取脚本文本，不执行构建、不连接服务器；与 test_aliyun_build.py/test_tencent_build.py 的假工具演练互补。
-# 跨平台运行（Windows 也可），用于防止 D34 的 apps/admin-vue3、build:h5 等旧路径回归；通过不代表真实构建或部署已验收。
+# 跨平台运行（Windows 也可），用于防止 D34 的 apps/admin-vue3、build:h5 等旧路径回归，以及 D35 的 /m、/invite、Actuator 旧网关入口回归。
+# 通过不代表真实构建、Nginx 校验或部署已验收。
 import unittest
 from pathlib import Path
 
@@ -47,7 +48,7 @@ class BuildScriptContractTest(unittest.TestCase):
 
     def test_deploy_prechecks_match_build_output_paths(self):
         cases = {
-            "aliyun": ("www-admin", "www-mobile/m"),
+            "aliyun": ("www-admin", "www-storefront"),
             "tencent": ("www-admin", "www-storefront"),
         }
         for cloud, outputs in cases.items():
@@ -59,6 +60,23 @@ class BuildScriptContractTest(unittest.TestCase):
                                   f"{cloud} 构建脚本未产出 {output}")
                     self.assertIn(f'${{RELEASE_DIR}}/{output}/index.html', deploy,
                                   f"{cloud} 部署预检未校验 {output}")
+
+    def test_cloud_gateway_templates_follow_unified_paths(self):
+        for cloud in ("aliyun", "tencent"):
+            for conf in ("server/nginx-gmall.conf", "server/nginx-gmall-bootstrap.conf",
+                         "server/nginx-shop.conf", "server/nginx-shop-bootstrap.conf"):
+                path = DEPLOY / cloud / conf
+                if not path.exists():
+                    continue
+                text = read(f"{cloud}/{conf}")
+                with self.subTest(conf=f"{cloud}/{conf}"):
+                    self.assertIn("www/storefront", text)
+                    self.assertIn("/api/v1/auth/health", text)
+                    self.assertIn("/api/v1/auth/ready", text)
+                    self.assertNotIn("return 302 /m/", text)
+                    self.assertNotIn("www/mobile", text)
+                    self.assertNotIn("www-mobile", text)
+                    self.assertIn("location = /m { return 404; }", text)
 
     def test_aliyun_entry_uses_source_packer_and_current_build(self):
         script = read("aliyun/deploy.sh")
