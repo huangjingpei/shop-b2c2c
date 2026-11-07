@@ -1,7 +1,7 @@
 <!--
 文件：Cards.vue
-用途：本店卡密去重导入、成功批次/成员查询、脱敏库存浏览、店长按SKU限量查看明文、二次确认导出、安全作废及存量一致性核对。
-维护注意：列表只展示指纹尾号派生的脱敏标识，不保存也不打印明文；单条查看与导出必须先经确认弹窗，导出结果仅在内存生成下载，不写日志/本地缓存；权限由服务端接口层核验，前端隐藏按钮不是权限边界。批次/成员游标分别管理，不伪造旧批次；未确认作废结果保留原因供重试。一致性核对为只读账实比对，失败保留上次结果，不自动修复漂移。
+用途：本店卡密去重导入、成功批次/成员查询、脱敏库存浏览、店长按SKU限量查看明文、二次确认导出、安全作废、存量一致性核对及已售卡补发。
+维护注意：列表只展示指纹尾号派生的脱敏标识，不保存也不打印明文；单条查看与导出必须先经确认弹窗，导出结果仅在内存生成下载，不写日志/本地缓存；权限由服务端接口层核验，前端隐藏按钮不是权限边界。批次/成员游标分别管理，不伪造旧批次；未确认作废结果保留原因供重试。一致性核对为只读账实比对，失败保留上次结果，不自动修复漂移。补发仅限已售卡且每张一次，同原因重试返回原结果；新卡明文仅在成功弹窗展示，不写日志/本地状态。
 -->
 <template>
   <div class="merchant-cards">
@@ -51,9 +51,11 @@
           </template>
         </el-table-column>
         <el-table-column prop="createdAt" label="入库时间" />
-        <el-table-column label="操作" width="120"><template #default="{ row }">
+        <el-table-column label="操作" width="200"><template #default="{ row }">
           <el-button v-if="canVoidCard(currentRole, row)" type="danger" link :loading="voidLoading === row.id" :disabled="voidLoading !== null" @click="voidCard(row)">作废</el-button>
           <el-button v-if="row.status === 2" link type="primary" @click="showVoidRecord(row)">作废记录</el-button>
+          <el-button v-if="canReissueCard(currentRole, row)" type="warning" link :loading="reissueLoading === row.id" :disabled="reissueLoading !== null" @click="reissueCard(row)">补发</el-button>
+          <el-button v-if="Number(row.status) === 1" link type="primary" @click="showReissueRecord(row)">补发记录</el-button>
         </template></el-table-column>
       </el-table>
     </el-card>
@@ -158,7 +160,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
-import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery, cardListQuery, cardExportPayload, consistencyIssue } from '../../utils/cardAssets.mjs'
+import { cardImportPayload, cardStatusLabel, canVoidCard, canReissueCard, reissuePayload, cardBatchQuery, cardListQuery, cardExportPayload, consistencyIssue } from '../../utils/cardAssets.mjs'
 import { merchantProductRows } from '../../utils/merchantProducts.mjs'
 import { sessionBucket, sessionGet } from '../../utils/authSession.mjs'
 
@@ -340,6 +342,34 @@ const showVoidRecord = async row => {
     const { data } = await request.get(`/merchant/cards/${row.id}/void-record`)
     await ElMessageBox.alert(`操作人ID：${data.actorId}；库存：${data.beforeStock} → ${data.afterStock}；原因：${data.reason}；时间：${data.createdAt}`, '作废记录')
   } catch { /* 取消弹窗不额外提示，接口失败由请求层处理。 */ }
+}
+
+// F12 补发：每张已售卡只能补发一次；同原因重试返回原结果不再扣库存，明文仅在弹窗展示不落盘。
+const reissueLoading = ref(null)
+const pendingReissueReasons = new Map()
+const reissueCard = async row => {
+  if (reissueLoading.value !== null) return
+  reissueLoading.value = row.id
+  try {
+    let reason
+    try {
+      const result = await ElMessageBox.prompt('补发将从同SKU未售卡密取一张绑定原订单，消耗1点可售库存并记录操作人审计。请勿填写卡密或个人信息。', '补发卡密', {
+        inputValue: pendingReissueReasons.get(row.id) || '', inputValidator: value => Boolean(value?.trim()) && value.length <= 255 || '请填写最多255字符的原因'
+      })
+      reason = result.value.trim(); pendingReissueReasons.set(row.id, reason)
+    } catch { return }
+    const { data } = await request.post(`/merchant/cards/${row.id}/reissue`, reissuePayload(reason))
+    pendingReissueReasons.delete(row.id)
+    await ElMessageBox.alert(`新卡明文：${data.newCard.cardContent}`, '补发成功（请立即交付买家，勿复制到聊天或日志）')
+    await loadCards()
+  } catch { /* 未确认成功保留原因，同原因重试返回原补发结果不再扣库存。 */ }
+  finally { reissueLoading.value = null }
+}
+const showReissueRecord = async row => {
+  try {
+    const { data } = await request.get(`/merchant/cards/${row.id}/reissue-record`)
+    await ElMessageBox.alert(`新卡ID：${data.newCardId}；订单号：${data.orderSn}；操作人ID：${data.actorId}；库存：${data.beforeStock} → ${data.afterStock}；原因：${data.reason}；时间：${data.createdAt}`, '补发记录')
+  } catch { /* 无记录或接口失败由请求层提示，不伪造记录。 */ }
 }
 
 onMounted(() => {

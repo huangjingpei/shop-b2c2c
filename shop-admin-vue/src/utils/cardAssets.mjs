@@ -1,7 +1,7 @@
 /*
  * 文件：cardAssets.mjs
- * 用途：卡密导入白名单/批内去重、批次/库存查询参数、导出确认载荷、作废状态/权限及一致性核对行状态展示规则。
- * 维护注意：卡密不得输出到日志；行首尾清理兼容Java trim的ASCII控制符，不改变大小写或内部字符。库存列表只消费后端脱敏标识，禁止把明文写入本地状态/缓存。导出载荷固定 confirm=true 且条数有上限，但仍须由后端校验角色与写审计。本地角色只管展示，历史去重、预占、状态和库存校验由后端完成。一致性核对为只读，行状态仅用于展示高亮，不构成修复依据。
+ * 用途：卡密导入白名单/批内去重、批次/库存查询参数、导出确认载荷、作废状态/权限、一致性核对行状态及补发展示规则。
+ * 维护注意：卡密不得输出到日志；行首尾清理兼容Java trim的ASCII控制符，不改变大小写或内部字符。库存列表只消费后端脱敏标识，禁止把明文写入本地状态/缓存。导出载荷固定 confirm=true 且条数有上限，但仍须由后端校验角色与写审计。本地角色只管展示，历史去重、预占、状态和库存校验由后端完成。一致性核对为只读，行状态仅用于展示高亮，不构成修复依据。补发仅限店长/超管且每张已售卡一次，幂等重试与库存扣减由后端兜底。
  * T37：商品/SKU/游标编号以十进制字符串请求，避免 Number() 截断超过 2^53-1 的编号；拒绝已失去精度的 number 输入。
  */
 export function cardImportPayload(form) {
@@ -16,6 +16,18 @@ export function cardImportPayload(form) {
 export function cardStatusLabel(status) { return ({ 0: '未售出（在库）', 1: '已售出', 2: '已作废' })[status] ?? '未知状态' }
 export function canVoidCard(role, card) {
   return ['SUPERADMIN', 'MERCHANT_ADMIN'].includes(role) && card.status === 0 && card.orderSn == null
+}
+/** F12 补发授权展示：仅店长/超管，且卡已售出并绑定订单；每张卡只能补发一次，服务端按源卡ID幂等拒绝。 */
+export function canReissueCard(role, card) {
+  if (!(role === 'SUPERADMIN' || role === 'MERCHANT_ADMIN')) return false
+  return Boolean(card) && Number(card.status) === 1 && typeof card.orderSn === 'string' && card.orderSn.length > 0
+}
+/** F12 补发载荷：原因 trim 后必填且最多255字符，与服务端口径一致。 */
+export function reissuePayload(reason) {
+  const value = reason == null ? '' : String(reason).trim()
+  if (!value) throw new Error('请填写补发原因')
+  if (value.length > 255) throw new Error('补发原因最多255字符')
+  return { reason: value }
 }
 const positiveId = value => {
   if (value == null || String(value).trim() === '') return undefined

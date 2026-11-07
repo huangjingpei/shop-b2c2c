@@ -403,6 +403,22 @@ CREATE TABLE IF NOT EXISTS virtual_card_void (
   CONSTRAINT chk_card_void_stock CHECK (before_stock >= 1 AND after_stock = before_stock - 1)
 );
 
+-- F12 补发授权：源已售卡主键幂等，新卡唯一，不含卡密内容。
+CREATE TABLE IF NOT EXISTS card_reissue (
+  source_card_id BIGINT NOT NULL PRIMARY KEY,
+  new_card_id BIGINT NOT NULL,
+  merchant_id BIGINT NOT NULL,
+  product_id BIGINT NOT NULL,
+  sku_id BIGINT NOT NULL,
+  order_sn VARCHAR(64) NOT NULL,
+  actor_id BIGINT NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  before_stock INT NOT NULL,
+  after_stock INT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT chk_card_reissue_stock CHECK (before_stock >= 1 AND after_stock = before_stock - 1)
+);
+
 -- 17/18. 成功卡密导入批次及成员：不保存卡密正文，不回填旧记录。
 CREATE TABLE IF NOT EXISTS card_import_batch (
   id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,

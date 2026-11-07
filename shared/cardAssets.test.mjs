@@ -5,7 +5,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery, cardListQuery, cardExportPayload, consistencyIssue } from '../shop-admin-vue/src/utils/cardAssets.mjs'
+import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery, cardListQuery, cardExportPayload, consistencyIssue, canReissueCard, reissuePayload } from '../shop-admin-vue/src/utils/cardAssets.mjs'
 const form = () => ({ productId: 9, skuId: 12, rawText: ' Code-A \r\n\nCode-b' })
 test('批次查询只包含有界游标参数，可清空SKU筛选', () => {
   assert.deepEqual(cardBatchQuery(' 12 ', 30), { skuId: '12', beforeId: '30', limit: 20 })
@@ -67,4 +67,21 @@ test('F12 一致性核对行状态：异常指纹优先于漂移，严格一致�
   assert.equal(consistencyIssue({}), 'drift')
   assert.equal(consistencyIssue(null), 'unknown')
   assert.equal(consistencyIssue('row'), 'unknown')
+})
+test('F12 补发展示：仅店长/超管且卡已售并绑定订单', () => {
+  assert.equal(canReissueCard('MERCHANT_ADMIN', { status: 1, orderSn: 'O1' }), true)
+  assert.equal(canReissueCard('SUPERADMIN', { status: 1, orderSn: 'O1' }), true)
+  assert.equal(canReissueCard('MERCHANT_STAFF', { status: 1, orderSn: 'O1' }), false)
+  assert.equal(canReissueCard('MERCHANT_ADMIN', { status: 0, orderSn: null }), false)
+  assert.equal(canReissueCard('MERCHANT_ADMIN', { status: 1, orderSn: null }), false)
+  assert.equal(canReissueCard('MERCHANT_ADMIN', { status: 1, orderSn: '' }), false)
+  assert.equal(canReissueCard('MERCHANT_ADMIN', { status: 2, orderSn: 'O1' }), false)
+  assert.equal(canReissueCard('MERCHANT_ADMIN', null), false)
+})
+test('F12 补发载荷：原因trim必填且最多255字符', () => {
+  assert.deepEqual(reissuePayload(' 买家未收到 '), { reason: '买家未收到' })
+  assert.equal(reissuePayload('x'.repeat(255)).reason.length, 255)
+  assert.throws(() => reissuePayload('  '), /请填写补发原因/)
+  assert.throws(() => reissuePayload(null), /请填写补发原因/)
+  assert.throws(() => reissuePayload('x'.repeat(256)), /最多255字符/)
 })

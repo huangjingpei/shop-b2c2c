@@ -1,7 +1,7 @@
 /*
  * 文件：CardAssetService.java
- * 用途：本店卡密去重导入、成功批次记录、安全作废、店长按SKU限量查看明文及导出审计、存量一致性核对。
- * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，批次/成员/卡/库存同事务。T14：仅对本店 fingerprint IS NULL 的行做内存解密比对，不再回写指纹或做历史补算；解密失败/缺少明文的行标记 fingerprint_unavailable=1、计数并跳过，不中断导入，也不输出明文。密钥按当前单密钥假设处理，轮换不在本轮范围。T15：列表只返回脱敏标识+指纹，不解密；明文查看必须按SKU限量且仅店长/超管；导出必须显式二次确认并写入 card_access_audit，审计失败不得返回明文。作废拒绝HELD预占和数量不一致，不反向锁预占行。
+ * 用途：本店卡密去重导入、成功批次记录、安全作废、店长按SKU限量查看明文及导出审计、存量一致性核对、已售卡补发授权。
+ * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，批次/成员/卡/库存同事务。T14：仅对本店 fingerprint IS NULL 的行做内存解密比对，不再回写指纹或做历史补算；解密失败/缺少明文的行标记 fingerprint_unavailable=1、计数并跳过，不中断导入，也不输出明文。密钥按当前单密钥假设处理，轮换不在本轮范围。T15：列表只返回脱敏标识+指纹，不解密；明文查看必须按SKU限量且仅店长/超管；导出必须显式二次确认并写入 card_access_audit，审计失败不得返回明文。作废拒绝HELD预占和数量不一致，不反向锁预占行。F12补发：限店长/超管，仅已售且已绑定订单的卡可补发一次（源卡ID幂等，换原因409），新卡同事务从同SKU未售池锁候选+CAS认领并复用原订单号，扣库存/记录/明文审计同事务；源卡保持已售不回滚交付事实，明文外带必写REISSUE_PLAINTEXT审计，重放同样追加审计。
  */
 package com.shop.b2b2c.service;
 
@@ -223,6 +223,92 @@ public class CardAssetService {
         var record = assets.voidRecord(merchant, id);
         if (record == null) throw new BusinessException(404, "没有本店作废记录");
         return record;
+    }
+
+    /**
+     * F12 补发授权：对已售出且绑定订单的卡补发一张同SKU新卡，新卡复用原订单号。
+     * 源卡ID自然幂等：同原因重放返回原记录与新卡明文（上次响应可能未送达），更换原因拒绝409。
+     * 与作废同一安全口径：HELD预占拒绝、账面库存与在库卡数不一致拒绝（不用补发修补漂移）、
+     * 锁候选+CAS认领+扣库存+记录+明文审计同事务；源卡保持已售状态，不回滚交付事实。
+     */
+    public Map<String,Object> reissueCard(Long merchant, Long actor, Long id, String reason) {
+        requireEntry(merchant);
+        if (actor == null || actor < 1) throw new BusinessException(401, "登录状态已失效");
+        if (id == null || id < 1 || reason == null || reason.isBlank() || reason.length() > 255) throw new BusinessException(400, "请填写补发原因，最多255字符");
+        return transaction.execute(status -> {
+            var initial = assets.findCard(merchant, id);
+            if (initial == null) throw new BusinessException(404, "卡密不存在或不属于本店");
+            var sku = lockSku(merchant, initial.getProductId(), initial.getSkuId());
+            var card = assets.lockCard(merchant, id);
+            if (card == null || !Objects.equals(card.getProductId(), initial.getProductId()) || !Objects.equals(card.getSkuId(), initial.getSkuId())) {
+                throw new BusinessException(409, "卡密归属已变化，请刷新后重试");
+            }
+            var existing = assets.reissueRecord(merchant, id);
+            if (existing != null) {
+                if (!Objects.equals(existing.getReason(), reason.strip())) throw new BusinessException(409, "该卡已补发过，请核对原补发记录");
+                // 幂等重放：不重复扣库存/写记录；明文再次外带仍追加审计
+                writeReissueAudit(merchant, actor, existing.getSkuId());
+                return reissueResult(existing, revealReissuedCard(merchant, existing));
+            }
+            if (!Integer.valueOf(1).equals(card.getStatus()) || card.getOrderSn() == null || card.getOrderSn().isBlank()) {
+                throw new BusinessException(409, "仅已售出且已绑定订单的卡密可补发");
+            }
+            if (inventory.heldQuantity(merchant, card.getSkuId()) != 0) throw new BusinessException(409, "该SKU有有效预占，请待支付或释放后再补发");
+            int before = sku.getStockQuantity();
+            if (before < 1) throw new BusinessException(409, "该SKU已无可补发库存，请先导入卡密");
+            if (assets.availableCount(merchant, card.getProductId(), card.getSkuId()) != before) {
+                throw new BusinessException(409, "可售库存与在库卡密不一致，请先核对");
+            }
+            var candidates = cards.lockAvailableCards(card.getSkuId(), card.getProductId(), merchant, 1);
+            if (candidates == null || candidates.isEmpty()) throw new BusinessException(409, "没有可补发的未售卡密，请刷新后重试");
+            var newCard = candidates.get(0);
+            if (Objects.equals(newCard.getId(), card.getId())) throw new IllegalStateException("补发候选卡不能是源卡");
+            if (cards.claimCard(newCard.getId(), merchant, card.getSkuId(), card.getOrderSn()) != 1) {
+                throw new BusinessException(409, "补发卡密已被占用，请重试");
+            }
+            if (skus.deductStock(card.getSkuId(), card.getProductId(), merchant, 1) != 1) throw new IllegalStateException("补发库存扣减失败");
+            var record = new CardReissue();
+            record.setSourceCardId(id); record.setNewCardId(newCard.getId()); record.setMerchantId(merchant);
+            record.setProductId(card.getProductId()); record.setSkuId(card.getSkuId()); record.setOrderSn(card.getOrderSn());
+            record.setActorId(actor); record.setReason(reason.strip()); record.setBeforeStock(before); record.setAfterStock(before - 1);
+            if (assets.insertReissue(record) != 1) throw new IllegalStateException("补发记录保存失败");
+            writeReissueAudit(merchant, actor, card.getSkuId());
+            newCard.setStatus(1); newCard.setOrderSn(card.getOrderSn());
+            return reissueResult(record, MerchantCardView.reveal(newCard, cipher.decrypt(newCard.getCardContent())));
+        });
+    }
+
+    /** F12 补发记录查询：本店后台账号只读，不含卡密内容。 */
+    public CardReissue readReissueRecord(Long merchant, Long id) {
+        if (merchant == null || merchant < 1) throw new BusinessException(403, "当前账号未绑定店铺");
+        var record = assets.reissueRecord(merchant, id);
+        if (record == null) throw new BusinessException(404, "没有本店补发记录");
+        return record;
+    }
+
+    private Map<String,Object> reissueResult(CardReissue record, MerchantCardView newCard) {
+        Map<String,Object> result = new LinkedHashMap<>();
+        result.put("record", record);
+        result.put("newCard", newCard);
+        return result;
+    }
+
+    /** 幂等重放时重新读取新卡：校验仍属本店同SKU，防止记录被篡改后越店解密。 */
+    private MerchantCardView revealReissuedCard(Long merchant, CardReissue record) {
+        var newCard = cards.selectById(record.getNewCardId());
+        if (newCard == null || !Objects.equals(newCard.getMerchantId(), merchant)
+                || !Objects.equals(newCard.getSkuId(), record.getSkuId()) || !Integer.valueOf(1).equals(newCard.getStatus())) {
+            throw new BusinessException(409, "补发卡密状态已变化，请核对库存");
+        }
+        return MerchantCardView.reveal(newCard, cipher.decrypt(newCard.getCardContent()));
+    }
+
+    /** F12 补发/重放的明文外带审计：与补发事务同边界，审计失败整体回滚不得返回明文。 */
+    private void writeReissueAudit(Long merchant, Long actor, Long skuId) {
+        CardAccessAudit audit = new CardAccessAudit();
+        audit.setMerchantId(merchant); audit.setActorId(actor); audit.setAction("REISSUE_PLAINTEXT");
+        audit.setSkuId(skuId); audit.setCardCount(1);
+        if (audits == null || audits.insert(audit) != 1) throw new IllegalStateException("补发明文审计写入失败");
     }
 
     /**

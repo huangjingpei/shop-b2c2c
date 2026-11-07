@@ -518,6 +518,31 @@ CREATE TABLE IF NOT EXISTS card_import_item (
   CONSTRAINT fk_card_import_item_card FOREIGN KEY (card_id) REFERENCES product_virtual_card(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='导入批次成员，不复制卡密正文';
 
+-- F12 补发授权：一张已售卡最多补发一次；新卡同事务从同SKU未售池取出并绑定原订单，源卡保持已售不回滚交付事实。
+CREATE TABLE IF NOT EXISTS card_reissue (
+  source_card_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,
+  new_card_id BIGINT UNSIGNED NOT NULL,
+  merchant_id BIGINT UNSIGNED NOT NULL,
+  product_id BIGINT UNSIGNED NOT NULL,
+  sku_id BIGINT UNSIGNED NOT NULL,
+  order_sn VARCHAR(64) NOT NULL,
+  actor_id BIGINT UNSIGNED NOT NULL,
+  reason VARCHAR(255) NOT NULL,
+  before_stock INT NOT NULL,
+  after_stock INT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_card_reissue_new (new_card_id),
+  KEY idx_card_reissue_merchant (merchant_id,created_at),
+  KEY idx_card_reissue_order (merchant_id,order_sn),
+  CONSTRAINT chk_card_reissue_stock CHECK (before_stock >= 1 AND after_stock = before_stock - 1),
+  CONSTRAINT fk_card_reissue_source FOREIGN KEY (source_card_id) REFERENCES product_virtual_card (id),
+  CONSTRAINT fk_card_reissue_new FOREIGN KEY (new_card_id) REFERENCES product_virtual_card (id),
+  CONSTRAINT fk_card_reissue_merchant FOREIGN KEY (merchant_id) REFERENCES merchant_store (id),
+  CONSTRAINT fk_card_reissue_product FOREIGN KEY (product_id) REFERENCES product (id),
+  CONSTRAINT fk_card_reissue_sku FOREIGN KEY (sku_id) REFERENCES product_sku (id),
+  CONSTRAINT fk_card_reissue_actor FOREIGN KEY (actor_id) REFERENCES sys_user (id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='卡密补发记录，不含卡密内容';
+
 -- 19. 支付渠道到账事件流水表 (解耦外部资金事实与本地履约)
 CREATE TABLE IF NOT EXISTS `payment_event` (
   `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,

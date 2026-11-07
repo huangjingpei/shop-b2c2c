@@ -1,6 +1,6 @@
 /*
  * 文件：CardAssetServiceTest.java
- * 用途：卡密初始库存、去重/批次写入、导入容量、作废拒绝及自然幂等、存量一致性核对单元测试。
+ * 用途：卡密初始库存、去重/批次写入、导入容量、作废拒绝及自然幂等、存量一致性核对、已售卡补发授权单元测试。
  * 维护注意：仅使用虚构卡密与Mock事务，不能替代真实回滚/并发验证；错误断言不能输出卡密明文，数据库场景由Spring/H2和临时MySQL测试承担。
  */
 package com.shop.b2b2c;
@@ -261,5 +261,86 @@ class CardAssetServiceTest {
         assertEquals(0L, result.get("fingerprintUnavailableTotal"));
         assertEquals(403, assertThrows(BusinessException.class, () -> service.consistencyCheck(null)).getCode());
         assertEquals(403, assertThrows(BusinessException.class, () -> service.consistencyCheck(0L)).getCode());
+    }
+
+    // ========== F12 补发授权 ==========
+    com.shop.b2b2c.entity.CardReissue reissue;
+    private ProductVirtualCard reissueCandidate() {
+        var candidate = new ProductVirtualCard();
+        candidate.setId(2L); candidate.setProductId(1L); candidate.setSkuId(1L); candidate.setMerchantId(1L);
+        candidate.setStatus(0); candidate.setCardContent("reissue-new-card-fixture");
+        return candidate;
+    }
+    private void prepareSuccessfulReissue(ProductVirtualCard candidate) {
+        card.setStatus(1); card.setOrderSn("ORDER-1");
+        when(cards.lockAvailableCards(1L, 1L, 1L, 1)).thenReturn(List.of(candidate));
+        when(cards.claimCard(2L, 1L, 1L, "ORDER-1")).thenAnswer(call -> { candidate.setStatus(1); candidate.setOrderSn("ORDER-1"); return 1; });
+        when(assets.insertReissue(any())).thenAnswer(call -> { reissue = call.getArgument(0); return 1; });
+    }
+    @Test void reissueClaimsNewCardDeductsStockAndAuditsPlaintextAccess() {
+        var candidate = reissueCandidate(); prepareSuccessfulReissue(candidate);
+        var result = service.reissueCard(1L, 9L, 1L, "买家未收到");
+        var record = (com.shop.b2b2c.entity.CardReissue) result.get("record");
+        assertEquals(1L, record.getSourceCardId()); assertEquals(2L, record.getNewCardId());
+        assertEquals("ORDER-1", record.getOrderSn()); assertEquals(9L, record.getActorId());
+        assertEquals(1, record.getBeforeStock()); assertEquals(0, record.getAfterStock());
+        var view = (com.shop.b2b2c.dto.MerchantCardView) result.get("newCard");
+        assertEquals("reissue-new-card-fixture", view.getCardContent());
+        assertEquals(1, view.getStatus()); assertEquals("ORDER-1", view.getOrderSn());
+        assertSame(reissue, record);
+        verify(skus).deductStock(1L, 1L, 1L, 1);
+        verify(audits).insert(argThat(a -> "REISSUE_PLAINTEXT".equals(a.getAction()) && a.getCardCount() == 1));
+        // 源卡保持已售，交付事实不回滚。
+        assertEquals(1, card.getStatus()); assertEquals("ORDER-1", card.getOrderSn());
+        assertFalse(new ObjectMapper().valueToTree(record).has("cardContent"));
+    }
+    @Test void reissueReplayReturnsSameRecordWithoutDoubleDeductButAuditsAgain() {
+        var candidate = reissueCandidate(); prepareSuccessfulReissue(candidate);
+        when(assets.reissueRecord(1L, 1L)).thenAnswer(call -> reissue);
+        when(cards.selectById(2L)).thenReturn(candidate);
+        var first = service.reissueCard(1L, 9L, 1L, "买家未收到");
+        var replay = service.reissueCard(1L, 9L, 1L, "买家未收到");
+        assertSame((com.shop.b2b2c.entity.CardReissue) first.get("record"), (com.shop.b2b2c.entity.CardReissue) replay.get("record"));
+        assertEquals("reissue-new-card-fixture", ((com.shop.b2b2c.dto.MerchantCardView) replay.get("newCard")).getCardContent());
+        verify(skus, times(1)).deductStock(1L, 1L, 1L, 1);
+        verify(assets, times(1)).insertReissue(any());
+        verify(audits, times(2)).insert(any(CardAccessAudit.class));
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.reissueCard(1L, 9L, 1L, "changed")).getCode());
+        verify(audits, times(2)).insert(any(CardAccessAudit.class));
+    }
+    @ParameterizedTest @ValueSource(strings = {"unsold", "unbound", "held", "zero", "mismatch", "nocandidate", "claimrace"})
+    void unsafeReissueCannotRecordOrChangeStock(String scenario) {
+        var candidate = reissueCandidate(); prepareSuccessfulReissue(candidate);
+        switch (scenario) {
+            case "unsold" -> card.setStatus(0);
+            case "unbound" -> card.setOrderSn(null);
+            case "held" -> when(inventory.heldQuantity(1L, 1L)).thenReturn(1L);
+            case "zero" -> sku.setStockQuantity(0);
+            case "mismatch" -> when(assets.availableCount(1L, 1L, 1L)).thenReturn(2L);
+            case "nocandidate" -> when(cards.lockAvailableCards(1L, 1L, 1L, 1)).thenReturn(List.of());
+            case "claimrace" -> when(cards.claimCard(2L, 1L, 1L, "ORDER-1")).thenReturn(0);
+        }
+        assertEquals(409, assertThrows(BusinessException.class, () -> service.reissueCard(1L, 9L, 1L, "reason")).getCode());
+        verify(assets, never()).insertReissue(any());
+        verify(skus, never()).deductStock(any(), any(), any(), anyInt());
+    }
+    @Test void invalidReissueIdentityIdOrReasonNeverStartsTransaction() {
+        assertEquals(401, assertThrows(BusinessException.class, () -> service.reissueCard(1L, 0L, 1L, "reason")).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> service.reissueCard(1L, 9L, 0L, "reason")).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> service.reissueCard(1L, 9L, 1L, " ")).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> service.reissueCard(1L, 9L, 1L, "x".repeat(256))).getCode());
+        verifyNoInteractions(manager);
+    }
+    @Test void foreignCardReissueIsRejectedInsideTransactionAsNotFound() {
+        assertEquals(404, assertThrows(BusinessException.class, () -> service.reissueCard(1L, 9L, 99L, "reason")).getCode());
+        verify(manager).getTransaction(any());
+        verify(manager).rollback(any());
+        verifyNoInteractions(skus, cards, audits);
+    }
+    @Test void reissueAuditFailureRollsBackClaimStockAndRecord() {
+        var candidate = reissueCandidate(); prepareSuccessfulReissue(candidate);
+        when(audits.insert(any(CardAccessAudit.class))).thenReturn(0);
+        assertThrows(IllegalStateException.class, () -> service.reissueCard(1L, 9L, 1L, "reason"));
+        verify(manager).rollback(any());
     }
 }

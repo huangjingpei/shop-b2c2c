@@ -1,7 +1,7 @@
 /*
  * 文件：CardAssetMapper.java
- * 用途：本店导入互斥、无指纹卡密去重读取、作废CAS及作废记录持久化。
- * 维护注意：所有新导入必须先锁商户，再锁商品/SKU；卡密明文只在服务内解密比对，禁止日志输出。T14：无指纹行按商户单次查询，仅在内存解密比对，不回写指纹；解密失败的行只标记 fingerprint_unavailable=1 并计数。作废先验证SKU预占和数量一致性，状态CAS与扣库存/记录须同事务；记录没有修改/删除接口。
+ * 用途：本店导入互斥、无指纹卡密去重读取、作废CAS及作废记录、补发记录的持久化。
+ * 维护注意：所有新导入必须先锁商户，再锁商品/SKU；卡密明文只在服务内解密比对，禁止日志输出。T14：无指纹行按商户单次查询，仅在内存解密比对，不回写指纹；解密失败的行只标记 fingerprint_unavailable=1 并计数。作废先验证SKU预占和数量一致性，状态CAS与扣库存/记录须同事务；记录没有修改/删除接口。补发记录以源卡ID自然幂等、新卡ID唯一，源卡保持已售状态。
  */
 package com.shop.b2b2c.mapper;
 import com.shop.b2b2c.entity.*;
@@ -35,6 +35,13 @@ public interface CardAssetMapper {
     int insertVoid(CardVoidRecord record);
     @Select("SELECT * FROM virtual_card_void WHERE card_id=#{id} AND merchant_id=#{merchant}")
     CardVoidRecord voidRecord(@Param("merchant") Long merchant, @Param("id") Long id);
+    /** F12 补发授权：按源卡ID+商户读取补发记录；源卡ID即主键，天然幂等。 */
+    @Select("SELECT * FROM card_reissue WHERE source_card_id=#{id} AND merchant_id=#{merchant}")
+    CardReissue reissueRecord(@Param("merchant") Long merchant, @Param("id") Long id);
+    /** F12 补发记录写入：与认领新卡、扣减库存、明文审计同事务；重复源卡或新卡由主键/唯一键拒绝。 */
+    @Insert("INSERT INTO card_reissue(source_card_id,new_card_id,merchant_id,product_id,sku_id,order_sn,actor_id,reason,before_stock,after_stock) "
+            + "VALUES(#{sourceCardId},#{newCardId},#{merchantId},#{productId},#{skuId},#{orderSn},#{actorId},#{reason},#{beforeStock},#{afterStock})")
+    int insertReissue(CardReissue record);
     /**
      * F12 存量一致性核对：按SKU聚合账面库存与各状态卡数、HELD预占与异常指纹计数，只读不修正。
      * 预占子查询每SKU至多一行，不会放大卡行计数；只覆盖本店卡密商品(goods_type=2)的SKU。

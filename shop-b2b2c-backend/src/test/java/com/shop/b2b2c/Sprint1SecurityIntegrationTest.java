@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次/卡密一致性核对、状态统计、就绪探针、海报减载、店铺定向更新并发及租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次/卡密一致性核对与补发、状态统计、就绪探针、海报减载、店铺定向更新并发及租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -109,7 +109,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("merchant_notification_outbox", "payment_event", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -1099,6 +1099,83 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.abnormalCount").value(0))
                 .andExpect(jsonPath("$.data.items[0].skuId").value("1"))
                 .andExpect(jsonPath("$.data.items[0].consistent").value(true));
+    }
+
+    @Test
+    void cardReissueBindsNewCardToSameOrderAndStaysIdempotent() {
+        // 造一张已售卡（不占账面库存）；卡1保持未售，账面1==在库1
+        jdbc.update("INSERT INTO product_virtual_card(product_id,sku_id,merchant_id,card_content,status,order_sn) VALUES(1,1,1,'reissue-sold-fixture',1,'ORD-REISSUE-1')");
+        long soldId = jdbc.queryForObject("SELECT id FROM product_virtual_card WHERE order_sn='ORD-REISSUE-1'", Long.class);
+        var result = cardAssets.reissueCard(1L, 200L, soldId, "买家未收到");
+        var record = (com.shop.b2b2c.entity.CardReissue) result.get("record");
+        assertEquals(soldId, record.getSourceCardId());
+        assertEquals(1L, record.getNewCardId());
+        assertEquals("ORD-REISSUE-1", record.getOrderSn());
+        assertEquals(200L, record.getActorId());
+        assertEquals(1, record.getBeforeStock()); assertEquals(0, record.getAfterStock());
+        // 新卡绑定原订单且转已售，库存扣1；源卡保持已售，交付事实不回滚
+        assertEquals(1, cards.selectById(1L).getStatus());
+        assertEquals("ORD-REISSUE-1", cards.selectById(1L).getOrderSn());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        assertEquals(1, cards.selectById(soldId).getStatus());
+        assertEquals("secret", ((com.shop.b2b2c.dto.MerchantCardView) result.get("newCard")).getCardContent());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM card_access_audit WHERE action='REISSUE_PLAINTEXT' AND merchant_id=1", Integer.class));
+        // 同原因重放：库存不重复扣、记录仍一条、审计按外带事件追加
+        var replay = cardAssets.reissueCard(1L, 200L, soldId, "买家未收到");
+        assertEquals(record.getNewCardId(), ((com.shop.b2b2c.entity.CardReissue) replay.get("record")).getNewCardId());
+        assertEquals("secret", ((com.shop.b2b2c.dto.MerchantCardView) replay.get("newCard")).getCardContent());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM card_reissue", Integer.class));
+        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM card_access_audit WHERE action='REISSUE_PLAINTEXT' AND merchant_id=1", Integer.class));
+        // 一张已售卡只能补发一次，换原因拒绝
+        BusinessException changed = assertThrows(BusinessException.class, () -> cardAssets.reissueCard(1L, 200L, soldId, "换个原因"));
+        assertEquals(409, changed.getCode());
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        // 记录查询（本店只读）
+        var read = cardAssets.readReissueRecord(1L, soldId);
+        assertEquals(1L, read.getNewCardId());
+        assertThrows(BusinessException.class, () -> cardAssets.readReissueRecord(2L, soldId));
+    }
+
+    @Test
+    void cardReissueHttpRequiresManagerAuditsPlaintextAndStaysTenantScoped() throws Exception {
+        jdbc.update("INSERT INTO product_virtual_card(product_id,sku_id,merchant_id,card_content,status,order_sn) VALUES(1,1,1,'reissue-sold-http',1,'ORD-REISSUE-HTTP')");
+        long soldId = jdbc.queryForObject("SELECT id FROM product_virtual_card WHERE order_sn='ORD-REISSUE-HTTP'", Long.class);
+        jdbc.update("INSERT INTO product_virtual_card(product_id,sku_id,merchant_id,card_content,status,order_sn) VALUES(2,2,2,'foreign-sold-http',1,'ORD-FOREIGN-HTTP')");
+        long foreignId = jdbc.queryForObject("SELECT id FROM product_virtual_card WHERE order_sn='ORD-FOREIGN-HTTP'", Long.class);
+        String body = "{\"reason\":\"买家未收到\"}";
+        mvc.perform(post("/api/v1/merchant/cards/{id}/reissue", soldId).contentType("application/json").content(body))
+                .andExpect(status().isUnauthorized());
+        authUser("MERCHANT_STAFF", 1L); String staffToken = loginToken();
+        mvc.perform(post("/api/v1/merchant/cards/{id}/reissue", soldId).header("Authorization", "Bearer " + staffToken)
+                        .contentType("application/json").content(body))
+                .andExpect(status().isForbidden());
+        assertEquals(1, skus.selectById(1).getStockQuantity());
+        // 员工（本店后台）只读补发记录：未补发时404
+        mvc.perform(get("/api/v1/merchant/cards/{id}/reissue-record", soldId).header("Authorization", "Bearer " + staffToken))
+                .andExpect(status().isNotFound());
+        // 角色变化会撤销旧令牌（D22），升店长后重新登录
+        jdbc.update("UPDATE sys_user SET role_code='MERCHANT_ADMIN' WHERE id=200");
+        String adminToken = loginToken();
+        mvc.perform(post("/api/v1/merchant/cards/{id}/reissue", soldId).header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json").content(body))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.data.record.sourceCardId").value(String.valueOf(soldId)))
+                .andExpect(jsonPath("$.data.record.orderSn").value("ORD-REISSUE-HTTP"))
+                .andExpect(jsonPath("$.data.newCard.cardContent").value("secret"))
+                .andExpect(jsonPath("$.data.newCard.orderSn").value("ORD-REISSUE-HTTP"));
+        assertEquals(0, skus.selectById(1).getStockQuantity());
+        // 本店后台只读补发记录，不含卡密内容
+        mvc.perform(get("/api/v1/merchant/cards/{id}/reissue-record", soldId).header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.orderSn").value("ORD-REISSUE-HTTP"))
+                .andExpect(jsonPath("$.data.newCardId").value("1"))
+                .andExpect(jsonPath("$.data.cardContent").doesNotExist());
+        // 越店：本店店长不能补发他店卡
+        mvc.perform(post("/api/v1/merchant/cards/{id}/reissue", foreignId).header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json").content(body))
+                .andExpect(status().isNotFound());
     }
 
     @Test
