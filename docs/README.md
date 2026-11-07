@@ -60,6 +60,7 @@
 | 本轮Sprint 39 | D31 初始化与版本迁移复核（T12 SchemaMigrationRunner + V1–V19 幂等增量、continue-on-error=false 失败阻断、demo-seed 种子分离均已落地，纯复核无代码改动） | D31初始化与版本迁移 | 已修复·待人工验证 | [Sprint 39](SPRINT_39_D31初始化与版本迁移复核.md) |
 | 本轮Sprint 40 | D32 外键/约束/索引复核（51表85外键、chk_sku_stock 非负、uk_channel_trade_no 流水唯一、order_idempotency 幂等、idx_order_sn 均已落地，纯复核无代码改动） | D32外键约束索引 | 已修复·待人工验证 | [Sprint 40](SPRINT_40_D32外键约束与索引复核.md) |
 | 本轮Sprint 41 | D33 代付与服务费状态编码统一收尾（peerStatus/Sprint16、商户 fee_status/Sprint17 复核；订单级 fee_status 集中到 OrderFeeStatus，扣费/冲正/退款 SQL 改引常量，新增契约用例） | D33状态编码 | 已修复·待人工验证 | [Sprint 41](SPRINT_41_D33代付与服务费状态编码统一.md) |
+| 本轮Sprint 42 | D34 构建脚本复核与静态契约（两云 03-build 已指向当前三工程与 npm run build，无旧 apps/build:h5；新增跨平台静态用例锁定目录/锁文件/唯一 jar/产物与部署预检一致性） | D34构建脚本 | 已修复·待人工验证 | [Sprint 42](SPRINT_42_D34构建脚本复核与静态契约.md) |
 
 此前所询问的两次提交已在主台账Sprint 11/12段落中追踪，F12仍为“进行中”，未标完成。先前项目根README目录只展示初始设计文档，缺少交付导航，本目录补齐入口。归属明确不等于排期或所有细节已经得到用户确认。
 
@@ -126,6 +127,7 @@
 | [Sprint 39：D31 初始化与版本迁移复核](SPRINT_39_D31初始化与版本迁移复核.md) | D31 复核：版本迁移（T12 SchemaMigrationRunner 按数字序执行 V1–V19 幂等增量、schema_migration 记账、失败阻断）、continue-on-error=false 失败阻断、demo-seed.sql 种子分离+生产 mode=never 三项建议均已落地，纯复核无代码改动；真实 MySQL 8 逐版本演练待人工验证 |
 | [Sprint 40：D32 外键/约束/索引复核](SPRINT_40_D32外键约束与索引复核.md) | D32 复核：51 表 85 个业务外键、chk_sku_stock 库存非负 CHECK、payment_event 单独建模+uk_channel_trade_no 渠道流水唯一、order_idempotency 建单幂等、trade_order_item idx_order_sn 均已于 2026-11-04 落地，纯复核无代码改动；MySQL 8.0.16+ CHECK 强制语义与索引选择性待人工验证 |
 | [Sprint 41：D33 代付与服务费状态编码统一收尾](SPRINT_41_D33代付与服务费状态编码统一.md) | D33 复核：peerStatus（Sprint 16）与商户 fee_status（Sprint 17）已统一；本轮把 T33/T34 订单级 trade_order.fee_status 的五编码集中到 OrderFeeStatus，实体默认值、扣费/冲正字面量与退款条件 SQL 全部改引常量，新增 OrderFeeStatusContractTest 5 项锁定默认值/集合/schema 说明与退款 SQL；历史未知编码不转换，真实 MySQL 待人工验证 |
+| [Sprint 42：D34 构建脚本复核与静态契约](SPRINT_42_D34构建脚本复核与静态契约.md) | D34 复核：两云 server/03-build.sh 已指向当前三工程、执行 npm ci + npm run build 并以 VITE_APP_BASE 控制 base，无 apps/admin-vue3、apps/mobile-uni、build:h5；新增 test_deploy_build_contract.py 5 项跨平台静态契约锁定工程目录、锁文件/唯一 jar/前端产物校验、构建产物与 04-deploy 预检路径一致；Git Bash 下 bash -n 通过，Linux 假工具演练、真实构建与部署演练仍待人工验证 |
 | [迁移与基线审计（2026-11-06）](2026-11-06-migration-baseline-audit.md) | V1–V6 逐条审计、schema.sql↔V 系列等价性差异、MySQL 8 硬检查与真实库演练步骤；已实现·待人工验证 |
 | [V1–V6 语句级吸收清单（2026-11-06）](2026-11-06-schema-absorption-audit.md) | 逐条列出 86 条 DDL 语句的意图与 schema.sql 落点，含注释/语义差异、V1 六项点名、V4 唯一键收窄核对；结论为 0 缺失/0 定义不同，脚本保留未删；只做静态比对，未经真实 MySQL 验证，已实现·待人工验证 |
 | [商家开店流程开发文档（2026-11-07）](2026-11-07-merchant-onboarding-development-spec.md) | 以现有入驻实现为主线，定义初审/复审、协议签署、开通闸门、收款账户验证、冻结/关店的状态机、数据模型、接口契约与测试矩阵。**O1–O9 已全部落地**：首轮 O1–O4、O7、D3/D11（提交 88059d0/ca8e21a/5d5c468/7d17e5b/e8569f8/116bb4b，mvn 889 项通过）；第二轮 O5 结算账户验证与变更 `3f215d6`、O6 店铺状态机 `2a2eb19`、O8 通知与SLA `80bba1a`、O9 资质有效期与提醒 `f27981a`（代理执行 mvn 959 项通过、node --test shared 规则 295 项通过）；状态已实现·待人工验证，真实 MySQL 迁移（V7–V15）、前端生产构建与浏览器交互未验证 |
