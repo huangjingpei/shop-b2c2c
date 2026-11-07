@@ -78,6 +78,14 @@ class BuildScriptContractTest(unittest.TestCase):
                     self.assertNotIn("www-mobile", text)
                     self.assertIn("location = /m { return 404; }", text)
 
+    def test_status_scripts_probe_redis_write_protection_read_only(self):
+        for cloud in ("aliyun", "tencent"):
+            script = read(f"{cloud}/server/06-status.sh")
+            with self.subTest(cloud=cloud):
+                self.assertIn("config get stop-writes-on-bgsave-error", script)
+                self.assertNotIn("config set stop-writes-on-bgsave-error", script)
+                self.assertIn("REDISCLI_AUTH", script)
+
     def test_aliyun_entry_uses_source_packer_and_current_build(self):
         script = read("aliyun/deploy.sh")
         self.assertIn("package-source.sh", script)

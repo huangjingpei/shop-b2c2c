@@ -35,6 +35,23 @@ else
   bad "后端端口 ${PORT} 响应异常或无法连接"
 fi
 
+sec "Redis 持久化保护"
+if command -v redis-cli >/dev/null 2>&1; then
+  REDIS_CONF="$(REDISCLI_AUTH="${REDIS_PASS:-}" redis-cli -h 127.0.0.1 -p "${REDIS_PORT:-6379}" config get stop-writes-on-bgsave-error 2>/dev/null || true)"
+  if [[ -z "${REDIS_CONF}" ]]; then
+    warn_ "无法读取 Redis stop-writes-on-bgsave-error（可能ACL受限或服务不可达），请人工核对"
+  else
+    RDB_GUARD="$(printf '%s\n' "${REDIS_CONF}" | tail -n 1)"
+    if [[ "${RDB_GUARD}" == "yes" ]]; then
+      ok "Redis 持久化失败时保留写保护 (stop-writes-on-bgsave-error=yes)"
+    else
+      warn_ "Redis stop-writes-on-bgsave-error=${RDB_GUARD:-未知}，持久化失败时写请求可能继续，请在目标实例恢复为yes"
+    fi
+  fi
+else
+  warn_ "未安装 redis-cli，跳过 Redis 写保护检查"
+fi
+
 sec "Nginx 反向代理探测"
 SERVER_DOMAIN="${GMALL_SERVER_NAME:-mall.graddu.com}"
 PROXY_RESP="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H "Host: ${SERVER_DOMAIN}" "http://127.0.0.1/api/v1/auth/ready" || echo 000)"
