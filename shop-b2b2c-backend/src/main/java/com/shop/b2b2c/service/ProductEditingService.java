@@ -1,10 +1,12 @@
 /*
  * 文件：ProductEditingService.java
- * 用途：本店商品资料、全量既有SKU售价及上下架的事务维护与旧版本冲突检测。
+ * 用途：本店商品资料、全量既有SKU售价、上下架及SKU增删的事务维护与旧版本冲突检测。
  * 维护注意：
  *  1. 商品后 SKU 的行锁序列和内容摘要共同防并发覆盖；摘要排除可售库存/时间字段，库存变动不要求重填资料。
  *  2. SQL 只更新白名单列，禁止复用整实体保存；历史订单快照不改，违规下架不能由商家自行恢复。
  *  3. T09/Q16：存在未到期 HELD 库存预占时禁止商家下架商品，防止支付回调先成功后无法履约。
+ *  4. SKU增删共用商品行锁串行化；新增只写初始库存（自动卡密必须为0），不写库存调整流水；删除仅限零库存且无任何
+ *     订单/卡密/预占/调整/审计等引用记录的SKU，外键与uk_merchant_sku_code唯一键作并发兜底。增删后按剩余SKU派生min_price。
  */
 package com.shop.b2b2c.service;
 
@@ -100,6 +102,63 @@ public class ProductEditingService {
             throw new BusinessException(409, "商品已变化，请刷新后重试");
         }
         return snapshot(merchant, id);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Editor addSku(Long merchant, Long id, SkuDraft draft) {
+        if (draft == null) throw new BusinessException(400, "SKU资料不能为空");
+        checkRevisionFormat(draft.revision());
+        String code = draft.skuCode() == null ? "" : draft.skuCode().strip();
+        if (code.isEmpty() || code.length() > 64) throw new BusinessException(400, "SKU编码必填且不超过64字符");
+        if (draft.specData() == null || draft.specData().length() > 255) {
+            throw new BusinessException(400, "规格须为合法JSON对象且不超过255字符");
+        }
+        try {
+            if (!json.readTree(draft.specData()).isObject()) throw new IllegalArgumentException();
+        } catch (Exception e) { throw new BusinessException(400, "规格须为合法JSON对象且不超过255字符"); }
+        TradeGuards.requireMoney(draft.price());
+        int initialStock = draft.stockQuantity() != null ? draft.stockQuantity() : 0;
+        Editor current = snapshot(merchant, id);
+        requireRevision(current, draft.revision());
+        TradeGuards.requireInitialStock(current.product().getGoodsType(), initialStock);
+        if (current.skus().size() >= 100) throw new BusinessException(400, "单商品最多100个SKU");
+        if (mapper.countSkuCode(merchant, code) > 0) throw new BusinessException(409, "SKU编码在本店已存在，请更换后重试");
+        var sku = new com.shop.b2b2c.entity.ProductSku();
+        sku.setSkuCode(code); sku.setSpecData(draft.specData()); sku.setPrice(draft.price()); sku.setStockQuantity(initialStock);
+        if (mapper.insertSku(id, merchant, sku) != 1 || sku.getId() == null) throw new IllegalStateException("SKU写入失败");
+        deriveMinimumAfterChange(merchant, id, current.product().getMinPrice(),
+                draft.price().min(current.product().getMinPrice() == null ? draft.price() : current.product().getMinPrice()));
+        return snapshot(merchant, id);
+    }
+
+    @Transactional(rollbackFor = Exception.class)
+    public Editor removeSku(Long merchant, Long id, Long skuId, SkuRemoval removal) {
+        if (removal == null) throw new BusinessException(400, "请重新加载商品编辑资料");
+        checkRevisionFormat(removal.revision());
+        if (skuId == null || skuId < 1) throw new BusinessException(400, "SKU编号不合法");
+        Editor current = snapshot(merchant, id);
+        requireRevision(current, removal.revision());
+        var target = current.skus().stream().filter(sku -> skuId.equals(sku.getId())).findFirst()
+                .orElseThrow(() -> new BusinessException(404, "SKU不存在或不属于本商品"));
+        if (current.skus().size() <= 1) throw new BusinessException(409, "商品至少保留一个SKU，如需移除请先下架商品");
+        if (target.getStockQuantity() != null && target.getStockQuantity() > 0) {
+            throw new BusinessException(409, "SKU仍有可售库存，请先通过对应库存业务清零后再删除");
+        }
+        if (mapper.countSkuReferences(skuId) > 0) {
+            throw new BusinessException(409, "SKU已产生订单、卡密或库存等历史记录，不能删除");
+        }
+        if (mapper.deleteSku(id, merchant, skuId) != 1) throw new BusinessException(409, "SKU已变化，请刷新后重试");
+        var remaining = current.skus().stream().filter(sku -> !skuId.equals(sku.getId())).toList();
+        deriveMinimumAfterChange(merchant, id, current.product().getMinPrice(),
+                remaining.stream().map(com.shop.b2b2c.entity.ProductSku::getPrice).min(BigDecimal::compareTo).orElseThrow());
+        return snapshot(merchant, id);
+    }
+
+    /** SKU集合或价格变化后重算最低售价；仅在实际变化时写定向列，兼容useAffectedRows。 */
+    private void deriveMinimumAfterChange(Long merchant, Long id, BigDecimal currentMinimum, BigDecimal nextMinimum) {
+        if (nextMinimum == null) return;
+        if (currentMinimum != null && currentMinimum.compareTo(nextMinimum) == 0) return;
+        if (mapper.updateMinPrice(id, merchant, nextMinimum) != 1) throw new BusinessException(409, "商品已变化，请刷新后重试");
     }
 
     private Editor snapshot(Long merchant, Long id) {

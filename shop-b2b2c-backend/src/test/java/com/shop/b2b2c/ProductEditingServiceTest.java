@@ -1,6 +1,6 @@
 /*
  * 文件：ProductEditingServiceTest.java
- * 用途：商品维护参数边界、修订冲突、租户查询、SKU价格白名单及下架预占拦截的纯单元测试。
+ * 用途：商品维护参数边界、修订冲突、租户查询、SKU价格白名单、下架预占拦截及SKU增删的纯单元测试。
  * 维护注意：Mock持久化仅检查调用契约；事务回滚及并发必须由Spring/H2与独立MySQL验证，不能把单元测试当成数据库锁验收。
  */
 package com.shop.b2b2c;
@@ -110,5 +110,86 @@ class ProductEditingServiceTest {
         assertThrows(BusinessException.class, () -> editing.update(1L, 1L, new Update("a".repeat(64), 1L, " ", null, "image", null, List.of(new Price(1L, BigDecimal.ONE)))));
         assertThrows(BusinessException.class, () -> editing.update(1L, 1L, edit("a".repeat(64), List.of(new Price(1L, BigDecimal.ONE), new Price(1L, BigDecimal.TEN)))));
         verifyNoInteractions(mapper);
+    }
+
+    SkuDraft draft(String revision, String code, String spec, String price, Integer stock) {
+        return new SkuDraft(revision, code, spec, price == null ? null : new BigDecimal(price), stock);
+    }
+    @Test void addSkuPersistsAndLowersDerivedMinimumOnlyWhenCheaper() {
+        when(mapper.insertSku(eq(1L), eq(1L), any(ProductSku.class))).thenAnswer(call -> { call.getArgument(2, ProductSku.class).setId(2L); return 1; });
+        when(mapper.updateMinPrice(1L, 1L, new BigDecimal("5.00"))).thenReturn(1);
+        assertNotNull(editing.addSku(1L, 1L, draft(revision(), "sku-2", "{\"规格\":\"季卡\"}", "5.00", 0)));
+        var inserted = org.mockito.ArgumentCaptor.forClass(ProductSku.class);
+        verify(mapper).insertSku(eq(1L), eq(1L), inserted.capture());
+        assertEquals("sku-2", inserted.getValue().getSkuCode()); assertEquals(0, inserted.getValue().getStockQuantity());
+        verify(mapper).updateMinPrice(1L, 1L, new BigDecimal("5.00"));
+
+        when(mapper.insertSku(eq(1L), eq(1L), any(ProductSku.class))).thenAnswer(call -> { call.getArgument(2, ProductSku.class).setId(3L); return 1; });
+        assertNotNull(editing.addSku(1L, 1L, draft(revision(), "sku-3", "{\"规格\":\"年卡\"}", "99.00", 0)));
+        verify(mapper, times(1)).updateMinPrice(any(), any(), any()); // 更高价不重复写最低价
+    }
+    @Test void addSkuRejectsBlankCodeBadSpecBadPriceAndStaleRevisionBeforeWriting() {
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, draft("a".repeat(64), " ", "{}", "1.00", 0))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, draft("a".repeat(64), "c".repeat(65), "{}", "1.00", 0))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, draft("a".repeat(64), "x", "[1]", "1.00", 0))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, draft("a".repeat(64), "x", "not-json", "1.00", 0))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, draft("a".repeat(64), "x", "{}", "1.001", 0))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, draft("bad-revision", "x", "{}", "1.00", 0))).getCode());
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, draft("a".repeat(64), "x", "{}", "1.00", 0))).getCode());
+        verify(mapper, never()).insertSku(any(), any(), any()); verify(mapper, never()).updateMinPrice(any(), any(), any());
+    }
+    @Test void addSkuRejectsVirtualInitialStockDuplicateCodeAndSkuCap() {
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, draft(revision(), "sku-2", "{}", "5.00", 1))).getCode());
+        when(mapper.countSkuCode(1L, "sku-2")).thenReturn(1L);
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, draft(revision(), "sku-2", "{}", "5.00", 0))).getCode());
+        var hundred = new java.util.ArrayList<>(java.util.stream.IntStream.range(0, 100).mapToObj(i -> {
+            var s = new ProductSku(); s.setId((long) (i + 1)); s.setSkuCode("c" + i); s.setPrice(BigDecimal.TEN); s.setStockQuantity(0); return s;
+        }).toList());
+        when(mapper.lockSkus(1L, 1L)).thenReturn(hundred);
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L,
+                new SkuDraft(editing.get(1L, 1L).revision(), "sku-new", "{}", new BigDecimal("5.00"), 0))).getCode());
+        verify(mapper, never()).insertSku(any(), any(), any()); verify(mapper, never()).updateMinPrice(any(), any(), any());
+    }
+    @Test void removeSkuDeletesOnlyUnreferencedZeroStockSkuAndRaisesMinimum() {
+        var extra = new ProductSku(); extra.setId(2L); extra.setSkuCode("cheap"); extra.setPrice(new BigDecimal("1.00")); extra.setStockQuantity(0);
+        sku.setStockQuantity(0);
+        product.setMinPrice(new BigDecimal("1.00")); // 与cheap(1.00)为最低价时的一致快照
+        when(mapper.lockSkus(1L, 1L)).thenReturn(List.of(sku, extra));
+        when(mapper.deleteSku(1L, 1L, 2L)).thenReturn(1);
+        when(mapper.updateMinPrice(1L, 1L, BigDecimal.TEN)).thenReturn(1);
+        assertNotNull(editing.removeSku(1L, 1L, 2L, new SkuRemoval(editing.get(1L, 1L).revision())));
+        verify(mapper).deleteSku(1L, 1L, 2L);
+        verify(mapper).updateMinPrice(1L, 1L, BigDecimal.TEN); // 删除最低价后按剩余SKU重算
+    }
+    @Test void removeSkuKeepsMinimumWhenDeletingNonLowest() {
+        var extra = new ProductSku(); extra.setId(2L); extra.setSkuCode("premium"); extra.setPrice(new BigDecimal("99.00")); extra.setStockQuantity(0);
+        sku.setStockQuantity(0);
+        when(mapper.lockSkus(1L, 1L)).thenReturn(List.of(sku, extra));
+        when(mapper.deleteSku(1L, 1L, 2L)).thenReturn(1);
+        assertNotNull(editing.removeSku(1L, 1L, 2L, new SkuRemoval(editing.get(1L, 1L).revision())));
+        verify(mapper, never()).updateMinPrice(any(), any(), any());
+    }
+    @Test void removeSkuRejectsLastSkuStockedSkuAndReferencedSkuWithoutDeleting() {
+        // 最后一个SKU
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 1L, new SkuRemoval(revision()))).getCode());
+        var extra = new ProductSku(); extra.setId(2L); extra.setSkuCode("other"); extra.setPrice(BigDecimal.TEN); extra.setStockQuantity(0);
+        when(mapper.lockSkus(1L, 1L)).thenReturn(List.of(sku, extra));
+        // 有库存（fixtures中sku库存为7）
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 1L, new SkuRemoval(editing.get(1L, 1L).revision()))).getCode());
+        // 有历史记录
+        when(mapper.countSkuReferences(2L)).thenReturn(3L);
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 2L, new SkuRemoval(editing.get(1L, 1L).revision()))).getCode());
+        // 不属于本商品
+        assertEquals(404, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 9L, new SkuRemoval(editing.get(1L, 1L).revision()))).getCode());
+        verify(mapper, never()).deleteSku(any(), any(), any()); verify(mapper, never()).updateMinPrice(any(), any(), any());
+    }
+    @Test void skuMutationRejectsBadIdentityAndStaleRevisionBeforeDatabase() {
+        assertEquals(403, assertThrows(BusinessException.class, () -> editing.addSku(null, 1L, draft("a".repeat(64), "x", "{}", "1.00", 0))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, null)).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, null, new SkuRemoval("a".repeat(64)))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 1L, null)).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 1L, new SkuRemoval("bad"))).getCode());
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 1L, new SkuRemoval("a".repeat(64)))).getCode());
+        verify(mapper, never()).insertSku(any(), any(), any()); verify(mapper, never()).deleteSku(any(), any(), any());
     }
 }

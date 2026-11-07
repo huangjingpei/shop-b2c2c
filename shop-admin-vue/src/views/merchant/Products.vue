@@ -1,7 +1,7 @@
 <!--
 文件：Products.vue
-用途：商家商品发布、资料/SKU售价编辑、上下架及独立库存调整记录入口。
-维护注意：卡密发布数量为0，由导入生成；资料保存不回写库存。实物/服务库存由店长或超管单独调整并留痕；网络失败保留幂等键，刷新不覆盖未保存资料。违规下架不可自行恢复，前端权限不替代服务端。
+用途：商家商品发布、资料/SKU售价编辑、上下架、SKU增删及独立库存调整记录入口。
+维护注意：卡密发布数量为0，由导入生成；资料保存不回写库存。实物/服务库存由店长或超管单独调整并留痕；网络失败保留幂等键，刷新不覆盖未保存资料。违规下架不可自行恢复，前端权限不替代服务端。SKU编码保存后不可改；删除仅限零库存且无历史记录的SKU，增删后仅替换SKU列表与版本号，保留未保存的资料输入。
 -->
 <template>
   <div class="merchant-products">
@@ -60,7 +60,7 @@
     </el-card>
 
     <el-dialog v-model="editVisible" title="编辑商品资料与售价" width="760px" :close-on-click-modal="false" :close-on-press-escape="!editSaving" :show-close="!editSaving">
-      <el-alert title="交付类型与SKU编码固定；库存仅供查看，请通过对应库存业务维护。" type="info" :closable="false" />
+      <el-alert title="交付类型固定；SKU编码保存后不可修改；库存仅供查看，请通过对应库存业务维护。删除SKU仅限零库存且无历史记录。" type="info" :closable="false" />
       <el-form v-if="editForm" :model="editForm" :disabled="editSaving || editorLoading" label-width="110px" style="margin-top: 16px;">
         <el-form-item label="平台类目" required>
           <el-select v-model="editForm.categoryId"><el-option v-for="c in categories" :key="c.id" :label="c.name" :value="c.id" /></el-select>
@@ -80,7 +80,20 @@
             <el-button v-if="editingType !== 2" link type="primary" @click="openStock(row)">查看/调整</el-button>
             <span v-else>卡密业务</span>
           </template></el-table-column>
+          <el-table-column label="操作" width="80"><template #default="{ row }">
+            <el-button v-if="canRemoveSku(row, editForm.skus.length)" link type="danger" :disabled="skuEditSaving" @click="removeSku(row)">删除</el-button>
+          </template></el-table-column>
         </el-table>
+        <div style="margin-top: 12px;">
+          <div style="font-weight: 600; margin-bottom: 8px; font-size: 13px;">新增 SKU（编码保存后不可修改，自动卡密初始库存为0）：</div>
+          <div class="sku-item">
+            <el-input v-model="newSku.skuCode" placeholder="SKU编码" maxlength="64" style="width: 140px;" :disabled="skuEditSaving" />
+            <el-input v-model="newSku.specData" placeholder='规格JSON，如 {"规格":"季卡"}' style="flex: 1;" :disabled="skuEditSaving" />
+            <el-input-number v-model="newSku.price" placeholder="单价" :min="0.01" :max="99999999.99" :precision="2" style="width: 120px;" :disabled="skuEditSaving" />
+            <el-input-number v-model="newSku.stockQuantity" placeholder="初始库存" :min="0" :precision="0" :disabled="editingType === 2 || skuEditSaving" style="width: 100px;" />
+            <el-button type="primary" plain :loading="skuEditSaving" :disabled="editorLoading || editSaving" @click="addSku">添加</el-button>
+          </div>
+        </div>
       </el-form>
       <template #footer>
         <el-button :disabled="editSaving || editorLoading" @click="reloadEditor">重新载入</el-button>
@@ -163,7 +176,7 @@ import { goodsTypeLabel } from '../../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
-import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload } from '../../utils/productEditing.mjs'
+import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload, skuCreatePayload, canRemoveSku } from '../../utils/productEditing.mjs'
 import { inventoryPayload, canAdjustInventory } from '../../utils/inventoryAdjustment.mjs'
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 import { merchantProductRows } from '../../utils/merchantProducts.mjs'
@@ -255,6 +268,37 @@ const saveEditor = async () => {
     ElMessage.success('商品资料与售价已保存'); editVisible.value = false; await loadProducts()
   } catch { /* 冲突保留当前表单，用户可明确选择重新载入。 */ }
   finally { editSaving.value = false }
+}
+
+// 增删SKU后只用服务端快照替换SKU列表与版本号，保留未保存的资料输入。
+const newSku = ref({ skuCode: '', specData: '', price: 1, stockQuantity: 0 })
+const skuEditSaving = ref(false)
+const applySkuSnapshot = data => {
+  editForm.value.revision = data.revision
+  editForm.value.skus = data.skus.map(s => ({ id: s.id, skuCode: s.skuCode, specData: s.specData, price: Number(s.price), stockQuantity: s.stockQuantity }))
+}
+const addSku = async () => {
+  if (skuEditSaving.value || editSaving.value || editorLoading.value) return
+  let payload
+  try { payload = skuCreatePayload(editingType.value, newSku.value) } catch (error) { ElMessage.warning(error.message); return }
+  skuEditSaving.value = true
+  try {
+    const { data } = await request.post(`/merchant/products/${editingId.value}/skus`, { ...payload, revision: editForm.value.revision })
+    applySkuSnapshot(data); newSku.value = { skuCode: '', specData: '', price: 1, stockQuantity: 0 }
+    ElMessage.success('SKU已新增')
+  } catch { /* 冲突或拒绝由请求层提示，表单保留供修正后重试。 */ }
+  finally { skuEditSaving.value = false }
+}
+const removeSku = async row => {
+  if (skuEditSaving.value || editSaving.value || editorLoading.value) return
+  try { await ElMessageBox.confirm(`删除SKU“${row.skuCode}”后不可恢复，仅限零库存且无历史记录的SKU。确定删除吗？`, '删除SKU', { type: 'warning' }) }
+  catch { return }
+  skuEditSaving.value = true
+  try {
+    const { data } = await request.delete(`/merchant/products/${editingId.value}/skus/${row.id}`, { data: { revision: editForm.value.revision } })
+    applySkuSnapshot(data); ElMessage.success('SKU已删除')
+  } catch { /* 服务端说明拦截原因（库存未清零/已有历史记录等）。 */ }
+  finally { skuEditSaving.value = false }
 }
 const changeStatus = async row => {
   if (statusLoading.value !== null || editSaving.value) return

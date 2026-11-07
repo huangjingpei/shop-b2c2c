@@ -588,6 +588,94 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    void skuAddRemovePersistsWithDerivedMinimumAndHistoryProtection() {
+        var created = editing.addSku(1L, 1L, new com.shop.b2b2c.dto.ProductEditingDTOs.SkuDraft(
+                editing.get(1L, 1L).revision(), "SKU1-PLUS", "{\"规格\":\"年卡\"}", new java.math.BigDecimal("5.00"), 0));
+        assertEquals(2, created.skus().size());
+        assertEquals(0, created.product().getMinPrice().compareTo(new java.math.BigDecimal("5.00")));
+        Long newSkuId = jdbc.queryForObject("SELECT id FROM product_sku WHERE sku_code='SKU1-PLUS'", Long.class);
+        assertEquals(0, jdbc.queryForObject("SELECT stock_quantity FROM product_sku WHERE id=" + newSkuId, Integer.class));
+        assertEquals(0, jdbc.queryForObject("SELECT min_price FROM product WHERE id=1", java.math.BigDecimal.class)
+                .compareTo(new java.math.BigDecimal("5.00")));
+        // 同店重复编码409、自动卡密初始库存必须为0、越店404（revision合法但商品不属于该店）
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, new com.shop.b2b2c.dto.ProductEditingDTOs.SkuDraft(
+                editing.get(1L, 1L).revision(), "SKU1-PLUS", "{}", java.math.BigDecimal.ONE, 0))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.addSku(1L, 1L, new com.shop.b2b2c.dto.ProductEditingDTOs.SkuDraft(
+                editing.get(1L, 1L).revision(), "SKU1-STOCK", "{}", java.math.BigDecimal.ONE, 1))).getCode());
+        assertEquals(404, assertThrows(BusinessException.class, () -> editing.addSku(2L, 1L, new com.shop.b2b2c.dto.ProductEditingDTOs.SkuDraft(
+                "a".repeat(64), "SKU-X", "{}", java.math.BigDecimal.ONE, 0))).getCode());
+        // 有库存的SKU拒绝删除；清零后仍有卡密引用同样拒绝（fixtures卡1引用sku1）
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 1L,
+                new com.shop.b2b2c.dto.ProductEditingDTOs.SkuRemoval(editing.get(1L, 1L).revision()))).getCode());
+        jdbc.update("UPDATE product_sku SET stock_quantity=0 WHERE id=1");
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 1L,
+                new com.shop.b2b2c.dto.ProductEditingDTOs.SkuRemoval(editing.get(1L, 1L).revision()))).getCode());
+        // 订单明细引用的干净SKU同样拒绝删除
+        jdbc.update("INSERT INTO product_sku(id,merchant_id,product_id,sku_code,spec_data,price,stock_quantity) VALUES(5,1,1,'SKU5','{}',8,0)");
+        var order = unpaid("sku-ref", 1);
+        jdbc.update("UPDATE trade_order_item SET sku_id=5 WHERE order_sn=?", order.getOrderSn());
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 5L,
+                new com.shop.b2b2c.dto.ProductEditingDTOs.SkuRemoval(editing.get(1L, 1L).revision()))).getCode());
+        // 仅剩一个SKU的商品拒绝删除
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.removeSku(2L, 2L, 2L,
+                new com.shop.b2b2c.dto.ProductEditingDTOs.SkuRemoval(editing.get(2L, 2L).revision()))).getCode());
+        // 无库存无引用的干净SKU可删除；删除最低价(5.00)后按剩余SKU(10/8)重算为8.00
+        var after = editing.removeSku(1L, 1L, newSkuId,
+                new com.shop.b2b2c.dto.ProductEditingDTOs.SkuRemoval(editing.get(1L, 1L).revision()));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM product_sku WHERE id=" + newSkuId, Long.class));
+        assertEquals(0, after.product().getMinPrice().compareTo(new java.math.BigDecimal("8.00")));
+        assertEquals(0, jdbc.queryForObject("SELECT min_price FROM product WHERE id=1", java.math.BigDecimal.class)
+                .compareTo(new java.math.BigDecimal("8.00")));
+    }
+
+    @Test
+    void skuMutationHttpRequiresManagerOpenStoreAndValidQualification() throws Exception {
+        var anonymous = java.util.Map.of("revision", "x", "skuCode", "SKU-HTTP", "specData", "{}", "price", 6.00, "stockQuantity", 0);
+        mvc.perform(post("/api/v1/merchant/products/1/skus").contentType("application/json")
+                .content(json.writeValueAsString(anonymous))).andExpect(status().isUnauthorized());
+        authUser("MERCHANT_STAFF", 1L); String staffToken = loginToken();
+        mvc.perform(post("/api/v1/merchant/products/1/skus").header("Authorization", "Bearer " + staffToken)
+                .contentType("application/json").content(json.writeValueAsString(anonymous))).andExpect(status().isForbidden());
+        // D22：角色变化撤销旧令牌，管理员操作使用重新登录的令牌
+        jdbc.update("UPDATE sys_user SET role_code='MERCHANT_ADMIN' WHERE id=200");
+        String adminToken = loginToken();
+        var create = java.util.Map.of("revision", editing.get(1L, 1L).revision(), "skuCode", "SKU-HTTP",
+                "specData", "{\"规格\":\"次卡\"}", "price", 6.00, "stockQuantity", 0);
+        mvc.perform(post("/api/v1/merchant/products/1/skus").header("Authorization", "Bearer " + adminToken)
+                .contentType("application/json").content(json.writeValueAsString(create)))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.revision").isNotEmpty());
+        Long httpSku = jdbc.queryForObject("SELECT id FROM product_sku WHERE sku_code='SKU-HTTP'", Long.class);
+        // 最新版本号+重复编码仍409
+        var duplicate = java.util.Map.of("revision", editing.get(1L, 1L).revision(), "skuCode", "SKU-HTTP",
+                "specData", "{}", "price", 7.00, "stockQuantity", 0);
+        mvc.perform(post("/api/v1/merchant/products/1/skus").header("Authorization", "Bearer " + adminToken)
+                .contentType("application/json").content(json.writeValueAsString(duplicate)))
+                .andExpect(jsonPath("$.code").value(409));
+        // O4：打烊店铺拒绝写
+        jdbc.update("UPDATE merchant_store SET status=2 WHERE id=1");
+        mvc.perform(post("/api/v1/merchant/products/1/skus").header("Authorization", "Bearer " + adminToken)
+                .contentType("application/json").content(json.writeValueAsString(duplicate)))
+                .andExpect(jsonPath("$.code").value(409));
+        jdbc.update("UPDATE merchant_store SET status=1 WHERE id=1");
+        // O9细化：资质到期拦新增SKU（视同上新产生新可售单元），但不拦减损的删除
+        jdbc.update("UPDATE merchant_store SET id_card_expiry=? WHERE id=1", java.time.LocalDate.now().minusDays(1));
+        mvc.perform(post("/api/v1/merchant/products/1/skus").header("Authorization", "Bearer " + adminToken)
+                .contentType("application/json").content(json.writeValueAsString(duplicate)))
+                .andExpect(jsonPath("$.code").value(409));
+        mvc.perform(delete("/api/v1/merchant/products/1/skus/" + httpSku).header("Authorization", "Bearer " + adminToken)
+                .contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("revision", editing.get(1L, 1L).revision()))))
+                .andExpect(jsonPath("$.code").value(200));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM product_sku WHERE id=" + httpSku, Long.class));
+        // 越店删除他店SKU按404处理，不泄露归属
+        mvc.perform(delete("/api/v1/merchant/products/2/skus/2").header("Authorization", "Bearer " + adminToken)
+                .contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("revision", editing.get(2L, 2L).revision()))))
+                .andExpect(jsonPath("$.code").value(404));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM product_sku WHERE id=2", Long.class));
+    }
+
+    @Test
     void editingDoesNotRestoreReservedStockAndDoesNotBlockOwnerRelease() {
         String revision = editing.get(1L, 1L).revision();
         intent("edit-reserved"); var lock = payments.preLockInventory("edit-reserved");

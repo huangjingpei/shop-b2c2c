@@ -1,11 +1,11 @@
 /*
  * 文件：productEditing.test.mjs
- * 用途：商品发布初始库存、编辑表单独立性、字段白名单、售价及上下架规则测试。
+ * 用途：商品发布初始库存、编辑表单独立性、字段白名单、售价、上下架及SKU增删规则测试。
  * 维护注意：纯Node测试，不模拟服务端授权；后端另测事务回滚、并发冲突与租户归属。库存不能因浏览器快照陈旧而被写回。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload } from '../shop-admin-vue/src/utils/productEditing.mjs'
+import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload, skuCreatePayload, canRemoveSku } from '../shop-admin-vue/src/utils/productEditing.mjs'
 function snapshot() {
   return { revision: 'revision', product: { id: 1, merchantId: 2, categoryId: 1, title: '商品', mainImage: 'image', goodsType: 2, status: 1 },
     skus: [{ id: 1, skuCode: 'code', specData: '{}', price: 10, stockQuantity: 9 }] }
@@ -52,4 +52,30 @@ test('违规与未知状态没有商家自助上架动作', () => {
   assert.deepEqual(statusAction({ status: 0 }), { label: '上架', target: 1 })
   assert.equal(statusAction({ status: 2 }), null); assert.equal(statusAction({ status: 9 }), null)
   assert.equal(productStatusLabel(2), '违规下架'); assert.equal(productStatusLabel(9), '未知状态')
+})
+test('新增SKU请求自动卡密强制零库存且不带服务端字段', () => {
+  assert.deepEqual(skuCreatePayload(2, { skuCode: ' code-2 ', specData: '{"规格":"季卡"}', price: 5, stockQuantity: 9 }),
+    { skuCode: 'code-2', specData: '{"规格":"季卡"}', price: 5, stockQuantity: 0 })
+  assert.deepEqual(skuCreatePayload(1, { skuCode: 'c', specData: '{}', price: 0.01, stockQuantity: 3 }).stockQuantity, 3)
+  assert.equal(skuCreatePayload(3, { skuCode: 'c', specData: '{}' , price: 1 }).stockQuantity, 0)
+})
+test('新增SKU非法编码、规格、售价与库存被拒绝', () => {
+  for (const draft of [
+    { skuCode: ' ', specData: '{}', price: 1, stockQuantity: 0 },
+    { skuCode: 'x'.repeat(65), specData: '{}', price: 1, stockQuantity: 0 },
+    { skuCode: 'c', specData: '', price: 1, stockQuantity: 0 },
+    { skuCode: 'c', specData: '[1]', price: 1, stockQuantity: 0 },
+    { skuCode: 'c', specData: 'not-json', price: 1, stockQuantity: 0 },
+    { skuCode: 'c', specData: '{}', price: 0, stockQuantity: 0 },
+    { skuCode: 'c', specData: '{}', price: 1.001, stockQuantity: 0 },
+    { skuCode: 'c', specData: '{}', price: 1, stockQuantity: -1 },
+    { skuCode: 'c', specData: '{}', price: 1, stockQuantity: 1.5 },
+  ]) assert.throws(() => skuCreatePayload(1, draft), JSON.stringify(draft))
+})
+test('SKU删除按钮仅限零库存且非最后一个', () => {
+  assert.equal(canRemoveSku({ stockQuantity: 0 }, 2), true)
+  assert.equal(canRemoveSku({ stockQuantity: '0' }, 3), true)
+  assert.equal(canRemoveSku({ stockQuantity: 1 }, 2), false)
+  assert.equal(canRemoveSku({ stockQuantity: 0 }, 1), false)
+  assert.equal(canRemoveSku(null, 2), false)
 })
