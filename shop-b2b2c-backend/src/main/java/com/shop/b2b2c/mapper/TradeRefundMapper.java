@@ -12,6 +12,7 @@ package com.shop.b2b2c.mapper;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import com.shop.b2b2c.common.OrderFeeStatus;
 import com.shop.b2b2c.entity.TradeRefund;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -96,7 +97,8 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
      */
     @Update("UPDATE trade_order SET "
             + "fee_status = CASE WHEN fee_refunded_amount + #{feeAmount} >= commission_amount "
-            + "THEN 'REVERSED' WHEN fee_refunded_amount + #{feeAmount} > 0 THEN 'PARTIAL_REVERSED' ELSE 'PENDING' END, "
+            + "THEN '" + OrderFeeStatus.REVERSED + "' WHEN fee_refunded_amount + #{feeAmount} > 0 "
+            + "THEN '" + OrderFeeStatus.PARTIAL_REVERSED + "' ELSE '" + OrderFeeStatus.PENDING + "' END, "
             + "refunded_amount = refunded_amount + #{amount}, "
             + "fee_refunded_amount = fee_refunded_amount + #{feeAmount} "
             + "WHERE id = #{orderId} AND order_status IN ('PAID','SHIPPED','COMPLETED') "
@@ -109,8 +111,8 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
      * 渠道退款失败时释放预占；不改变已成功退款记录。
      */
     @Update("UPDATE trade_order SET "
-            + "fee_status = CASE WHEN fee_refunded_amount - #{feeAmount} <= 0 THEN 'PENDING' "
-            + "ELSE 'PARTIAL_REVERSED' END, "
+            + "fee_status = CASE WHEN fee_refunded_amount - #{feeAmount} <= 0 THEN '" + OrderFeeStatus.PENDING + "' "
+            + "ELSE '" + OrderFeeStatus.PARTIAL_REVERSED + "' END, "
             + "refunded_amount = refunded_amount - #{amount}, "
             + "fee_refunded_amount = fee_refunded_amount - #{feeAmount} "
             + "WHERE id = #{orderId} AND refunded_amount >= #{amount} AND fee_refunded_amount >= #{feeAmount}")

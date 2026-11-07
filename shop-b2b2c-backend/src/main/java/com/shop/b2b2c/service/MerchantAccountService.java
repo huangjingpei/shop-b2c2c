@@ -15,6 +15,7 @@
 package com.shop.b2b2c.service;
 
 import com.shop.b2b2c.common.BusinessException;
+import com.shop.b2b2c.common.OrderFeeStatus;
 import com.shop.b2b2c.entity.MerchantAccount;
 import com.shop.b2b2c.entity.MerchantAccountLedger;
 import com.shop.b2b2c.entity.MerchantRechargeOrder;
@@ -74,7 +75,7 @@ public class MerchantAccountService {
         if (fee.signum() == 0) {
             insertLedger(account, ENTRY_WAIVED, "DEBIT", BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP),
                     "ORDER", order.getId(), order.getOrderSn(), null, key, "推广期0费率，免收服务费");
-            markOrderFeeStatus(order, "ACCRUED");
+            markOrderFeeStatus(order, OrderFeeStatus.ACCRUED);
             return ENTRY_WAIVED;
         }
 
@@ -86,7 +87,7 @@ public class MerchantAccountService {
             touch(account);
             insertLedger(account, ENTRY_CHARGE, "DEBIT", fee,
                     "ORDER", order.getId(), order.getOrderSn(), null, key, "支付成功扣减服务费");
-            markOrderFeeStatus(order, "ACCRUED");
+            markOrderFeeStatus(order, OrderFeeStatus.ACCRUED);
             return ENTRY_CHARGE;
         }
 
@@ -99,7 +100,7 @@ public class MerchantAccountService {
         touch(account);
         insertLedger(account, ENTRY_ARREARS, "DEBIT", fee,
                 "ORDER", order.getId(), order.getOrderSn(), null, key, "余额不足，转入欠费");
-        markOrderFeeStatus(order, "ARREARS");
+        markOrderFeeStatus(order, OrderFeeStatus.ARREARS);
         return ENTRY_ARREARS;
     }
 
@@ -123,7 +124,7 @@ public class MerchantAccountService {
         MerchantAccountLedger original = ledgerMapper
                 .findByIdempotencyKey("ORDER_FEE:" + order.getOrderSn()).orElse(null);
         boolean originalArrears = ENTRY_ARREARS.equals(original == null ? null : original.getEntryType())
-                || original == null && "ARREARS".equals(order.getFeeStatus());
+                || original == null && OrderFeeStatus.ARREARS.equals(order.getFeeStatus());
 
         BigDecimal arrears = account.getArrears() == null ? BigDecimal.ZERO : account.getArrears();
         BigDecimal balance = account.getBalanceAvailable() == null ? BigDecimal.ZERO : account.getBalanceAvailable();

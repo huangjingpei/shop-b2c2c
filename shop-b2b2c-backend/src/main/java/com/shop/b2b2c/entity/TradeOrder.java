@@ -4,12 +4,14 @@
  * 维护注意：支付、取消、超时及履约写路径须共用订单行锁与事务；不能仅凭普通save实现幂等。peerStatus默认INIT并复用PeerStatus编码；未知旧值不自动转换或视作已预占，状态字段保持String兼容API。
  * T33：refundedAmount/feeRefundedAmount 含处理中预占，不能据此单独把订单视为已退款；订单是否 REFUNDED 由 trade_refund 成功记录累计判断。
  * T34：新增订单级服务费快照字段；下单时按商家当前费率固化，支付成功后按快照扣费，后续费率调整不得回溯已下单订单。
+ * D33：feeStatus 默认值与五个编码统一取自 OrderFeeStatus，不能与 merchant_store.fee_status 的 ServiceFeeStatus 混用。
  * T40：platformTradeNo 仅阶段二平台代收写入；阶段一必须保持为空，不得用商家直收流水回填。
  * F07：receiverName/receiverPhone/receiverRegion/receiverAddress 为下单时实物收货快照，仅 goodsType=1 写入；
  *      数字商品保持为空；shippingAmount 单独快照，不参与服务费计费基数。
  */
 package com.shop.b2b2c.entity;
 
+import com.shop.b2b2c.common.OrderFeeStatus;
 import com.shop.b2b2c.common.PeerStatus;
 import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.IdType;
@@ -37,7 +39,7 @@ public class TradeOrder {
     private BigDecimal merchantSettleAmount;
     private BigDecimal refundedAmount; // T33 已退款商品金额（含处理中预占）
     private BigDecimal feeRefundedAmount; // T33 已冲正/预占技术服务费
-    private String feeStatus = "PENDING"; // T33/T34 PENDING/ACCRUED/ARREARS/PARTIAL_REVERSED/REVERSED
+    private String feeStatus = OrderFeeStatus.PENDING; // T33/T34 编码见 OrderFeeStatus，与 merchant_store.fee_status 不同集合
     // ==================== T34 服务费订单级快照 ====================
     private BigDecimal goodsAmount;
     private BigDecimal merchantDiscountAmount;
