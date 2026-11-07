@@ -48,6 +48,19 @@ public interface ProductSkuMapper extends BaseMapper<ProductSku> {
                 .eq(ProductSku::getProductId, productId));
     }
 
+    /**
+     * D30：本店商品列表批量取SKU，替代逐商品 findByProductId 的 N+1 查询。
+     * 空列表直接返回，避免生成非法的 IN ()；仍带 merchantId 过滤，保持租户边界。
+     */
+    default List<ProductSku> findByProductIds(Long merchantId, List<Long> productIds) {
+        if (productIds == null || productIds.isEmpty()) {
+            return List.of();
+        }
+        return selectList(new LambdaQueryWrapper<ProductSku>()
+                .eq(ProductSku::getMerchantId, merchantId)
+                .in(ProductSku::getProductId, productIds));
+    }
+
     /** 跨店定位必须带 merchantId；仅凭 sku_code 查询会泄露其他店铺的编码占用情况（T17/Q14-A）。 */
     default Optional<ProductSku> findBySkuCode(Long merchantId, String skuCode) {
         return Optional.ofNullable(selectOne(new LambdaQueryWrapper<ProductSku>()

@@ -1,7 +1,8 @@
 /*
  * 文件：MerchantProductContractTest.java
- * 用途：锁定商家本店商品列表 {product, skus} 响应契约，覆盖按当前商户查询、SKU聚合、空列表与非商家拒绝。
- * 维护注意：使用Mockito静态模拟当前商户，不连接数据库；若后续改为批量查询SKU，需同步保持包装字段名与租户范围不变。
+ * 用途：锁定商家本店商品列表 {product, skus} 响应契约，覆盖按当前商户查询、SKU批量聚合、空列表与非商家拒绝。
+ * 维护注意：使用Mockito静态模拟当前商户，不连接数据库；D30 起 SKU 走 findByProductIds 单次批量查询，
+ * 测试须继续锁死包装字段名、租户范围与空列表不查 SKU 的行为，防止回退成逐商品 N+1。
  */
 package com.shop.b2b2c;
 
@@ -68,8 +69,8 @@ class MerchantProductContractTest {
         Product p1 = product(11, 7);
         Product p2 = product(12, 7);
         when(productMapper.findByMerchantId(7L)).thenReturn(List.of(p1, p2));
-        when(skuMapper.findByProductId(11L)).thenReturn(List.of(sku(111, 11, 7), sku(112, 11, 7)));
-        when(skuMapper.findByProductId(12L)).thenReturn(List.of());
+        when(skuMapper.findByProductIds(7L, List.of(11L, 12L)))
+                .thenReturn(List.of(sku(111, 11, 7), sku(112, 11, 7)));
 
         try (MockedStatic<SecurityUtils> security = mockStatic(SecurityUtils.class)) {
             security.when(SecurityUtils::requireCurrentMerchantId).thenReturn(7L);
@@ -83,7 +84,9 @@ class MerchantProductContractTest {
             assertEquals(2, first.skus().size());
             assertEquals(0, response.getData().get(1).skus().size());
             verify(productMapper).findByMerchantId(7L);
-            verify(skuMapper, never()).findByProductId(99L);
+            // D30：只允许一次批量 SKU 查询，禁止逐商品 N+1。
+            verify(skuMapper).findByProductIds(7L, List.of(11L, 12L));
+            verify(skuMapper, never()).findByProductId(any());
         }
     }
 
@@ -96,6 +99,7 @@ class MerchantProductContractTest {
             assertEquals(200, response.getCode());
             assertEquals(0, response.getData().size());
             verify(skuMapper, never()).findByProductId(any());
+            verify(skuMapper, never()).findByProductIds(any(), any());
         }
     }
 

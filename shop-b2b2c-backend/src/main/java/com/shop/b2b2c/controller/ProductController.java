@@ -1,7 +1,7 @@
 /*
  * 文件：ProductController.java
  * 用途：商品浏览、商家发布、本店卡密去重导入、成功批次记录、卡密脱敏列表、按SKU限量查看明文及导出审计入口。公开列表复用固定白名单单SQL组合查询。
- * 维护注意：自动卡密发布初始库存为0；导入委托独立READ_COMMITTED资产事务，禁止在入口加外层事务。先验证租户再去重增库存，公开详情验证交易资格和店铺白名单，类型3不走卡密导入。T15：列表绝不解密正文，只返回指纹尾号派生的脱敏标识；明文查看/导出必须在接口层要求店长或超管，导出需显式 confirm 并由服务层写审计。脱敏仅是接口返回，不等于加密或密钥轮换。公开列表的 categoryIds 用于频道聚合多个类目，只接受逗号分隔正整数且最多10个，与 categoryId 互斥。
+ * 维护注意：自动卡密发布初始库存为0；导入委托独立READ_COMMITTED资产事务，禁止在入口加外层事务。先验证租户再去重增库存，公开详情验证交易资格和店铺白名单，类型3不走卡密导入。T15：列表绝不解密正文，只返回指纹尾号派生的脱敏标识；明文查看/导出必须在接口层要求店长或超管，导出需显式 confirm 并由服务层写审计。脱敏仅是接口返回，不等于加密或密钥轮换。公开列表的 categoryIds 用于频道聚合多个类目，只接受逗号分隔正整数且最多10个，与 categoryId 互斥。D30：商家列表 SKU 用 findByProductIds 单次批量查询，不得回退为逐商品 findByProductId 的 N+1；空商品列表直接返回空，不产生 IN () 非法SQL。
  */
 package com.shop.b2b2c.controller;
 
@@ -158,8 +158,17 @@ public class ProductController {
     @GetMapping("/api/v1/merchant/products")
     public R<List<com.shop.b2b2c.dto.MerchantProductView>> listMerchantProducts() {
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
-        List<com.shop.b2b2c.dto.MerchantProductView> views = productMapper.findByMerchantId(merchantId).stream()
-                .map(product -> new com.shop.b2b2c.dto.MerchantProductView(product, skuMapper.findByProductId(product.getId())))
+        List<Product> products = productMapper.findByMerchantId(merchantId);
+        if (products.isEmpty()) {
+            return R.ok(List.of());
+        }
+        // D30：单次 IN 批量取SKU再按商品分组，消除逐商品查询的 N+1；返回契约 {product, skus} 不变。
+        List<Long> productIds = products.stream().map(Product::getId).toList();
+        java.util.Map<Long, List<ProductSku>> skusByProduct = skuMapper.findByProductIds(merchantId, productIds).stream()
+                .collect(java.util.stream.Collectors.groupingBy(ProductSku::getProductId));
+        List<com.shop.b2b2c.dto.MerchantProductView> views = products.stream()
+                .map(product -> new com.shop.b2b2c.dto.MerchantProductView(product,
+                        skusByProduct.getOrDefault(product.getId(), List.of())))
                 .toList();
         return R.ok(views);
     }
