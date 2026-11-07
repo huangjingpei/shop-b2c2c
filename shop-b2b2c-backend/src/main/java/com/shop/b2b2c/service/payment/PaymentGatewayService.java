@@ -22,6 +22,7 @@ import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
 import com.shop.b2b2c.service.PaymentEventService;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
@@ -29,6 +30,7 @@ import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class PaymentGatewayService {
 
     private final TradeOrderMapper tradeOrderMapper;
@@ -127,6 +129,36 @@ public class PaymentGatewayService {
             throw new BusinessException(502, "渠道查单未返回结果");
         }
         return result;
+    }
+
+    /**
+     * F08：订单本地关闭后的渠道关单尽力而为调用。
+     * 渠道未配置、账户未登记/未审核、适配器未启用或调用失败时返回 false 并记录 WARN，不阻断本地关单；
+     * 迟到支付仍由 PaymentEventService 拒绝并进入异常队列，不会因关单失败自动履约。
+     */
+    public boolean closePaymentBestEffort(TradeOrder order) {
+        if (order == null || order.getPayChannel() == null || order.getPayChannel().isBlank()) {
+            return false;
+        }
+        try {
+            String channel = PayChannel.normalize(order.getPayChannel());
+            MerchantPaymentAccount account = merchantPaymentAccountMapper
+                    .findByMerchantIdAndChannel(order.getMerchantId(), channel).orElse(null);
+            if (account == null || !"PASSED".equals(account.getApplyStatus())
+                    || account.getSubMchid() == null || account.getSubMchid().isBlank()) {
+                return false;
+            }
+            PaymentChannelAdapter adapter = paymentChannelRegistry.require(channel);
+            if (!adapter.enabled()) {
+                return false;
+            }
+            adapter.closePayment(commandOf(order, account));
+            return true;
+        } catch (Exception e) {
+            log.warn("渠道关单失败，本地订单保持关闭，需人工核对渠道侧交易 orderSn={} channel={}",
+                    order.getOrderSn(), order.getPayChannel(), e);
+            return false;
+        }
     }
 
     public void closePayment(Long merchantId, String orderSn) {

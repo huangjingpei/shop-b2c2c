@@ -100,6 +100,13 @@ F06：查单结果内可提交维权投诉、查看商家答复与平台裁决�
       <div v-if="orderResult.order.afterSaleDeadline" class="py-2 border-b border-slate-100 text-[11px] text-slate-500">
         售后受理截止：{{ orderResult.order.afterSaleDeadline }}
       </div>
+      <div v-if="canCancel(orderResult.order.orderStatus)" class="py-3 border-b border-slate-100 flex items-center justify-between">
+        <div class="text-xs text-slate-600">订单尚未支付，可取消并释放库存。</div>
+        <button @click="handleCancelOrder" :disabled="cancellingOrder"
+                class="px-3 py-1.5 rounded bg-slate-100 text-slate-700 text-xs font-bold hover:bg-slate-200 disabled:opacity-50">
+          {{ cancellingOrder ? '取消中...' : '取消订单' }}
+        </button>
+      </div>
 
       <!-- 退款申请入口：仅已支付/已发货/已完成可申请 -->
       <div v-if="canRefund" class="py-3 border-b border-slate-100 flex items-center justify-between">
@@ -248,6 +255,7 @@ import { receiptRequest, receiptRouteQuery } from '../utils/buyerReceipt.mjs'
 import { serviceVoucherText } from '../utils/goodsType.mjs'
 import { complaintStatusLabel, complaintTypeLabel, canEscalateComplaint, complaintSubmitPayload } from '@shared/complaint.mjs'
 import { canConfirmReceipt } from '@shared/orderReceipt.mjs'
+import { canCancelUnpaid, cancelRequestBody, cancelledStatus } from '@shared/orderCancel.mjs'
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
@@ -266,6 +274,9 @@ const refundForm = { amount: 0, reason: '' }
 // F07：确认收货只对 SHIPPED 显示；提交后本地更新状态，无需重新输入凭证。
 const confirmingReceipt = ref(false)
 const canConfirm = (status) => canConfirmReceipt(status)
+// F08：仅未支付订单可取消；取消后释放预占并尽力关闭渠道交易。
+const cancellingOrder = ref(false)
+const canCancel = (status) => canCancelUnpaid(status)
 
 const OPEN_COMPLAINT = new Set(['PENDING', 'MERCHANT_REPLIED', 'ARBITRATING'])
 const complaints = ref([])
@@ -420,6 +431,26 @@ const handleConfirmReceipt = async () => {
     alert(e.response?.data?.message || '确认收货失败，请稍后重试')
   } finally {
     confirmingReceipt.value = false
+  }
+}
+
+const handleCancelOrder = async () => {
+  if (!orderResult.value) return
+  if (!confirm('取消后库存将释放，已支付订单不能取消。确定取消？')) return
+  cancellingOrder.value = true
+  try {
+    const res = await axios.post('/api/v1/public/orders/cancel',
+      cancelRequestBody(orderResult.value.order.orderSn, contact.value, queryToken.value))
+    if (res.data.code === 200) {
+      orderResult.value.order.orderStatus = cancelledStatus(res.data.data?.orderStatus)
+      alert('订单已取消')
+    } else {
+      alert(res.data.message || '取消失败')
+    }
+  } catch (e) {
+    alert(e.response?.data?.message || '取消失败，请稍后重试')
+  } finally {
+    cancellingOrder.value = false
   }
 }
 

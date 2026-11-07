@@ -44,6 +44,9 @@ public class PeerPayServiceImpl implements PeerPayService {
     private final com.shop.b2b2c.service.ServiceFeeSnapshotService feeSnapshotService;
     private final com.shop.b2b2c.service.MerchantFeePolicyService feePolicyService;
     private final com.shop.b2b2c.service.MerchantAccountService merchantAccountService;
+    private final com.shop.b2b2c.service.InventoryReservationService inventoryReservationService;
+    /** F08：超时关单在本地事务提交后尽力关闭渠道交易；关单失败不影响本地 CLOSED。 */
+    private final com.shop.b2b2c.service.payment.PaymentGatewayService paymentGateway;
 
     @Value("${app.frontend.storefront-url:http://localhost:3002}")
     private String storefrontUrl;
@@ -491,19 +494,11 @@ public class PeerPayServiceImpl implements PeerPayService {
             throw new BusinessException(403, "无权释放其他付款人的预占");
         }
         if (!"UNPAID".equals(order.getOrderStatus())) return;
-        if (release(reservation)) {
+        if (inventoryReservationService.release(reservation)) {
             order.setPeerStatus(PeerStatus.INIT);
             // 开发期基线：取消预占不抹掉下单时确定的支付截止，意向单仍按 createdAt+15 关闭
             orderMapper.save(order);
         }
-    }
-
-    private boolean release(InventoryReservation reservation) {
-        if (reservation == null || reservationMapper.transition(reservation.getOrderId(), "RELEASED") != 1) return false;
-        if (skuMapper.addStock(reservation.getSkuId(), reservation.getMerchantId(), reservation.getQuantity()) != 1) {
-            throw new BusinessException("预占库存释放失败");
-        }
-        return true;
     }
 
     private void expireIfNecessary(TradeOrder order) {
@@ -512,10 +507,35 @@ public class PeerPayServiceImpl implements PeerPayService {
         LocalDateTime deadline = order.getLockExpireTime();
         if (deadline == null && order.getCreatedAt() != null) deadline = order.getCreatedAt().plusMinutes(15);
         if (deadline != null && !deadline.isAfter(LocalDateTime.now())) {
-            release(reservationMapper.find(order.getId()));
+            inventoryReservationService.release(order.getId());
             order.setOrderStatus("CLOSED");
             order.setPeerStatus(PeerStatus.EXPIRED);
             orderMapper.save(order);
+            closeChannelAfterCommit(order);
+        }
+    }
+
+    /** F08：超时关闭后尽力调用渠道关单；未配置渠道/关单失败只记录，不回滚本地关单，迟到支付仍进入异常队列。 */
+    private void closeChannelAfterCommit(TradeOrder order) {
+        Runnable close = () -> {
+            try {
+                if (!paymentGateway.closePaymentBestEffort(order)) {
+                    log.info("超时订单渠道关单未执行 orderSn={}", order.getOrderSn());
+                }
+            } catch (Exception e) {
+                log.warn("超时订单渠道关单异常，本地订单已关闭 orderSn={}", order.getOrderSn(), e);
+            }
+        };
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            close.run();
+                        }
+                    });
+        } else {
+            close.run();
         }
     }
 

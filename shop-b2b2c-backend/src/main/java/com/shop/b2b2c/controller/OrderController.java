@@ -61,6 +61,7 @@ public class OrderController {
     /** O4 商家写接口营业状态闸门：发货/推单/虚拟履约前店铺必须 status==1。 */
     private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
     private final com.shop.b2b2c.service.OrderReceiptService receiptService;
+    private final com.shop.b2b2c.service.OrderCancellationService cancellationService;
 
     @Data
     public static class CheckoutDTO {
@@ -209,6 +210,20 @@ public class OrderController {
     private static BigDecimal normalizeShippingFee(BigDecimal shippingFee) {
         BigDecimal value = shippingFee == null ? BigDecimal.ZERO : shippingFee.max(BigDecimal.ZERO);
         return value.setScale(2, java.math.RoundingMode.HALF_UP);
+    }
+
+    @Operation(summary = "买家取消未支付订单：释放预占并关闭订单（重复提交幂等）")
+    @PostMapping("/api/v1/public/orders/cancel")
+    public R<Map<String, Object>> cancelUnpaid(@RequestBody com.shop.b2b2c.dto.BuyerLookupRequest request,
+            jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
+        TradeOrder order = cancellationService.cancelByBuyer(request);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("orderSn", order.getOrderSn());
+        result.put("orderStatus", order.getOrderStatus());
+        return R.ok("订单已取消", result);
     }
 
     @Operation(summary = "买家确认收货：SHIPPED→COMPLETED（凭领取凭证，重复提交幂等）")

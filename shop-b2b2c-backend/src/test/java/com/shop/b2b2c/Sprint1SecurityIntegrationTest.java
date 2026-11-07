@@ -5295,4 +5295,136 @@ class Sprint1SecurityIntegrationTest {
                                 "queryToken", "f07-tk-new", "refundAmount", 30.00, "reason", "窗口内申请"))))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("PENDING"));
     }
+
+    // ==================== F08 取消未支付订单与支付异常队列 ====================
+
+    private String buyerCancelBody(String orderSn, String contact, String queryToken) throws Exception {
+        return json.writeValueAsString(java.util.Map.of(
+                "orderSn", orderSn, "contact", contact, "queryToken", queryToken));
+    }
+
+    @Test
+    void f08BuyerCancelReleasesReservationClosesChannelAndIsIdempotent() throws Exception {
+        TradeOrder order = intent("f08-cancel");
+        payments.preLockInventory("f08-cancel");
+        assertEquals(0, skus.selectById(1L).getStockQuantity());
+        String body = buyerCancelBody(order.getOrderSn(), "buyer@example.com", "query-f08-cancel");
+
+        // 凭证错误：统一 400，订单与库存都不变
+        mvc.perform(post("/api/v1/public/orders/cancel").contentType("application/json")
+                        .content(buyerCancelBody(order.getOrderSn(), "buyer@example.com", "wrong-token")))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        assertEquals("UNPAID", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals(0, skus.selectById(1L).getStockQuantity());
+
+        // 合法取消：CLOSED + 预占 RELEASED + 库存回补 + 事务提交后尽力关单
+        mvc.perform(post("/api/v1/public/orders/cancel").contentType("application/json").content(body))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.data.orderStatus").value("CLOSED"));
+        TradeOrder closed = orders.selectById(order.getId());
+        assertEquals("CLOSED", closed.getOrderStatus());
+        assertEquals("CANCELLED", closed.getPeerStatus());
+        assertNull(closed.getLockExpireTime());
+        assertEquals(1, skus.selectById(1L).getStockQuantity());
+        assertEquals("RELEASED", jdbc.queryForObject(
+                "SELECT status FROM inventory_reservation WHERE order_id=?", String.class, order.getId()));
+        verify(paymentGateway, times(1)).closePaymentBestEffort(any(TradeOrder.class));
+
+        // 重复提交：幂等成功，不重复回补库存
+        mvc.perform(post("/api/v1/public/orders/cancel").contentType("application/json").content(body))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.orderStatus").value("CLOSED"));
+        assertEquals(1, skus.selectById(1L).getStockQuantity());
+    }
+
+    @Test
+    void f08CannotCancelPaidOrderAndRejectsForeignBuyerCredential() throws Exception {
+        TradeOrder paid = unpaid("f08-paid", 1);
+        paid.setOrderStatus("PAID");
+        paid.setPeerStatus("PAID");
+        orders.save(paid);
+
+        // 已支付不得用取消接口绕过退款流程
+        mvc.perform(post("/api/v1/public/orders/cancel").contentType("application/json")
+                        .content(buyerCancelBody(paid.getOrderSn(), "buyer@example.com", "query-f08-paid")))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409));
+        assertEquals("PAID", orders.selectById(paid.getId()).getOrderStatus());
+
+        // 订单号与联系方式不匹配时与错误凭证同口径，不泄露订单是否存在
+        mvc.perform(post("/api/v1/public/orders/cancel").contentType("application/json")
+                        .content(buyerCancelBody(paid.getOrderSn(), "other@example.com", "query-f08-paid")))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+
+        // 已进入终态的订单重复取消按幂等成功返回，不改状态
+        paid.setOrderStatus("REFUNDED");
+        orders.save(paid);
+        mvc.perform(post("/api/v1/public/orders/cancel").contentType("application/json")
+                        .content(buyerCancelBody(paid.getOrderSn(), "buyer@example.com", "query-f08-paid")))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.orderStatus").value("REFUNDED"));
+    }
+
+    @Test
+    void f08ExpiredUnpaidOrderClosesChannelAfterLocalClose() {
+        TradeOrder order = intent("f08-timeout");
+        payments.preLockInventory("f08-timeout");
+        assertEquals(0, skus.selectById(1L).getStockQuantity());
+        jdbc.update("UPDATE trade_order SET lock_expire_time=? WHERE id=?",
+                LocalDateTime.now().minusMinutes(1), order.getId());
+
+        payments.expireReservation(order.getId());
+
+        assertEquals("CLOSED", orders.selectById(order.getId()).getOrderStatus());
+        assertEquals("EXPIRED", orders.selectById(order.getId()).getPeerStatus());
+        assertEquals(1, skus.selectById(1L).getStockQuantity());
+        // 本地关单提交后尽力关闭渠道交易（测试中渠道网关为 Mock）
+        verify(paymentGateway, times(1)).closePaymentBestEffort(any(TradeOrder.class));
+    }
+
+    @Test
+    void f08PaymentExceptionQueueIsSuperadminOnly() throws Exception {
+        mvc.perform(get("/api/v1/admin/settlement/payment-exceptions"))
+                .andExpect(status().isUnauthorized());
+        authUser("MERCHANT_ADMIN", 1L);
+        String token = loginToken();
+        mvc.perform(get("/api/v1/admin/settlement/payment-exceptions")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isForbidden());
+    }
+
+    @Test
+    void f08PaymentExceptionQueueReturnsWhitelistedFieldsOnly() throws Exception {
+        jdbc.update("INSERT INTO payment_event(channel,pay_trade_no,order_sn,merchant_id,pay_amount,currency,"
+                        + "payer_id,event_status,error_message,raw_payload,funds_received) "
+                        + "VALUES('WECHAT','F08-LATE-1','F08-ORD-1',1,10.00,'CNY','payer-secret','LATE_PAYMENT',"
+                        + "'订单已关闭后的迟到支付','{\"secret\":\"raw-body\"}',1)");
+        jdbc.update("INSERT INTO payment_event(channel,pay_trade_no,order_sn,merchant_id,pay_amount,currency,"
+                        + "payer_id,event_status,error_message,raw_payload,funds_received) "
+                        + "VALUES('ALIPAY','F08-DUP-1','F08-ORD-2',1,20.00,'CNY','payer-secret-2','DUPLICATE_PAYMENT',"
+                        + "'重复付款','{\"secret\":\"raw-body-2\"}',NULL)");
+        jdbc.update("INSERT INTO payment_event(channel,pay_trade_no,order_sn,merchant_id,pay_amount,currency,"
+                        + "payer_id,event_status,error_message,raw_payload,funds_received) "
+                        + "VALUES('WECHAT','F08-OK-1','F08-ORD-3',1,30.00,'CNY','payer-secret-3','SUCCESS',NULL,NULL,1)");
+
+        authUser("SUPERADMIN", null);
+        String token = loginToken();
+        String response = mvc.perform(get("/api/v1/admin/settlement/payment-exceptions")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(2))
+                .andExpect(jsonPath("$.data.items[0].eventStatus").value("DUPLICATE_PAYMENT"))
+                .andExpect(jsonPath("$.data.items[1].eventStatus").value("LATE_PAYMENT"))
+                .andReturn().getResponse().getContentAsString();
+        // 只读白名单：不回传原始报文、付款人标识与渠道商户号
+        assertFalse(response.contains("raw-body"));
+        assertFalse(response.contains("payer-secret"));
+        assertFalse(response.contains("rawPayload"));
+        assertFalse(response.contains("payerId"));
+
+        // 原因过滤只命中对应异常，仍不改变资金状态
+        mvc.perform(get("/api/v1/admin/settlement/payment-exceptions")
+                        .header("Authorization", "Bearer " + token)
+                        .param("reason", "重复"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].orderSn").value("F08-ORD-2"));
+    }
 }

@@ -64,6 +64,28 @@ public class AdminSettlementController {
     private final ReconciliationBatchService reconciliationBatchService;
     private final SysUserMapper userMapper;
     private final FinanceApprovalGuard approvalGuard;
+    private final com.shop.b2b2c.mapper.PaymentEventMapper paymentEventMapper;
+
+    @Operation(summary = "支付异常队列：迟到支付/重复付款/金额或商户不符等需人工补偿的事件")
+    @GetMapping("/payment-exceptions")
+    public R<java.util.Map<String, Object>> paymentExceptions(
+            @RequestParam(required = false) String reason,
+            @RequestParam(defaultValue = "50") int limit,
+            @RequestParam(defaultValue = "0") long offset) {
+        StpUtil.checkRole("SUPERADMIN");
+        int safeLimit = Math.max(1, Math.min(limit, 200));
+        long safeOffset = Math.max(0, offset);
+        String safeReason = reason == null ? null : reason.trim();
+        if (safeReason != null && safeReason.length() > 64) {
+            throw new com.shop.b2b2c.common.BusinessException(400, "筛选关键字长度不能超过64字符");
+        }
+        java.util.Map<String, Object> result = new java.util.LinkedHashMap<>();
+        result.put("limit", safeLimit);
+        result.put("offset", safeOffset);
+        result.put("items", paymentEventMapper.findPaymentExceptions(safeReason, safeLimit, safeOffset));
+        result.put("note", "异常事件仅用于人工核对；退款/补偿须走渠道或既有退款流程，本接口不修改资金状态");
+        return R.ok(result);
+    }
 
     @Operation(summary = "查询可选的财务复核人（排除当前操作人）")
     @GetMapping("/reviewers")

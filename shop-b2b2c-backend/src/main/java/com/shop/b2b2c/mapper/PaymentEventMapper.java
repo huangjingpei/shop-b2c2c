@@ -126,6 +126,23 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
     PaymentEvent findFirstSuccessByOrderSn(@Param("orderSn") String orderSn);
 
     /**
+     * F08 支付异常队列：只读取需人工补偿的异常态，按 id 倒序分页；reason 可选按错误说明模糊过滤。
+     * 显式列白名单，禁止 SELECT * 回传 raw_payload/payer_id。
+     */
+    @Select("<script>"
+            + "SELECT id, merchant_id AS merchantId, channel, order_sn AS orderSn, pay_amount AS payAmount, "
+            + "currency, event_status AS eventStatus, error_message AS errorMessage, "
+            + "funds_received AS fundsReceived, created_at AS createdAt "
+            + "FROM payment_event WHERE event_status IN ('LATE_PAYMENT','DUPLICATE_PAYMENT','AMOUNT_MISMATCH',"
+            + "'CURRENCY_MISMATCH','MERCHANT_MISMATCH','MANUAL_REVIEW','FULFILLMENT_FAILED') "
+            + "<if test='reason != null and reason != \"\"'>AND error_message LIKE CONCAT('%', #{reason}, '%') </if>"
+            + "ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}"
+            + "</script>")
+    List<com.shop.b2b2c.dto.PaymentExceptionView> findPaymentExceptions(@Param("reason") String reason,
+                                                                         @Param("limit") int limit,
+                                                                         @Param("offset") long offset);
+
+    /**
      * T35：按商户+时间读取到账事件（含重复付款），供对账比对。
      */
     @Select("SELECT * FROM payment_event WHERE merchant_id = #{merchantId} "

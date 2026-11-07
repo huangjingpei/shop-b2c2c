@@ -12,6 +12,6 @@ public final class PeerStatus {
     public static final String RESERVED_LOCK = "RESERVED_LOCK";
     public static final String PAID = "PAID";
     public static final String EXPIRED = "EXPIRED";
-    // 保留既有存储/统计契约，不代表本轮实现取消订单业务。
+    // F08：买家取消未支付订单或代付人撤销预占时写入；仍保持 String 存储兼容，历史未知值不得自动视为可付款。
     public static final String CANCELLED = "CANCELLED";
 }
