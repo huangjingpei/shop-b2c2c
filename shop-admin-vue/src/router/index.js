@@ -76,6 +76,13 @@ const routes = [
         meta: { title: '统一商品类目', role: 'SUPERADMIN' }
       },
       {
+        // F11：平台商品违规处置与审核恢复；页面入口不替代后端 SUPERADMIN 校验。
+        path: '/admin/product-moderation',
+        name: 'AdminProductModeration',
+        component: () => import('../views/admin/ProductModeration.vue'),
+        meta: { title: '商品违规处置', role: 'SUPERADMIN' }
+      },
+      {
         path: '/admin/orders',
         name: 'AdminOrders',
         component: () => import('../views/admin/Orders.vue'),

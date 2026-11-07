@@ -132,11 +132,30 @@ CREATE TABLE IF NOT EXISTS `product` (
   `service_desc` TEXT NULL COMMENT '线上服务交付说明及不可逆防退款强警示',
   `min_price` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '最低显示售价',
   `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态: 0-已下架, 1-在售, 2-违规下架',
+  `violation_reason` VARCHAR(255) DEFAULT NULL COMMENT '最近一次违规处置原因（平台填写，审核恢复后清空）',
+  `violated_at` DATETIME DEFAULT NULL COMMENT '最近一次违规下架时间（审核恢复后清空）',
   `sort_order` INT NOT NULL DEFAULT 0,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
 );
+
+-- 5b. 商品违规处置审计（F11）：平台违规下架(TAKEDOWN)与审核恢复(RESTORE)全量留痕，只增不改；
+--     夹具与生产结构列同步，省略外键（与本夹具 product/merchant_store 风格一致）
+CREATE TABLE IF NOT EXISTS `product_violation_audit` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `product_id` BIGINT NOT NULL COMMENT '被处置商品ID',
+  `merchant_id` BIGINT NOT NULL COMMENT '商品所属店铺ID（冗余便于按店筛查）',
+  `action` VARCHAR(16) NOT NULL COMMENT 'TAKEDOWN-违规下架 / RESTORE-审核恢复',
+  `from_status` TINYINT NOT NULL COMMENT '处置前商品状态: 0-已下架, 1-在售, 2-违规下架',
+  `to_status` TINYINT NOT NULL COMMENT '处置后商品状态',
+  `reason` VARCHAR(255) NOT NULL COMMENT '处置原因/审核备注',
+  `operator_id` BIGINT NOT NULL COMMENT '操作的平台超管 sys_user.id',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+);
+CREATE INDEX IF NOT EXISTS idx_violation_audit_product ON product_violation_audit(product_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_violation_audit_merchant ON product_violation_audit(merchant_id, created_at);
 
 -- 6. 商品规格 SKU 表
 CREATE TABLE IF NOT EXISTS `product_sku` (

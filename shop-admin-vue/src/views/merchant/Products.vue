@@ -41,7 +41,12 @@
         </el-table-column>
         <el-table-column prop="status" label="在售状态" width="100">
           <template #default="{ row }">
-            <el-tag :type="row.status === 1 ? 'success' : row.status === 2 ? 'danger' : 'info'">
+            <!-- F11：违规下架行悬停展示平台处置原因与时间，指引商家整改后等待平台审核恢复 -->
+            <el-tooltip v-if="row.status === 2" effect="dark" placement="top"
+              :content="`处置原因：${row.violationReason || '未填写'}${row.violatedAt ? '；时间：' + row.violatedAt : ''}；整改后请联系平台审核恢复`">
+              <el-tag type="danger">{{ productStatusLabel(row.status) }}</el-tag>
+            </el-tooltip>
+            <el-tag v-else :type="row.status === 1 ? 'success' : 'info'">
               {{ productStatusLabel(row.status) }}
             </el-tag>
           </template>

@@ -109,7 +109,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -4547,5 +4547,159 @@ class Sprint1SecurityIntegrationTest {
         mvc.perform(get("/api/v1/merchant/cards").header("Authorization", "Bearer " + staffToken))
                 .andExpect(status().isForbidden())
                 .andExpect(jsonPath("$.code").value(403));
+    }
+
+    // F11/Sprint 28：平台违规处置全链路 —— 下架后对买家不可见、商家不能自行恢复、审计留痕、恢复回到处置前状态。
+    @Test
+    void violationTakedownHidesProductFromPublicAndMerchantUntilRestore() throws Exception {
+        // 商品1在售，公开可见
+        mvc.perform(get("/api/v1/public/products")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(2));
+        mvc.perform(get("/api/v1/public/products/1")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+
+        authUser("SUPERADMIN", null); String adminToken = loginToken();
+
+        // 违规下架：商品 1（在售 → 2）
+        mvc.perform(post("/api/v1/admin/products/1/violation-takedown")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json").content("{\"reason\":\"  涉嫌售假  \"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value(2))
+                .andExpect(jsonPath("$.data.violationReason").value("涉嫌售假"))
+                .andExpect(jsonPath("$.data.violatedAt").isNotEmpty());
+        assertEquals(2, jdbc.queryForObject("SELECT status FROM product WHERE id=1", Integer.class));
+        assertEquals("涉嫌售假", jdbc.queryForObject("SELECT violation_reason FROM product WHERE id=1", String.class));
+
+        // 公开列表与详情不再可见
+        mvc.perform(get("/api/v1/public/products")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.length()").value(1))
+                .andExpect(jsonPath("$.data[0].id").value("2"));
+        mvc.perform(get("/api/v1/public/products/1"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+
+        // 商家不能自行恢复或改状态（403），也不能再违规下架（409）
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_ADMIN", 1L); String merchantToken = loginToken();
+        String revision = editing.get(1L, 1L).revision();
+        mvc.perform(patch("/api/v1/merchant/products/1/status")
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(new com.shop.b2b2c.dto.ProductEditingDTOs.Status(revision, 1))))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value(403));
+        assertEquals(2, jdbc.queryForObject("SELECT status FROM product WHERE id=1", Integer.class));
+
+        // 审计留痕一行 TAKEDOWN
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM product_violation_audit WHERE product_id=1", Integer.class));
+        assertEquals("TAKEDOWN", jdbc.queryForObject(
+                "SELECT action FROM product_violation_audit WHERE product_id=1", String.class));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT from_status FROM product_violation_audit WHERE product_id=1", Integer.class));
+
+        // 超管恢复：回到处置前状态（1），清空处置快照
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("SUPERADMIN", null); String reopenToken = loginToken();
+        mvc.perform(post("/api/v1/admin/products/1/restore")
+                        .header("Authorization", "Bearer " + reopenToken)
+                        .contentType("application/json").content("{}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.status").value(1))
+                .andExpect(jsonPath("$.data.violationReason").isEmpty());
+        assertEquals(1, jdbc.queryForObject("SELECT status FROM product WHERE id=1", Integer.class));
+        assertNull(jdbc.queryForObject("SELECT violation_reason FROM product WHERE id=1", String.class));
+        assertNull(jdbc.queryForObject("SELECT violated_at FROM product WHERE id=1", java.time.LocalDateTime.class));
+
+        // 恢复后公开可见，审计两行（TAKEDOWN + RESTORE）
+        mvc.perform(get("/api/v1/public/products/1")).andExpect(status().isOk())
+                .andExpect(jsonPath("$.code").value(200));
+        assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM product_violation_audit WHERE product_id=1", Integer.class));
+        assertEquals("RESTORE", jdbc.queryForObject(
+                "SELECT action FROM product_violation_audit WHERE product_id=1 ORDER BY id DESC LIMIT 1", String.class));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT to_status FROM product_violation_audit WHERE product_id=1 AND action='RESTORE'", Integer.class));
+
+        // 处置记录接口返回两条，倒序
+        mvc.perform(get("/api/v1/admin/products/1/violation-audits")
+                        .header("Authorization", "Bearer " + reopenToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.length()").value(2))
+                .andExpect(jsonPath("$.data[0].action").value("RESTORE"))
+                .andExpect(jsonPath("$.data[1].action").value("TAKEDOWN"));
+    }
+
+    // F11/Sprint 28：违规处置接口的角色边界与非法操作拒绝。
+    @Test
+    void violationModerationEnforcesRoleAndRejectsIllegalOperations() throws Exception {
+        // 匿名一律 401
+        mvc.perform(get("/api/v1/admin/products")).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/admin/products/1/violation-takedown")
+                        .contentType("application/json").content("{\"reason\":\"违规\"}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/v1/admin/products/1/restore").contentType("application/json").content("{}"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/admin/products/1/violation-audits")).andExpect(status().isUnauthorized());
+
+        // 商家角色一律 403
+        authUser("MERCHANT_ADMIN", 1L); String merchantToken = loginToken();
+        mvc.perform(get("/api/v1/admin/products").header("Authorization", "Bearer " + merchantToken))
+                .andExpect(status().isForbidden());
+        mvc.perform(post("/api/v1/admin/products/1/violation-takedown")
+                        .header("Authorization", "Bearer " + merchantToken)
+                        .contentType("application/json").content("{\"reason\":\"违规\"}"))
+                .andExpect(status().isForbidden());
+        assertEquals(1, jdbc.queryForObject("SELECT status FROM product WHERE id=1", Integer.class));
+
+        // 超管正常操作
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("SUPERADMIN", null); String adminToken = loginToken();
+        mvc.perform(get("/api/v1/admin/products").header("Authorization", "Bearer " + adminToken))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.total").value(2))
+                .andExpect(jsonPath("$.data.list[0].storeName").isNotEmpty());
+        // 列表筛选：状态与关键词
+        mvc.perform(get("/api/v1/admin/products").header("Authorization", "Bearer " + adminToken)
+                        .param("status", "1").param("merchantId", "2"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.list[0].id").value("2"));
+
+        // 非法入参：空原因 400、超长原因 400、不存在商品 404
+        mvc.perform(post("/api/v1/admin/products/1/violation-takedown")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json").content("{\"reason\":\"  \"}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        mvc.perform(post("/api/v1/admin/products/1/violation-takedown")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json").content("{\"reason\":\"" + "x".repeat(256) + "\"}"))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        mvc.perform(post("/api/v1/admin/products/999/violation-takedown")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json").content("{\"reason\":\"违规\"}"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value(404));
+        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM product_violation_audit", Integer.class));
+
+        // 重复下架 409
+        mvc.perform(post("/api/v1/admin/products/1/violation-takedown")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json").content("{\"reason\":\"违规\"}"))
+                .andExpect(status().isOk());
+        mvc.perform(post("/api/v1/admin/products/1/violation-takedown")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json").content("{\"reason\":\"再次\"}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409));
+
+        // 非违规商品恢复 409、不存在商品恢复 404
+        mvc.perform(post("/api/v1/admin/products/2/restore")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json").content("{}"))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409));
+        mvc.perform(post("/api/v1/admin/products/999/restore")
+                        .header("Authorization", "Bearer " + adminToken)
+                        .contentType("application/json").content("{}"))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value(404));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM product_violation_audit", Integer.class));
     }
 }

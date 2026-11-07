@@ -80,6 +80,10 @@
               <el-icon><Folder /></el-icon>
               <span>统一商品类目树</span>
             </el-menu-item>
+            <el-menu-item index="/admin/product-moderation">
+              <el-icon><Warning /></el-icon>
+              <span>商品违规处置与审核</span>
+            </el-menu-item>
             <el-menu-item index="/admin/orders">
               <el-icon><Tickets /></el-icon>
               <span>全平台订单与分账监察</span>

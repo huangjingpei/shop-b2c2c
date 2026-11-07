@@ -146,6 +146,8 @@ CREATE TABLE IF NOT EXISTS `product` (
   `service_desc` TEXT NULL COMMENT '线上服务交付说明及不可逆防退款强警示',
   `min_price` DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '最低显示售价',
   `status` TINYINT NOT NULL DEFAULT 1 COMMENT '状态: 0-已下架, 1-在售, 2-违规下架',
+  `violation_reason` VARCHAR(255) DEFAULT NULL COMMENT '最近一次违规处置原因（平台填写，审核恢复后清空）',
+  `violated_at` DATETIME DEFAULT NULL COMMENT '最近一次违规下架时间（审核恢复后清空）',
   `sort_order` INT NOT NULL DEFAULT 0,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -155,6 +157,25 @@ CREATE TABLE IF NOT EXISTS `product` (
   CONSTRAINT fk_product_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`),
   CONSTRAINT fk_product_category FOREIGN KEY (`category_id`) REFERENCES `category` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品主表';
+
+-- 5b. 商品违规处置审计（F11）：平台违规下架(TAKEDOWN)与审核恢复(RESTORE)全量留痕，只增不改；
+--     RESTORE 的 to_status 取最近一次 TAKEDOWN 的 from_status（撤销处置回到原状态），应用层 CAS 保证并发只成功一次。
+CREATE TABLE IF NOT EXISTS `product_violation_audit` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `product_id` BIGINT UNSIGNED NOT NULL COMMENT '被处置商品ID',
+  `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '商品所属店铺ID（冗余便于按店筛查）',
+  `action` VARCHAR(16) NOT NULL COMMENT 'TAKEDOWN-违规下架 / RESTORE-审核恢复',
+  `from_status` TINYINT NOT NULL COMMENT '处置前商品状态: 0-已下架, 1-在售, 2-违规下架',
+  `to_status` TINYINT NOT NULL COMMENT '处置后商品状态',
+  `reason` VARCHAR(255) NOT NULL COMMENT '处置原因/审核备注',
+  `operator_id` BIGINT NOT NULL COMMENT '操作的平台超管 sys_user.id',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_violation_audit_product` (`product_id`, `created_at`),
+  KEY `idx_violation_audit_merchant` (`merchant_id`, `created_at`),
+  CONSTRAINT fk_violation_audit_product FOREIGN KEY (`product_id`) REFERENCES `product` (`id`),
+  CONSTRAINT fk_violation_audit_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商品违规处置审计';
 
 -- 6. 商品规格 SKU 表
 CREATE TABLE IF NOT EXISTS `product_sku` (
