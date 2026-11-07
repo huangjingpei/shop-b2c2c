@@ -1,7 +1,8 @@
 /*
  * 文件：PosterUtils.java
- * 用途：生成代付分享二维码与海报的图片工具。
+ * 用途：生成代付分享二维码与海报的图片工具；海报以 PNG 字节返回，由调用方决定落盘方式，不再直接输出 Base64。
  * 维护注意：海报不保证社交平台免封；注意中文字体、长文本、图像内存与生成耗时。仅编码分享地址，不证明支付到账；不要在图中加入卡密或内部凭证。
+ * 生成失败返回 null 而不是抛出，调用方须保持"海报失败不影响已提交订单"的降级语义；缩放/字体缺失会降级为系统字体，不代表产线渲染效果已验收。
  */
 package com.shop.b2b2c.common;
 
@@ -135,10 +136,10 @@ public class PosterUtils {
     }
 
     /**
-     * 生成 9:16 微信防封精美代付买单海报 (Base64 Data URL)
+     * 生成 9:16 微信防封精美代付买单海报 (PNG 字节)
      * 分辨率: 750 x 1334
      */
-    public static String generatePeerPayPoster(
+    public static byte[] generatePeerPayPosterBytes(
             String payUrl,
             String storeName,
             String productTitle,
@@ -290,7 +291,7 @@ public class PosterUtils {
 
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             ImageIO.write(poster, "png", baos);
-            return "data:image/png;base64," + Base64.getEncoder().encodeToString(baos.toByteArray());
+            return baos.toByteArray();
         } catch (Exception e) {
             log.error("生成代付海报图片失败: {}", e.getMessage(), e);
             return null;

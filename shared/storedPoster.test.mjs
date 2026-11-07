@@ -1,13 +1,14 @@
 /*
  * 文件：storedPoster.test.mjs
- * 用途：已存海报预览的合法读取、错误格式、失败清理和异步竞态回归。
- * 维护注意：注入请求及渲染函数，不访问网络或真实图像解码；占位PNG Data URL仅验证格式。浏览器解码和下载须人工检查，不记录令牌或海报正文到日志。
+ * 用途：已存海报预览的合法读取、新落盘地址/历史Base64格式、错误格式、失败清理和异步竞态回归。
+ * 维护注意：注入请求及渲染函数，不访问网络或真实图像解码；占位PNG Data URL与sha256路径仅验证格式。浏览器解码和下载须人工检查，不记录令牌或海报正文到日志。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { canPreviewPoster, createStoredPosterPreview } from '../shop-admin-vue/src/utils/storedPoster.mjs'
 
 const png = 'data:image/png;base64,aW1hZ2U='
+const posterPath = '/api/v1/peer-pay/poster/image/' + 'a'.repeat(64) + '.png'
 function viewer(get) {
   let state
   const preview = createStoredPosterPreview({ get, render: value => { state = value } })
@@ -47,9 +48,21 @@ test('Long最大值字符串保持精度', async () => {
   })
   await view.preview.open({ id: '9223372036854775807' }); assert.equal(view.state().url, png)
 })
+test('新落盘海报地址与历史Base64同样可用于img/download', async () => {
+  for (const data of [posterPath, png]) {
+    const view = viewer(async () => ({ code: 200, data }))
+    await view.preview.open({ id: 7 })
+    assert.equal(view.state().url, data); assert.equal(view.state().error, '')
+  }
+})
 for (const data of [null, '', 'https://example.test/image.png', 'javascript:alert(1)', 'data:image/svg+xml;base64,AAAA',
-  'data:image/png;base64,', 'data:image/png;base64,abc', 'data:image/png;base64,a===']) {
-  test(`非PNG数据或非法Base64不用于img/download：${String(data)}`, async () => {
+  'data:image/png;base64,', 'data:image/png;base64,abc', 'data:image/png;base64,a===',
+  '/api/v1/peer-pay/poster/image/abc.png', '/api/v1/peer-pay/poster/image/' + 'A'.repeat(64) + '.png',
+  '//evil.test/api/v1/peer-pay/poster/image/' + 'a'.repeat(64) + '.png',
+  'https://example.test/api/v1/peer-pay/poster/image/' + 'a'.repeat(64) + '.png',
+  '/api/v1/peer-pay/poster/image/' + 'a'.repeat(64) + '.png?x=1',
+  '/api/v1/merchant/orders/7/poster']) {
+  test(`非本站海报图片或非法Base64不用于img/download：${String(data)}`, async () => {
     const view = viewer(async () => ({ code: 200, data }))
     await view.preview.open({ id: 7 }); assert.equal(view.state().url, ''); assert.ok(view.state().error)
   })

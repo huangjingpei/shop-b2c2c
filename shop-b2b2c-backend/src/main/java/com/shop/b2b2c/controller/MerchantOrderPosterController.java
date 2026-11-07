@@ -2,6 +2,7 @@
  * 文件：MerchantOrderPosterController.java
  * 用途：商家按需查看本店订单已保存的海报，替代列表批量返回Base64。
  * 维护注意：租户只取服务端会话，查询SQL同时绑定订单与商户；缺失、空内容及他店统一404业务码。
+ * D38起新海报为 /api/v1/peer-pay/poster/image/<sha256>.png 公开路径，历史行仍为PNG Base64，原样返回由前端格式校验。
  * 禁止缓存，只读单字段，不生成海报、不加行锁、不回写订单，也不公开领取凭证；后续分页/海报存储调整须保持该租户边界。
  */
 package com.shop.b2b2c.controller;

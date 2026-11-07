@@ -1,7 +1,8 @@
 /*
  * 文件：storedPoster.mjs
  * 用途：商家已存海报按需读取及预览状态控制，供订单页复用。
- * 维护注意：请求只携订单ID，租户由后端校验；只允许现有PNG Base64格式，拒绝外链/SVG等来源。
+ * 维护注意：请求只携订单ID，租户由后端校验；只允许本站生成的海报图片地址或历史PNG Base64，拒绝外链/SVG等来源。
+ * 新海报由后端落盘后返回 /api/v1/peer-pay/poster/image/<sha256>.png，历史行仍为 data:image/png;base64；两种格式之外一律拒绝。
  * 关闭/切换/卸载会使旧响应失效，不存localStorage、不记录异常原文；格式检查不证明PNG内容有效，图片解码失败另行处理。
  */
 export function canPreviewPoster(order) {
@@ -13,8 +14,12 @@ function orderId(value) {
   return /^[1-9]\d*$/.test(text) && BigInt(text) <= 9223372036854775807n ? text : null
 }
 
+const POSTER_PATH = /^\/api\/v1\/peer-pay\/poster\/image\/[0-9a-f]{64}\.png$/
+
 function isPng(value) {
-  if (typeof value !== 'string' || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) return false
+  if (typeof value !== 'string') return false
+  if (POSTER_PATH.test(value)) return true
+  if (!/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value)) return false
   return value.slice('data:image/png;base64,'.length).length % 4 === 0
 }
 

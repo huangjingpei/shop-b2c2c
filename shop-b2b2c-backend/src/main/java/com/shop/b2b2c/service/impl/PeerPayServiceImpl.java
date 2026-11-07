@@ -3,6 +3,7 @@
  * 用途：代付交易与库存预占的事务实现，协调订单、SKU、卡密及人工服务履约；代付编码统一复用PeerStatus。
  * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。支付截止严格从下单时刻起算 15 分钟，预占成功只回写订单原始截止时间，不得重置为“当下 +15 分钟”；取消预占只回到意向态，不抹掉该截止时间。卡密缺货必须回滚。公开代付详情不能返回卡密或服务凭证；当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
  * T26：createBuyerPeerPay/createPushPayOrder 的事务内禁止渲染海报（PNG 光栅化耗时且放大锁等待）；海报由 attachPoster 在事务提交后按需生成并单字段回写，失败不回滚订单。
+ * D38：生成结果改为 PNG 落盘、poster_url 只存公开访问路径（历史 Base64 行原样返回兼容）；返回字段名沿用 posterBase64 以免破坏前端契约。
  */
 package com.shop.b2b2c.service.impl;
 
@@ -47,6 +48,8 @@ public class PeerPayServiceImpl implements PeerPayService {
     private final com.shop.b2b2c.service.InventoryReservationService inventoryReservationService;
     /** F08：超时关单在本地事务提交后尽力关闭渠道交易；关单失败不影响本地 CLOSED。 */
     private final com.shop.b2b2c.service.payment.PaymentGatewayService paymentGateway;
+    /** D38：海报 PNG 落盘并返回公开路径，trade_order.poster_url 只存路径或历史 Base64，不再写入新 Base64。 */
+    private final com.shop.b2b2c.service.PosterStorageService posterStorage;
 
     @Value("${app.frontend.storefront-url:http://localhost:3002}")
     private String storefrontUrl;
@@ -637,8 +640,8 @@ public class PeerPayServiceImpl implements PeerPayService {
     }
 
     /**
-     * T26：建单事务提交后的海报补齐入口。已生成则复用；缺失则按需渲染并单字段落库；
-     * 渲染异常/失败只降级为 null，绝不反向影响已提交的订单与库存。
+     * T26：建单事务提交后的海报补齐入口。已生成则复用；缺失则按需渲染、落盘并单字段写入公开路径；
+     * 渲染异常/失败只降级为 null，绝不反向影响已提交的订单与库存。字段名 posterBase64 为历史契约，内容可能是图片路径。
      */
     @Override
     public Map<String, Object> attachPoster(Map<String, Object> creationResult) {
@@ -687,13 +690,17 @@ public class PeerPayServiceImpl implements PeerPayService {
         String cashierUrl = storefrontUrl + "/peer-pay/" + order.getPeerPayToken();
 
         // 3. 事务外执行耗时渲染，绝不阻塞并发支付与预占释放 (R26)
-        String posterBase64 = PosterUtils.generatePeerPayPoster(
+        byte[] posterPng = PosterUtils.generatePeerPayPosterBytes(
                 cashierUrl, storeName, productTitle, order.getPayAmount(), order.getPeerMessage(), goodsTypeName
         );
+        if (posterPng == null) {
+            return null;
+        }
 
-        // 4. 单字段更新 poster_url，绝不回写并覆盖已被并发支付更新的订单状态 (R26)
-        orderMapper.updatePosterUrl(order.getId(), posterBase64);
-        return posterBase64;
+        // 4. PNG 落盘后单字段更新公开路径，绝不回写并覆盖已被并发支付更新的订单状态 (R26/D38)
+        String posterPath = posterStorage.store(token, posterPng);
+        orderMapper.updatePosterUrl(order.getId(), posterPath);
+        return posterPath;
     }
 
     /** F07：店铺固定运费兜底，null/负数按 0，保留两位小数。 */

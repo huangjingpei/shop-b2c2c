@@ -8,6 +8,7 @@
  *  4. T36：建单、预占、海报限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。
  *  5. T26：建单幂等事务只落库返回 token；posterBase64 在 execute 返回后由 attachPoster 事务外补齐，失败不影响建单。
  *  6. D27：公开详情可选接收 X-Reservation-Token，仅用于服务端比对 lockOwnedByCaller；响应不得回显 ownerToken。
+ *  7. D38：海报 PNG 落盘，posterBase64 实际内容为 /api/v1/peer-pay/poster/image/<sha256>.png 公开路径，历史行仍可能是 Base64；图片由 PosterImageController 只读提供。
  */
 package com.shop.b2b2c.controller;
 

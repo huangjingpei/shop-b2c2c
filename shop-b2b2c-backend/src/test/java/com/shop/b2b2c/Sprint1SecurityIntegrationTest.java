@@ -59,7 +59,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
         "mybatis-plus.configuration.log-impl=org.apache.ibatis.logging.nologging.NoLoggingImpl",
         "payment.mock=true", "inventory.expiry-delay-ms=3600000",
         "app.security.cors-allowed-origins=https://admin.example.test",
-        "app.security.login-account-limit=3", "app.security.login-ip-limit=5"
+        "app.security.login-account-limit=3", "app.security.login-ip-limit=5",
+        // D38：海报落盘到构建目录，避免测试写入仓库数据目录；同名文件按凭证摘要覆盖。
+        "shop.poster.storage-dir=target/test-posters"
 })
 @AutoConfigureMockMvc
 @org.springframework.context.annotation.Import(Sprint1SecurityIntegrationTest.SessionTestConfig.class)
@@ -4299,16 +4301,23 @@ class Sprint1SecurityIntegrationTest {
         assertEquals("COMPLETED", paidOrder.getOrderStatus());
         paymentCompleted.countDown();
 
-        String posterBase64 = posterFuture.get(10, TimeUnit.SECONDS);
-        assertNotNull(posterBase64);
-        assertTrue(posterBase64.startsWith("data:image/png;base64,"));
+        String posterPath = posterFuture.get(10, TimeUnit.SECONDS);
+        assertNotNull(posterPath);
+        assertTrue(posterPath.startsWith("/api/v1/peer-pay/poster/image/"), posterPath);
+        assertTrue(posterPath.endsWith(".png"), posterPath);
 
         // 4. 关键验证：海报更新后，订单状态依然为 PAID 与 COMPLETED，绝未被旧内存快照覆盖成 UNPAID/RESERVED_LOCK
         TradeOrder afterOrder = orders.findById(order.getId()).orElseThrow();
         assertEquals("PAID", afterOrder.getPeerStatus());
         assertEquals("COMPLETED", afterOrder.getOrderStatus());
         assertEquals("trade-concurrency-999", afterOrder.getPayTradeNo());
-        assertEquals(posterBase64, orders.findStoredPosterByToken("r26-concurrency"));
+        assertEquals(posterPath, orders.findStoredPosterByToken("r26-concurrency"));
+        // 5. 落盘地址可直接读取为 PNG 字节，且带长缓存与 nosniff，不返回 JSON 包装
+        mvc.perform(get(posterPath))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("image/png"))
+                .andExpect(header().string("X-Content-Type-Options", "nosniff"))
+                .andExpect(header().string("Cache-Control", org.hamcrest.Matchers.containsString("max-age")));
     }
 
     @Test
@@ -4356,11 +4365,18 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.orderSn").isNotEmpty())
                 .andExpect(jsonPath("$.data.posterUrl").doesNotExist());
 
-        // 5. 按需公开海报接口：GET /poster/{token} 返回已保存海报且不重新渲染
+        // 5. 按需公开海报接口：GET /poster/{token} 返回已保存的落盘路径且不重新渲染
         mvc.perform(get("/api/v1/peer-pay/poster/" + token))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.code").value(200))
                 .andExpect(jsonPath("$.data").value(originalPoster));
+        // 5.1 落盘路径可直接读取为图片；非法文件名与不存在文件返回404，不回显路径
+        mvc.perform(get(originalPoster))
+                .andExpect(status().isOk())
+                .andExpect(content().contentType("image/png"));
+        mvc.perform(get("/api/v1/peer-pay/poster/image/not-a-poster.png"))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.code").value(404));
 
         // 6. 买家查单与常用查询投影减载：底层不加载 poster_url 大字段
         TradeOrder queried = orders.findByPeerPayToken(token).orElseThrow();
@@ -4393,7 +4409,7 @@ class Sprint1SecurityIntegrationTest {
 
         // 2. 补海报失败：只把字段置 null，订单不回滚、仍可重试
         try (var poster = mockStatic(PosterUtils.class)) {
-            poster.when(() -> PosterUtils.generatePeerPayPoster(anyString(), anyString(), anyString(),
+            poster.when(() -> PosterUtils.generatePeerPayPosterBytes(anyString(), anyString(), anyString(),
                     any(), anyString(), anyString())).thenReturn(null);
             Map<String, Object> attached = payments.attachPoster(created);
             assertTrue(attached.containsKey("posterBase64"));
@@ -4402,13 +4418,18 @@ class Sprint1SecurityIntegrationTest {
         assertEquals("UNPAID", orders.findByPeerPayToken(token).orElseThrow().getOrderStatus());
         assertNull(orders.findStoredPosterByToken(token));
 
-        // 3. 重试成功：生成并单字段落库，不影响已提交订单
+        // 3. 重试成功：PNG 落盘并单字段写入公开路径，不影响已提交订单
+        String storedPath;
         try (var poster = mockStatic(PosterUtils.class)) {
-            poster.when(() -> PosterUtils.generatePeerPayPoster(anyString(), anyString(), anyString(),
-                    any(), anyString(), anyString())).thenReturn("data:image/png;base64,dGlueQ==");
-            assertEquals("data:image/png;base64,dGlueQ==", payments.attachPoster(created).get("posterBase64"));
+            poster.when(() -> PosterUtils.generatePeerPayPosterBytes(anyString(), anyString(), anyString(),
+                    any(), anyString(), anyString())).thenReturn(new byte[] {(byte) 0x89, 'P', 'N', 'G'});
+            Object attached = payments.attachPoster(created).get("posterBase64");
+            assertNotNull(attached);
+            storedPath = attached.toString();
+            assertTrue(storedPath.startsWith("/api/v1/peer-pay/poster/image/"), storedPath);
+            assertTrue(storedPath.endsWith(".png"), storedPath);
         }
-        assertEquals("data:image/png;base64,dGlueQ==", orders.findStoredPosterByToken(token));
+        assertEquals(storedPath, orders.findStoredPosterByToken(token));
         assertEquals("UNPAID", orders.findByPeerPayToken(token).orElseThrow().getOrderStatus());
     }
 
