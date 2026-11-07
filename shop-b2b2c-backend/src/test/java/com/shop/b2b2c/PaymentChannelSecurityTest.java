@@ -6,6 +6,8 @@
  *  2. 只验证适配器与网关入口的安全边界；真实渠道联调仍需用户在具备商户号/证书的环境执行。
  *  3. 修改回调字段或签名算法时必须同步更新本用例，不得删除“篡改报文必须失败”的断言。
  *  4. 财务加固E：回调时间戳使用当前时间动态生成；超窗用例使用 now-10分钟，避免固定时间失效。
+ *  5. F01：网关回调审计用例用 Mockito 捕获 PaymentCallbackAudit，只验证结果分类与指纹，不连接数据库；
+ *     真实写入由 Sprint1SecurityIntegrationTest 的 H2 用例覆盖。
  */
 package com.shop.b2b2c;
 
@@ -16,6 +18,7 @@ import com.shop.b2b2c.common.PayChannel;
 import com.shop.b2b2c.dto.PaymentChannelDTOs;
 import com.shop.b2b2c.dto.PaymentEventDTOs;
 import com.shop.b2b2c.entity.MerchantPaymentAccount;
+import com.shop.b2b2c.entity.PaymentCallbackAudit;
 import com.shop.b2b2c.entity.TradeOrder;
 import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
@@ -23,10 +26,12 @@ import com.shop.b2b2c.service.PaymentEventService;
 import com.shop.b2b2c.service.payment.AlipayPaymentChannelAdapter;
 import com.shop.b2b2c.service.payment.PaymentChannelProperties;
 import com.shop.b2b2c.service.payment.PaymentChannelRegistry;
+import com.shop.b2b2c.service.payment.PaymentCallbackAuditService;
 import com.shop.b2b2c.service.payment.PaymentGatewayService;
 import com.shop.b2b2c.service.payment.WeChatPaymentChannelAdapter;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.GCMParameterSpec;
@@ -203,6 +208,7 @@ class PaymentChannelSecurityTest {
                 mock(com.shop.b2b2c.service.payment.PaymentChannelAdapter.class);
         PaymentChannelRegistry registry = mock(PaymentChannelRegistry.class);
         PaymentEventService events = mock(PaymentEventService.class);
+        PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
 
         when(orders.findByOrderSn("SN-GW")).thenReturn(Optional.of(order));
         when(accounts.findByMerchantIdAndChannel(1L, "WECHAT")).thenReturn(Optional.of(account));
@@ -213,7 +219,7 @@ class PaymentChannelSecurityTest {
                         .channelMerchantId("OTHER-MCH").payAmount(new BigDecimal("10.00"))
                         .currency("CNY").build());
 
-        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits);
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> gateway.handleCallback("WECHAT", Map.of(), "{}", null));
         assertTrue(ex.getMessage().contains("不匹配"));
@@ -228,15 +234,123 @@ class PaymentChannelSecurityTest {
         MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
         PaymentChannelRegistry registry = mock(PaymentChannelRegistry.class);
         PaymentEventService events = mock(PaymentEventService.class);
+        PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
         when(orders.findByOrderSn("SN-GW")).thenReturn(Optional.of(order));
 
-        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits);
         PaymentChannelDTOs.CreatePaymentRequest request = new PaymentChannelDTOs.CreatePaymentRequest(
                 "SN-GW", "PEER-TOKEN", "WECHAT");
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> gateway.createPayment(request, "127.0.0.1"));
         assertTrue(ex.getMessage().contains("平台代收"));
         verify(registry, never()).require(any());
+    }
+
+    @Test
+    void gatewayRecordsAcceptedCallbackAuditWithFingerprint() {
+        TradeOrder order = unpaidOrder();
+        MerchantPaymentAccount account = passedAccount("WECHAT", "MCH-1");
+        TradeOrderMapper orders = mock(TradeOrderMapper.class);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        com.shop.b2b2c.service.payment.PaymentChannelAdapter adapter =
+                mock(com.shop.b2b2c.service.payment.PaymentChannelAdapter.class);
+        PaymentChannelRegistry registry = mock(PaymentChannelRegistry.class);
+        PaymentEventService events = mock(PaymentEventService.class);
+        PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
+        PaymentEventDTOs.PaymentProcessingResult processed = PaymentEventDTOs.PaymentProcessingResult.builder()
+                .channel("WECHAT").payTradeNo("TX-GW").orderSn("SN-GW")
+                .success(true).eventStatus("SUCCESS").orderStatus("COMPLETED").build();
+
+        when(orders.findByOrderSn("SN-GW")).thenReturn(Optional.of(order));
+        when(accounts.findByMerchantIdAndChannel(1L, "WECHAT")).thenReturn(Optional.of(account));
+        when(registry.require("WECHAT")).thenReturn(adapter);
+        when(adapter.parseCallback(any(), any(), any())).thenReturn(
+                PaymentChannelDTOs.ChannelCallback.builder()
+                        .channel("WECHAT").orderSn("SN-GW").payTradeNo("TX-GW")
+                        .channelMerchantId("MCH-1").payAmount(new BigDecimal("10.00"))
+                        .currency("CNY").payerId("openid-1").build());
+        when(events.processPaymentEvent(any())).thenReturn(processed);
+
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits);
+        PaymentEventDTOs.PaymentProcessingResult returned =
+                gateway.handleCallback("WECHAT", Map.of(), "raw-body-1", null);
+
+        assertSame(processed, returned);
+        ArgumentCaptor<PaymentCallbackAudit> captor = ArgumentCaptor.forClass(PaymentCallbackAudit.class);
+        verify(audits).record(captor.capture());
+        PaymentCallbackAudit audit = captor.getValue();
+        assertEquals(PaymentCallbackAuditService.OUTCOME_ACCEPTED, audit.getOutcome());
+        assertEquals("SUCCESS", audit.getProcessingResult());
+        assertEquals("SN-GW", audit.getOrderSn());
+        assertEquals("TX-GW", audit.getPayTradeNo());
+        assertEquals("MCH-1", audit.getChannelMerchantId());
+        assertEquals(64, audit.getPayloadSha256().length());
+        assertEquals(PaymentCallbackAuditService.fingerprint("raw-body-1", null), audit.getPayloadSha256());
+        assertTrue(audit.getDurationMs() >= 0);
+    }
+
+    @Test
+    void gatewayRecordsRejectedAuditWhenSignatureFails() {
+        TradeOrderMapper orders = mock(TradeOrderMapper.class);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        com.shop.b2b2c.service.payment.PaymentChannelAdapter adapter =
+                mock(com.shop.b2b2c.service.payment.PaymentChannelAdapter.class);
+        PaymentChannelRegistry registry = mock(PaymentChannelRegistry.class);
+        PaymentEventService events = mock(PaymentEventService.class);
+        PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
+
+        when(registry.require("WECHAT")).thenReturn(adapter);
+        when(adapter.parseCallback(any(), any(), any()))
+                .thenThrow(new BusinessException(401, "微信支付回调验签失败"));
+
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits);
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> gateway.handleCallback("WECHAT", Map.of(), "tampered", null));
+
+        assertEquals(401, ex.getCode());
+        verify(events, never()).processPaymentEvent(any());
+        ArgumentCaptor<PaymentCallbackAudit> captor = ArgumentCaptor.forClass(PaymentCallbackAudit.class);
+        verify(audits).record(captor.capture());
+        PaymentCallbackAudit audit = captor.getValue();
+        assertEquals(PaymentCallbackAuditService.OUTCOME_REJECTED, audit.getOutcome());
+        assertTrue(audit.getReason().contains("验签失败"));
+        assertNull(audit.getOrderSn());
+        assertNull(audit.getPayTradeNo());
+        assertEquals(PaymentCallbackAuditService.fingerprint("tampered", null), audit.getPayloadSha256());
+    }
+
+    @Test
+    void gatewayAuditFailureDoesNotChangeCallbackResult() {
+        TradeOrder order = unpaidOrder();
+        MerchantPaymentAccount account = passedAccount("WECHAT", "MCH-1");
+        TradeOrderMapper orders = mock(TradeOrderMapper.class);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        com.shop.b2b2c.service.payment.PaymentChannelAdapter adapter =
+                mock(com.shop.b2b2c.service.payment.PaymentChannelAdapter.class);
+        PaymentChannelRegistry registry = mock(PaymentChannelRegistry.class);
+        PaymentEventService events = mock(PaymentEventService.class);
+        PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
+        PaymentEventDTOs.PaymentProcessingResult processed = PaymentEventDTOs.PaymentProcessingResult.builder()
+                .channel("WECHAT").payTradeNo("TX-GW").orderSn("SN-GW")
+                .success(true).eventStatus("SUCCESS").build();
+
+        when(orders.findByOrderSn("SN-GW")).thenReturn(Optional.of(order));
+        when(accounts.findByMerchantIdAndChannel(1L, "WECHAT")).thenReturn(Optional.of(account));
+        when(registry.require("WECHAT")).thenReturn(adapter);
+        when(adapter.parseCallback(any(), any(), any())).thenReturn(
+                PaymentChannelDTOs.ChannelCallback.builder()
+                        .channel("WECHAT").orderSn("SN-GW").payTradeNo("TX-GW")
+                        .channelMerchantId("MCH-1").payAmount(new BigDecimal("10.00"))
+                        .currency("CNY").build());
+        when(events.processPaymentEvent(any())).thenReturn(processed);
+        doThrow(new RuntimeException("audit db down")).when(audits).record(any());
+
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits);
+        PaymentEventDTOs.PaymentProcessingResult returned =
+                gateway.handleCallback("WECHAT", Map.of(), "raw-body-1", null);
+
+        assertSame(processed, returned);
+        verify(events).processPaymentEvent(any());
     }
 
     private WeChatPaymentChannelAdapter weChatAdapter() {

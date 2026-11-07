@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次/卡密一致性核对与补发、状态统计、就绪探针、海报减载、店铺定向更新并发及租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次/卡密一致性核对与补发、状态统计、就绪探针、海报减载、店铺定向更新并发、支付回调审计持久化及租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -104,6 +104,7 @@ class Sprint1SecurityIntegrationTest {
     @Autowired com.shop.b2b2c.service.PaymentEventService paymentEventService;
     @Autowired com.shop.b2b2c.mapper.PaymentEventMapper paymentEvents;
     @Autowired com.shop.b2b2c.service.payment.PaymentEventReconcileService paymentEventReconcile;
+    @Autowired com.shop.b2b2c.service.payment.PaymentCallbackAuditService callbackAudits;
     @MockBean com.shop.b2b2c.service.payment.PaymentGatewayService paymentGateway;
     @MockBean com.shop.b2b2c.service.payment.PaymentChannelRegistry channelRegistry;
     @Autowired com.shop.b2b2c.service.MerchantNotificationService notificationService;
@@ -114,7 +115,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("complaint_event", "complaint", "refund_request", "billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("payment_callback_audit", "complaint_event", "complaint", "refund_request", "billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -2659,6 +2660,48 @@ class Sprint1SecurityIntegrationTest {
                 Integer.class).intValue());
         assertEquals("SUCCESS", jdbc.queryForObject(
                 "SELECT event_status FROM payment_event WHERE channel='WECHAT' AND pay_trade_no='trade-replay'", String.class));
+    }
+
+    @Test
+    void callbackAuditPersistsOutcomeWithoutStoringPayloadOrOversizedReason() {
+        com.shop.b2b2c.entity.PaymentCallbackAudit accepted = new com.shop.b2b2c.entity.PaymentCallbackAudit();
+        accepted.setChannel(" wechat ");
+        accepted.setOrderSn("SN-AUDIT-1");
+        accepted.setPayTradeNo("TX-AUDIT-1");
+        accepted.setChannelMerchantId("MCH-1");
+        accepted.setOutcome(com.shop.b2b2c.service.payment.PaymentCallbackAuditService.OUTCOME_ACCEPTED);
+        accepted.setProcessingResult("SUCCESS");
+        accepted.setPayloadSha256("f".repeat(64));
+        accepted.setDurationMs(12);
+        callbackAudits.record(accepted);
+
+        com.shop.b2b2c.entity.PaymentCallbackAudit rejected = new com.shop.b2b2c.entity.PaymentCallbackAudit();
+        rejected.setChannel("ALIPAY");
+        rejected.setOrderSn("SN-AUDIT-1");
+        rejected.setOutcome(com.shop.b2b2c.service.payment.PaymentCallbackAuditService.OUTCOME_REJECTED);
+        rejected.setReason("reject-" + "x".repeat(400));
+        rejected.setPayloadSha256("e".repeat(64));
+        callbackAudits.record(rejected);
+
+        assertEquals(2, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM payment_callback_audit WHERE order_sn='SN-AUDIT-1'", Integer.class).intValue());
+        assertEquals("WECHAT", jdbc.queryForObject(
+                "SELECT channel FROM payment_callback_audit WHERE payload_sha256=?", String.class, "f".repeat(64)));
+        assertEquals("ACCEPTED", jdbc.queryForObject(
+                "SELECT outcome FROM payment_callback_audit WHERE payload_sha256=?", String.class, "f".repeat(64)));
+        assertEquals("SUCCESS", jdbc.queryForObject(
+                "SELECT processing_result FROM payment_callback_audit WHERE payload_sha256=?", String.class, "f".repeat(64)));
+        assertEquals(12, jdbc.queryForObject(
+                "SELECT duration_ms FROM payment_callback_audit WHERE payload_sha256=?", Integer.class, "f".repeat(64)).intValue());
+        assertNotNull(jdbc.queryForObject(
+                "SELECT created_at FROM payment_callback_audit WHERE payload_sha256=?", java.sql.Timestamp.class, "f".repeat(64)));
+        assertEquals("REJECTED", jdbc.queryForObject(
+                "SELECT outcome FROM payment_callback_audit WHERE payload_sha256=?", String.class, "e".repeat(64)));
+        assertEquals(200, jdbc.queryForObject(
+                "SELECT CHAR_LENGTH(reason) FROM payment_callback_audit WHERE payload_sha256=?", Integer.class, "e".repeat(64)).intValue(),
+                "原因摘要必须截断到 200 字符，不得因超长导致整条审计失败");
+        assertNull(jdbc.queryForObject(
+                "SELECT processing_result FROM payment_callback_audit WHERE payload_sha256=?", String.class, "e".repeat(64)));
     }
 
     @Test

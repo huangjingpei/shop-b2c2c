@@ -5,7 +5,8 @@
  *  1. 允许偏差固定 300 秒；超窗一律拒绝且不落账，只记录 WARN 审计日志（不记录报文正文与凭据）。
  *  2. 微信 Wechatpay-Timestamp 为秒级 epoch；支付宝 notify_time 为 GMT+8 的 yyyy-MM-dd HH:mm:ss。
  *  3. 本类只做时间窗校验，签名验签仍由各适配器完成；不得用本类替代验签。
- *  4. 持久化回调审计表尚未建立，当前以结构化日志留痕，已登记到缺口台账。
+ *  4. 本类只做时间窗校验；持久化留痕由 PaymentGatewayService 在每次回调后写入 payment_callback_audit（F01），
+ *     本类不直接写审计表，也不得用时间窗校验替代验签。
  */
 package com.shop.b2b2c.service.payment;
 

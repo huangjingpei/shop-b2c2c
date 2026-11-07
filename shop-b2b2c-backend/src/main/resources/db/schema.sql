@@ -1252,3 +1252,25 @@ CREATE TABLE IF NOT EXISTS `saas_fee_bill` (
   KEY `idx_saas_fee_status_due` (`status`, `due_date`),
   CONSTRAINT fk_saas_fee_bill_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SaaS 月度技术服务费账单（与交易抽佣分离）';
+
+-- 38. 支付渠道回调审计（F01）：逐条记录每次渠道异步通知的受理结果与报文指纹。
+--     只用于审计与排障关联，不是资金账本；到账事实以 payment_event 为准，本表不推断履约。
+--     只保存规范化输入的 SHA-256，不保存回调正文、签名、证书与买家身份；不设外键，
+--     使验签/解析失败、订单不存在的拒绝回调同样可留痕。只增不改，清理由运维按留存策略执行。
+CREATE TABLE IF NOT EXISTS `payment_callback_audit` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `channel` VARCHAR(32) NOT NULL COMMENT '回调渠道 WECHAT/ALIPAY；缺失或未知写 UNKNOWN',
+  `order_sn` VARCHAR(64) NULL COMMENT '回调声明的订单号；验签/解析失败或未提供时为空',
+  `pay_trade_no` VARCHAR(128) NULL COMMENT '渠道流水号；验签/解析失败时通常为空',
+  `channel_merchant_id` VARCHAR(64) NULL COMMENT '渠道侧商户号，仅审计比对，不能替代平台内部 merchant_id',
+  `outcome` VARCHAR(16) NOT NULL COMMENT 'ACCEPTED 受理成功 / REJECTED 验签、归属或资金要素拒绝 / ERROR 未预期异常',
+  `processing_result` VARCHAR(32) NULL COMMENT '受理成功后的支付事件状态（SUCCESS/DUPLICATE_PAYMENT 等）；拒绝时为空',
+  `reason` VARCHAR(255) NULL COMMENT '拒绝/异常原因摘要，写入前截断，不含报文正文与凭据',
+  `payload_sha256` CHAR(64) NOT NULL COMMENT '规范化回调输入的 SHA-256，用于同源重试关联；不保存原文',
+  `duration_ms` INT NOT NULL DEFAULT 0 COMMENT '从进入网关到写入审计的耗时（毫秒）',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_payment_callback_order` (`channel`, `order_sn`, `created_at`),
+  KEY `idx_payment_callback_fingerprint` (`payload_sha256`),
+  KEY `idx_payment_callback_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='支付渠道回调审计：只留指纹与结果，不保存回调正文/凭据';

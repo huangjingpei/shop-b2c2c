@@ -923,3 +923,20 @@ CREATE TABLE IF NOT EXISTS saas_fee_bill (
 );
 CREATE INDEX IF NOT EXISTS idx_saas_fee_status_due ON saas_fee_bill(status, due_date);
 
+-- 38. 支付渠道回调审计（F01，H2 隔离夹具）：只留结果与指纹，不保存回调正文；不设外键，拒绝类回调也要可写
+CREATE TABLE IF NOT EXISTS payment_callback_audit (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  channel VARCHAR(32) NOT NULL,
+  order_sn VARCHAR(64) NULL,
+  pay_trade_no VARCHAR(128) NULL,
+  channel_merchant_id VARCHAR(64) NULL,
+  outcome VARCHAR(16) NOT NULL,
+  processing_result VARCHAR(32) NULL,
+  reason VARCHAR(255) NULL,
+  payload_sha256 CHAR(64) NOT NULL,
+  duration_ms INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_payment_callback_order ON payment_callback_audit(channel, order_sn, created_at);
+
+

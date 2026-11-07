@@ -8,6 +8,8 @@
  *  4. 关单只关闭渠道侧交易，本地订单仍由 15 分钟截止任务关闭，避免提前改动订单生命周期语义。
  *  5. G34：queryChannelPayment 只按事件渠道查询渠道事实并核验商户，不触发本地履约；
  *     补偿扫描必须先确认 SUCCESS 且流水号与本地事件一致，再复用 PaymentEventService 的幂等履约路径。
+ *  6. F01：每次渠道回调（含验签/归属/资金要素拒绝与未预期异常）都写 payment_callback_audit；
+ *     审计写入失败只记 WARN，不得改变回调处理结果，也不得把审计故障返回给渠道触发重试。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -17,6 +19,7 @@ import com.shop.b2b2c.common.PayChannel;
 import com.shop.b2b2c.dto.PaymentChannelDTOs;
 import com.shop.b2b2c.dto.PaymentEventDTOs;
 import com.shop.b2b2c.entity.MerchantPaymentAccount;
+import com.shop.b2b2c.entity.PaymentCallbackAudit;
 import com.shop.b2b2c.entity.TradeOrder;
 import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
@@ -37,6 +40,7 @@ public class PaymentGatewayService {
     private final MerchantPaymentAccountMapper merchantPaymentAccountMapper;
     private final PaymentChannelRegistry paymentChannelRegistry;
     private final PaymentEventService paymentEventService;
+    private final PaymentCallbackAuditService paymentCallbackAuditService;
 
     public PaymentChannelDTOs.PaymentAttemptView createPayment(PaymentChannelDTOs.CreatePaymentRequest request,
                                                                String clientIp) {
@@ -55,13 +59,50 @@ public class PaymentGatewayService {
     public PaymentEventDTOs.PaymentProcessingResult handleCallback(String channel, Map<String, String> headers,
                                                                    String rawBody,
                                                                    Map<String, String> formParams) {
-        PaymentChannelAdapter adapter = paymentChannelRegistry.require(channel);
-        PaymentChannelDTOs.ChannelCallback callback = adapter.parseCallback(headers, rawBody, formParams);
-        TradeOrder order = tradeOrderMapper.findByOrderSn(callback.getOrderSn())
-                .orElseThrow(() -> new BusinessException(404, "支付回调对应的订单不存在"));
-        MerchantPaymentAccount account = requireMatchedAccount(order, callback.getChannel(),
-                callback.getChannelMerchantId());
-        return paymentEventService.processPaymentEvent(toIncoming(order, callback, account));
+        long startedAt = System.nanoTime();
+        PaymentCallbackAudit audit = new PaymentCallbackAudit();
+        audit.setChannel(channel);
+        audit.setPayloadSha256(PaymentCallbackAuditService.fingerprint(rawBody, formParams));
+        try {
+            PaymentChannelAdapter adapter = paymentChannelRegistry.require(channel);
+            PaymentChannelDTOs.ChannelCallback callback = adapter.parseCallback(headers, rawBody, formParams);
+            audit.setOrderSn(callback.getOrderSn());
+            audit.setPayTradeNo(callback.getPayTradeNo());
+            audit.setChannelMerchantId(callback.getChannelMerchantId());
+            TradeOrder order = tradeOrderMapper.findByOrderSn(callback.getOrderSn())
+                    .orElseThrow(() -> new BusinessException(404, "支付回调对应的订单不存在"));
+            MerchantPaymentAccount account = requireMatchedAccount(order, callback.getChannel(),
+                    callback.getChannelMerchantId());
+            PaymentEventDTOs.PaymentProcessingResult result =
+                    paymentEventService.processPaymentEvent(toIncoming(order, callback, account));
+            audit.setOutcome(PaymentCallbackAuditService.OUTCOME_ACCEPTED);
+            audit.setProcessingResult(result == null ? null : result.getEventStatus());
+            return result;
+        } catch (BusinessException e) {
+            audit.setOutcome(PaymentCallbackAuditService.OUTCOME_REJECTED);
+            audit.setReason(e.getMessage());
+            throw e;
+        } catch (RuntimeException e) {
+            audit.setOutcome(PaymentCallbackAuditService.OUTCOME_ERROR);
+            audit.setReason(e.getMessage());
+            throw e;
+        } finally {
+            persistCallbackAudit(audit, startedAt);
+        }
+    }
+
+    /**
+     * F01：审计写入尽力而为。任何异常只记录 WARN，不得覆盖返回给渠道的 ACK/失败结果。
+     */
+    private void persistCallbackAudit(PaymentCallbackAudit audit, long startedAt) {
+        try {
+            long elapsedMs = (System.nanoTime() - startedAt) / 1_000_000L;
+            audit.setDurationMs((int) Math.min(Integer.MAX_VALUE, Math.max(0L, elapsedMs)));
+            paymentCallbackAuditService.record(audit);
+        } catch (RuntimeException auditError) {
+            log.warn("支付回调审计写入失败，支付处理结果不受影响 channel={} orderSn={}",
+                    audit.getChannel(), audit.getOrderSn(), auditError);
+        }
     }
 
     public PaymentChannelDTOs.ChannelQueryResult queryPayment(Long merchantId, String orderSn) {
