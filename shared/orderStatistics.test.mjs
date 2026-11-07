@@ -46,3 +46,19 @@ test('内部FINISHED记录不表述为资金到账', () => {
   assert.equal(sharingRecordLabel('FINISHED'), '记录完成（待对账）')
   assert.equal(sharingRecordLabel(null), '未识别记录'); assert.equal(sharingRecordLabel('FAILED'), '记录失败')
 })
+// ---------- D25 退款账本指标 ----------
+test('D25：账本可用时透传实际退款/净额/扣冲正佣金，净额允许为负', () => {
+  const view = statisticsView({ financialLedgerAvailable: true, actualRefundAmount: '12.30', netTurnover: '-5.10', settledCommission: '0.55' })
+  assert.equal(view.actualRefundAmount, '12.30')
+  assert.equal(view.netTurnover, '-5.10')
+  assert.equal(view.settledCommission, '0.55')
+  assert.equal(view.financialLedgerAvailable, true)
+  assert.equal(statisticsView({ financialLedgerAvailable: true, netTurnover: '0' }).netTurnover, '0.00')
+})
+test('D25：账本不可用或字段非法时显示未知，不按0展示', () => {
+  const off = statisticsView({ actualRefundAmount: '12.30', netTurnover: '5.00', settledCommission: '0.50' })
+  assert.equal(off.financialLedgerAvailable, false)
+  assert.equal(off.actualRefundAmount, '—'); assert.equal(off.netTurnover, '—'); assert.equal(off.settledCommission, '—')
+  const bad = statisticsView({ financialLedgerAvailable: true, actualRefundAmount: '-1', netTurnover: null, settledCommission: '0.001' })
+  assert.equal(bad.actualRefundAmount, '—'); assert.equal(bad.netTurnover, '—'); assert.equal(bad.settledCommission, '—')
+})

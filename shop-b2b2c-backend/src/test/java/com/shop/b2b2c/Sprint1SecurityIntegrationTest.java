@@ -109,7 +109,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("merchant_notification_outbox", "payment_event", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("merchant_notification_outbox", "payment_event", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -1138,7 +1138,9 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.totalOrders").value(4)).andExpect(jsonPath("$.data.paidOrders").value(2))
                 .andExpect(jsonPath("$.data.paidTurnover").value("12.00")).andExpect(jsonPath("$.data.pendingIntentAmount").value("1000.00"))
                 .andExpect(jsonPath("$.data.estimatedCommission").value("0.30")).andExpect(jsonPath("$.data.closedOrders").value(1))
-                .andExpect(jsonPath("$.data.actualRefundAmount").isEmpty()).andExpect(jsonPath("$.data.financialLedgerAvailable").value(false))
+                // D25：无退款账本记录时指标为已知 0，不再返回未知。
+                .andExpect(jsonPath("$.data.actualRefundAmount").value("0.00")).andExpect(jsonPath("$.data.netTurnover").value("12.00"))
+                .andExpect(jsonPath("$.data.settledCommission").value("0.30")).andExpect(jsonPath("$.data.financialLedgerAvailable").value(true))
                 .andExpect(jsonPath("$.data.orders").doesNotExist()).andExpect(jsonPath("$.data.queryToken").doesNotExist());
         // T25：时间范围非法或跨度超过 366 天直接 400，不能静默全表扫描。
         mvc.perform(get("/api/v1/merchant/orders/statistics").header("Authorization", "Bearer " + token)
@@ -1151,7 +1153,7 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
-    void platformStatisticsKeepsCompatibleKeysButExcludesIntentAndMarksUnknownFinance() throws Exception {
+    void platformStatisticsKeepsCompatibleKeysButExcludesIntentAndIncludesRefundLedger() throws Exception {
         statisticsOrder("intent", 1L, "UNPAID", "INIT", "1000", "30");
         statisticsOrder("paid", 1L, "PAID", "PAID", "10", "0.30");
         statisticsOrder("refund", 1L, "REFUNDED", "PAID", "2", "0.06");
@@ -1162,7 +1164,31 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.totalTurnover").doesNotExist()).andExpect(jsonPath("$.data.totalCommission").doesNotExist())
                 .andExpect(jsonPath("$.data.statistics.paidOrders").value(3)).andExpect(jsonPath("$.data.statistics.paidTurnover").value("9012.00"))
                 .andExpect(jsonPath("$.data.statistics.estimatedCommission").value("270.30"))
-                .andExpect(jsonPath("$.data.statistics.settledCommission").isEmpty()).andExpect(jsonPath("$.data.statistics.netTurnover").isEmpty());
+                // D25：退款账本空时净额等于支付 GMV、扣冲正佣金等于预计佣金，且标记账本可用。
+                .andExpect(jsonPath("$.data.statistics.actualRefundAmount").value("0.00"))
+                .andExpect(jsonPath("$.data.statistics.settledCommission").value("270.30")).andExpect(jsonPath("$.data.statistics.netTurnover").value("9012.00"))
+                .andExpect(jsonPath("$.data.statistics.financialLedgerAvailable").value(true));
+    }
+
+    @Test
+    void merchantStatisticsIncludesSuccessfulRefundLedgerInSameWindow() throws Exception {
+        // D25：仅统计窗口内 status=SUCCESS 且本店的退款；PROCESSING/窗口外/他店退款不得计入。
+        statisticsOrder("ledger-paid", 1L, "PAID", "PAID", "10", "0.30");
+        insertRefund("LEDGER-IN", 1L, "SUCCESS", "2.00", "0.06", java.time.LocalDateTime.now().minusDays(1));
+        insertRefund("LEDGER-PROCESSING", 1L, "PROCESSING", "5.00", "0.15", null);
+        insertRefund("LEDGER-OUT-OF-WINDOW", 1L, "SUCCESS", "7.00", "0.21", java.time.LocalDateTime.now().minusDays(120));
+        insertRefund("LEDGER-FOREIGN", 2L, "SUCCESS", "13.00", "0.39", java.time.LocalDateTime.now().minusDays(1));
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        mvc.perform(get("/api/v1/merchant/orders/statistics").header("Authorization", "Bearer " + token))
+                .andExpect(jsonPath("$.data.paidTurnover").value("10.00")).andExpect(jsonPath("$.data.estimatedCommission").value("0.30"))
+                .andExpect(jsonPath("$.data.actualRefundAmount").value("2.00")).andExpect(jsonPath("$.data.netTurnover").value("8.00"))
+                .andExpect(jsonPath("$.data.settledCommission").value("0.24")).andExpect(jsonPath("$.data.financialLedgerAvailable").value(true));
+    }
+
+    private void insertRefund(String sn, long merchantId, String status, String refundAmount, String feeRefund, java.time.LocalDateTime successAt) {
+        jdbc.update("INSERT INTO trade_refund (refund_no, order_id, order_sn, merchant_id, channel, idempotency_key, refund_amount, fee_refund_amount, status, success_at) "
+                        + "VALUES (?, 0, ?, ?, 'MOCK', ?, ?, ?, ?, ?)",
+                "RF-" + sn, sn, merchantId, "IK-" + sn, new java.math.BigDecimal(refundAmount), new java.math.BigDecimal(feeRefund), status, successAt);
     }
 
     @Test
@@ -1171,7 +1197,9 @@ class Sprint1SecurityIntegrationTest {
         authUser("MERCHANT_STAFF", 1L); String token = loginToken();
         mvc.perform(get("/api/v1/merchant/orders/statistics").header("Authorization", "Bearer " + token))
                 .andExpect(jsonPath("$.data.totalOrders").value(0)).andExpect(jsonPath("$.data.paidTurnover").value("0.00"))
-                .andExpect(jsonPath("$.data.settledCommission").isEmpty());
+                // D25：空店铺退款指标为已知 0，且不回读他店账本。
+                .andExpect(jsonPath("$.data.actualRefundAmount").value("0.00")).andExpect(jsonPath("$.data.settledCommission").value("0.00"))
+                .andExpect(jsonPath("$.data.financialLedgerAvailable").value(true));
     }
 
     private String loginToken() throws Exception {

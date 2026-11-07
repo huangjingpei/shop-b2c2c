@@ -162,4 +162,17 @@ public interface TradeRefundMapper extends BaseMapper<TradeRefund> {
     @org.apache.ibatis.annotations.Select("SELECT COUNT(*) FROM trade_refund WHERE merchant_id = #{merchantId} "
             + "AND status = 'PROCESSING'")
     int countProcessingByMerchantId(@Param("merchantId") Long merchantId);
+
+    /**
+     * D25 统计口径：按不可变 success_at 汇总窗口内成功退款金额与服务费冲正。
+     * merchantId 为 null 时统计全平台；PROCESSING/FAILED 不计入；空结果 COALESCE 为 0。
+     */
+    @Select("SELECT COALESCE(SUM(refund_amount), 0) AS refundAmountSum, "
+            + "COALESCE(SUM(fee_refund_amount), 0) AS feeRefundAmountSum FROM trade_refund "
+            + "WHERE status = 'SUCCESS' AND success_at IS NOT NULL "
+            + "AND success_at >= #{from} AND success_at < #{to} "
+            + "AND (#{merchantId} IS NULL OR merchant_id = #{merchantId})")
+    com.shop.b2b2c.dto.RefundLedgerAggregate aggregateRefundLedger(@Param("merchantId") Long merchantId,
+                                                                   @Param("from") LocalDateTime from,
+                                                                   @Param("to") LocalDateTime to);
 }

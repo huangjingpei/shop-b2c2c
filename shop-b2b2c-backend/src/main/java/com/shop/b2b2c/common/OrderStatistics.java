@@ -1,7 +1,7 @@
 /*
  * 文件：OrderStatistics.java
  * 用途：代付关闭编码复用PeerStatus；平台与本店共用的订单状态统计口径，不从意向单或分账标记推断实际资金收入。
- * 维护注意：PAID/SHIPPED/COMPLETED/REFUNDED计历史支付，REFUNDED订单金额不是实际退款额；预计佣金仅含前三种且支付金额有效的订单。BigDecimal累计并输出字符串；坏金额计异常，未知状态单列。退款/净额/结算依赖事件账本，当前返回null，不用0冒充已知。
+ * 维护注意：PAID/SHIPPED/COMPLETED/REFUNDED计历史支付，REFUNDED订单金额不是实际退款额；预计佣金仅含前三种且支付金额有效的订单。BigDecimal累计并输出字符串；坏金额计异常，未知状态单列。D25：退款/净额/扣冲正佣金由 withRefundLedger 按 trade_refund 成功账本（success_at 切日）合入，账本异常保持未知不用0冒充；扣冲正佣金仍是快照估计扣减，不是结算系统到账证明。
  *          T25 新增 fromAggregates 供库内 GROUP BY 统计复用同一口径；SQL 汇总只累加合法金额，异常单数单独返回，聚合结果必须与 from(List) 一致。
  */
 package com.shop.b2b2c.common;
@@ -86,6 +86,20 @@ public record OrderStatistics(long totalOrders, long paidOrders, long pendingOrd
         }
         return new OrderStatistics(total, paid, pending, closed, refunded, unknown, anomalies,
                 money(turnover), money(intents), money(refundOrders), money(commission), null, null, null, false);
+    }
+
+    /**
+     * D25：合入退款账本窗口聚合（status=SUCCESS，按 success_at 切日），返回含实际退款/净额/扣冲正佣金的新实例。
+     * 支付口径按订单 created_at、退款口径按 success_at，两者同属期间收支但不保证同一批订单；跨期退款可使净额为负，如实输出。
+     * 账本数据异常（null/负数/超 2 位小数）时保持原实例（指标仍为未知），不用 0 冒充已知。
+     */
+    public OrderStatistics withRefundLedger(BigDecimal actualRefund, BigDecimal feeRefund) {
+        if (!valid(actualRefund) || !valid(feeRefund)) return this;
+        BigDecimal net = new BigDecimal(paidTurnover).subtract(actualRefund);
+        BigDecimal settled = new BigDecimal(estimatedCommission).subtract(feeRefund);
+        return new OrderStatistics(totalOrders, paidOrders, pendingOrders, closedOrders, unknownOrders,
+                refundedOrders, amountAnomalyOrders, paidTurnover, pendingIntentAmount, refundedOrderAmount,
+                estimatedCommission, money(actualRefund), money(net), money(settled), true);
     }
 
     private static boolean valid(BigDecimal amount) { return amount != null && amount.signum() >= 0 && amount.scale() <= 2; }

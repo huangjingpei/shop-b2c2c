@@ -1,7 +1,7 @@
 /*
  * 文件：OrderStatisticsTest.java
  * 用途：统一状态统计的分类、金额精度、异常输入及未知财务指标单元测试。
- * 维护注意：使用内存订单，不模拟到账证明；REFUNDED订单金额不是实际退款额，FINISHED不是结算凭据。未来状态/账本接入需在同一口径扩展并更新用例。
+ * 维护注意：使用内存订单，不模拟到账证明；REFUNDED订单金额不是实际退款额，FINISHED不是结算凭据。D25：withRefundLedger 按成功退款账本合入实际退款/净额/扣冲正佣金，跨期净额可为负、账本异常保持未知；聚合 SQL 正确性仍需用户在真实 MySQL 验证。
  */
 package com.shop.b2b2c;
 import com.shop.b2b2c.common.OrderStatistics;
@@ -102,5 +102,40 @@ class OrderStatisticsTest {
         var free = order("PAID", "0.00", "0"); var intent = order("UNPAID", "100", "3"); intent.setSharingStatus("FINISHED");
         var summary = OrderStatistics.from(List.of(free, intent)); assertEquals(0, summary.amountAnomalyOrders());
         assertEquals(1, summary.paidOrders()); assertEquals("0.00", summary.estimatedCommission()); assertNull(summary.settledCommission());
+    }
+    // ---------- D25 退款账本合入 ----------
+    @Test void refundLedgerFillsActualRefundNetAndSettledCommission() {
+        var summary = OrderStatistics.from(List.of(order("PAID", "100", "3"), order("REFUNDED", "40", "0")))
+                .withRefundLedger(new BigDecimal("40"), new BigDecimal("1.20"));
+        assertEquals("140.00", summary.paidTurnover());
+        assertEquals("40.00", summary.actualRefundAmount());
+        assertEquals("100.00", summary.netTurnover());
+        assertEquals("1.80", summary.settledCommission());
+        assertTrue(summary.financialLedgerAvailable());
+    }
+    @Test void crossPeriodRefundMayProduceNegativeNetAndIsReportedAsIs() {
+        // 历史支付在上期、退款在本期：净额为负是真实跨期口径，不得按0截断。
+        var summary = OrderStatistics.from(List.of(order("PAID", "10", "0.30")))
+                .withRefundLedger(new BigDecimal("25"), new BigDecimal("0.45"));
+        assertEquals("-15.00", summary.netTurnover());
+        assertEquals("-0.15", summary.settledCommission());
+        assertTrue(summary.financialLedgerAvailable());
+    }
+    @Test void emptyRefundLedgerYieldsZeroRefundWithoutPretendingMissing() {
+        var summary = OrderStatistics.from(List.of(order("PAID", "10", "0.30")))
+                .withRefundLedger(BigDecimal.ZERO, BigDecimal.ZERO);
+        assertEquals("0.00", summary.actualRefundAmount());
+        assertEquals("10.00", summary.netTurnover());
+        assertEquals("0.30", summary.settledCommission());
+        assertTrue(summary.financialLedgerAvailable());
+    }
+    @ParameterizedTest @NullSource @ValueSource(strings = {"-1", "1.001"})
+    void invalidLedgerInputsKeepLedgerUnknownInsteadOfZero(String value) {
+        var base = OrderStatistics.from(List.of(order("PAID", "10", "0.30")));
+        var summary = base.withRefundLedger(value == null ? null : new BigDecimal(value), new BigDecimal("0.10"));
+        assertNull(summary.actualRefundAmount()); assertNull(summary.netTurnover()); assertNull(summary.settledCommission());
+        assertFalse(summary.financialLedgerAvailable());
+        var byFee = base.withRefundLedger(new BigDecimal("1"), value == null ? null : new BigDecimal(value));
+        assertNull(byFee.actualRefundAmount()); assertFalse(byFee.financialLedgerAvailable());
     }
 }

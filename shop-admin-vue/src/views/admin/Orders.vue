@@ -42,6 +42,7 @@
     </el-row>
     <el-alert :title="STATISTICS_NOTICE" type="info" :closable="false" style="margin-bottom: 16px;" />
     <p>待付款 {{ stats.pendingOrders }} 笔，意向金额 ￥{{ stats.pendingIntentAmount }}；退款状态 {{ stats.refundedOrders }} 笔。</p>
+    <p>实际退款 ￥{{ stats.actualRefundAmount }}（按退款成功时点），退款净成交 ￥{{ stats.netTurnover }}；扣冲正后佣金 ￥{{ stats.settledCommission }}。</p>
     <el-alert v-if="stats.unknownOrders > 0 || stats.amountAnomalyOrders > 0" :title="`需核对：未知状态 ${stats.unknownOrders} 单，异常金额 ${stats.amountAnomalyOrders} 单；异常金额未计入汇总。`" type="warning" :closable="false" />
 
     <el-card shadow="never" class="table-card">
