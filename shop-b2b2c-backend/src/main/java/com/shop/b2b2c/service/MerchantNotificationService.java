@@ -37,6 +37,10 @@ public class MerchantNotificationService {
     public static final String BIZ_LICENSE_EXPIRING = "LICENSE_EXPIRING";
     public static final String BIZ_REVIEW_SLA_BREACH = "REVIEW_SLA_BREACH";
     public static final String BIZ_STORE_STATUS_CHANGED = "STORE_STATUS_CHANGED";
+    // F06 投诉流转：商家收到买家提交/裁决结果，超管收到买家申请介入。
+    public static final String BIZ_COMPLAINT_SUBMITTED = "COMPLAINT_SUBMITTED";
+    public static final String BIZ_COMPLAINT_ESCALATED = "COMPLAINT_ESCALATED";
+    public static final String BIZ_COMPLAINT_DECIDED = "COMPLAINT_DECIDED";
 
     public static final String CHANNEL_INAPP = "INAPP";
     public static final String CHANNEL_SMS = "SMS";

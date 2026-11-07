@@ -110,7 +110,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("refund_request", "billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("complaint_event", "complaint", "refund_request", "billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -4873,6 +4873,106 @@ class Sprint1SecurityIntegrationTest {
         mvc.perform(post("/api/v1/merchant/refund-requests/" + requestId + "/approve")
                         .header("Authorization", "Bearer " + token2))
                 .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value(403));
+    }
+
+    // ==================== F06 投诉协商与平台仲裁集成回归 ====================
+
+    private long submitComplaint(String sn, String contact, String token) throws Exception {
+        String body = json.writeValueAsString(java.util.Map.of(
+                "orderSn", sn, "contact", contact, "queryToken", token,
+                "complaintType", "QUALITY", "content", "收到的商品与描述严重不符",
+                "evidenceImages", java.util.List.of("https://cdn.example.com/evidence.jpg")));
+        String res = mvc.perform(post("/api/v1/public/orders/complaints").contentType("application/json").content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("PENDING"))
+                .andReturn().getResponse().getContentAsString();
+        return com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
+                .readTree(res).get("data").get("id").asLong();
+    }
+
+    @Test
+    void complaintSubmitReplyEscalateAndAdminArbitrateRefund() throws Exception {
+        paidOrderForRefund("CP-O1", 1L, "13900000011", "cp-tk-1", "100.00");
+        merchantPaymentAccount(1L, "WECHAT");
+        long id = submitComplaint("CP-O1", "13900000011", "cp-tk-1");
+
+        // 同一订单重复提交被拒
+        String duplicateBody = json.writeValueAsString(java.util.Map.of(
+                "orderSn", "CP-O1", "contact", "13900000011", "queryToken", "cp-tk-1",
+                "complaintType", "OTHER", "content", "重复投诉重复投诉"));
+        mvc.perform(post("/api/v1/public/orders/complaints").contentType("application/json").content(duplicateBody))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409));
+
+        // 凭证错误不能申请介入
+        String badEscalateBody = json.writeValueAsString(java.util.Map.of(
+                "orderSn", "CP-O1", "contact", "13900000011", "queryToken", "wrong"));
+        mvc.perform(post("/api/v1/public/orders/complaints/" + id + "/escalate")
+                        .contentType("application/json").content(badEscalateBody))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+
+        // 商家答复
+        authUser("MERCHANT_ADMIN", 1L); String token = loginToken();
+        String replyBody = json.writeValueAsString(java.util.Map.of("reply", "已与买家沟通，可补偿 20 元"));
+        mvc.perform(post("/api/v1/merchant/complaints/" + id + "/reply")
+                        .header("Authorization", "Bearer " + token).contentType("application/json").content(replyBody))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("MERCHANT_REPLIED"));
+        // 商家详情能看到两次追加记录
+        mvc.perform(get("/api/v1/merchant/complaints/" + id).header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.events.length()").value(2))
+                .andExpect(jsonPath("$.data.complaint.buyerId").value(org.hamcrest.Matchers.nullValue()));
+
+        // 买家申请平台介入
+        String escalateBody = json.writeValueAsString(java.util.Map.of(
+                "orderSn", "CP-O1", "contact", "13900000011", "queryToken", "cp-tk-1",
+                "note", "补偿方案未兑现"));
+        mvc.perform(post("/api/v1/public/orders/complaints/" + id + "/escalate")
+                        .contentType("application/json").content(escalateBody))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("ARBITRATING"));
+
+        // 超管裁决并原路退款（渠道用 mock 适配器）
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("SUPERADMIN", null); String adminToken = loginToken();
+        com.shop.b2b2c.service.payment.PaymentChannelAdapter mockAdapter =
+                mock(com.shop.b2b2c.service.payment.PaymentChannelAdapter.class);
+        com.shop.b2b2c.dto.PaymentChannelDTOs.RefundResult refundOk =
+                new com.shop.b2b2c.dto.PaymentChannelDTOs.RefundResult();
+        refundOk.setStatus("SUCCESS");
+        refundOk.setChannelRefundNo("MOCK-COMPLAINT-" + id);
+        when(channelRegistry.require(anyString())).thenReturn(mockAdapter);
+        when(mockAdapter.refundPayment(any())).thenReturn(refundOk);
+        String arbitrateBody = json.writeValueAsString(java.util.Map.of(
+                "decision", "RESOLVE", "arbitration", "举证成立，全额退款", "refundAmount", 100.00));
+        mvc.perform(post("/api/v1/admin/complaints/" + id + "/arbitrate")
+                        .header("Authorization", "Bearer " + adminToken).contentType("application/json")
+                        .content(arbitrateBody))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("RESOLVED"))
+                .andExpect(jsonPath("$.data.refundDecision").value("FULL_REFUND"));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM trade_refund WHERE order_sn='CP-O1'", Integer.class));
+        // 追加记录：提交、答复、介入、裁决，共 4 条且不可覆盖
+        assertEquals(4, jdbc.queryForObject("SELECT COUNT(*) FROM complaint_event WHERE complaint_id=?", Integer.class, id));
+        // 已终结的工单不能再申请介入
+        String finalEscalateBody = json.writeValueAsString(java.util.Map.of(
+                "orderSn", "CP-O1", "contact", "13900000011", "queryToken", "cp-tk-1"));
+        mvc.perform(post("/api/v1/public/orders/complaints/" + id + "/escalate")
+                        .contentType("application/json").content(finalEscalateBody))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409));
+    }
+
+    @Test
+    void complaintMerchantEndpointsRejectAnonymousAndCrossShop() throws Exception {
+        paidOrderForRefund("CP-O2", 1L, "13900000012", "cp-tk-2", "50.00");
+        long id = submitComplaint("CP-O2", "13900000012", "cp-tk-2");
+
+        mvc.perform(get("/api/v1/merchant/complaints")).andExpect(status().isUnauthorized());
+        authUser("MERCHANT_ADMIN", 2L); String token2 = loginToken();
+        String crossReplyBody = json.writeValueAsString(java.util.Map.of("reply", "越权答复"));
+        mvc.perform(post("/api/v1/merchant/complaints/" + id + "/reply")
+                        .header("Authorization", "Bearer " + token2).contentType("application/json")
+                        .content(crossReplyBody))
+                .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value(403));
+        mvc.perform(get("/api/v1/admin/complaints/" + id).header("Authorization", "Bearer " + token2))
+                .andExpect(status().isForbidden());
     }
 
     // ==================== F09 商户账单生成集成回归 ====================

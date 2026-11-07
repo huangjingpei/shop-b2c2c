@@ -73,7 +73,7 @@ class SchemaMySqlTest {
                 try (ResultSet result = statement.executeQuery("SHOW TABLES")) {
                     while (result.next()) tables.add(result.getString(1));
                 }
-                assertEquals(40, tables.size(), "schema.sql 当前基线必须包含 40 张业务表；增删表须同步本断言、README 与迁移覆盖率用例");
+                assertEquals(41, tables.size(), "schema.sql 当前基线必须包含 41 张业务表；增删表须同步本断言、README 与迁移覆盖率用例");
                 try (ResultSet indexes = statement.executeQuery("SHOW INDEX FROM inventory_reservation WHERE Key_name='idx_reservation_expiry'")) {
                     List<String> columns = new ArrayList<>();
                     while (indexes.next()) columns.add(indexes.getString("Column_name"));

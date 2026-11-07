@@ -2,6 +2,7 @@
 文件：QuickQuery.vue
 用途：免登录订单查单及卡密、定制服务凭证和物流展示。
 维护注意：类型3展示人工交付凭证；仅以文本插值渲染，不能直接v-html注入凭证。领取必须通过POST验证独立queryToken；不得把联系方式/凭证放URL、自动日志或持久化浏览器存储。
+F06：查单结果内可提交维权投诉、查看商家答复与平台裁决、申请平台介入；举证仅接受http/https链接文本，仍由后端校验订单归属。
 -->
 <template>
   <div class="max-w-2xl mx-auto py-4">
@@ -99,6 +100,31 @@
         </div>
       </div>
 
+      <!-- 投诉与平台仲裁入口 -->
+      <div v-if="canRefund" class="py-3 border-b border-slate-100">
+        <div class="flex items-center justify-between mb-2">
+          <div class="text-xs font-bold text-slate-700">维权投诉</div>
+          <button v-if="!activeComplaint" @click="openComplaint"
+                  class="px-3 py-1.5 rounded bg-slate-100 text-slate-700 text-xs font-bold hover:bg-slate-200">
+            提交投诉
+          </button>
+        </div>
+        <div v-for="c in complaints" :key="c.id" class="text-xs py-2 border-b border-slate-50 last:border-0 space-y-1">
+          <div class="flex justify-between">
+            <span class="font-bold">{{ complaintTypeLabel(c.complaintType) }}：{{ c.content }}</span>
+            <span :class="complaintStatusClass(c.status)">{{ complaintStatusLabel(c.status) }}</span>
+          </div>
+          <div v-if="c.merchantReply" class="text-slate-500">商家答复：{{ c.merchantReply }}</div>
+          <div v-if="c.adminArbitration" class="text-blue-700">
+            平台裁决：{{ c.adminArbitration }}（退款 ￥{{ c.refundAmount }}）
+          </div>
+          <button v-if="canEscalateComplaint(c.status)" @click="escalateComplaint(c)"
+                  class="px-2 py-1 rounded bg-amber-50 text-amber-700 text-[11px] font-bold hover:bg-amber-100">
+            商家未解决？申请平台介入
+          </button>
+        </div>
+      </div>
+
       <!-- 所属店铺 -->
       <div v-if="orderResult.store" class="py-3 flex items-center justify-between text-xs text-slate-600 border-b border-slate-100">
         <span>出货店铺：<strong class="text-slate-800">{{ orderResult.store.storeName }}</strong></span>
@@ -167,12 +193,42 @@
         </div>
       </div>
     </div>
+    <!-- 投诉提交对话框 -->
+    <div v-if="complaintDialog" class="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" @click.self="complaintDialog = false">
+      <div class="bg-white rounded-xl p-5 w-full max-w-sm shadow-lg">
+        <h3 class="font-bold text-slate-900 mb-3">提交维权投诉</h3>
+        <div class="text-xs text-slate-500 mb-3">订单 {{ orderResult?.order.orderSn }}</div>
+        <label class="block text-xs font-bold text-slate-700 mb-1">投诉类型</label>
+        <select v-model="complaintType" class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm mb-3">
+          <option value="QUALITY">质量问题</option>
+          <option value="FAKE">假冒商品</option>
+          <option value="SERVICE_NOT_DELIVERED">未按约履约</option>
+          <option value="OTHER">其他</option>
+        </select>
+        <label class="block text-xs font-bold text-slate-700 mb-1">投诉说明</label>
+        <textarea v-model="complaintContent" rows="3" maxlength="1000"
+                  class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm mb-3"
+                  placeholder="请描述问题，至少 5 个字"></textarea>
+        <label class="block text-xs font-bold text-slate-700 mb-1">举证图片链接（每行一条，最多 5 条）</label>
+        <textarea v-model="complaintEvidence" rows="2"
+                  class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm mb-4"
+                  placeholder="https://..."></textarea>
+        <div class="flex justify-end gap-2">
+          <button @click="complaintDialog = false" class="px-4 py-2 rounded border border-slate-300 text-sm">取消</button>
+          <button @click="submitComplaint" :disabled="complaintSubmitting"
+                  class="px-4 py-2 rounded bg-amber-500 text-white text-sm font-bold disabled:bg-slate-300">
+            {{ complaintSubmitting ? '提交中...' : '提交投诉' }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup>
 import { receiptRequest, receiptRouteQuery } from '../utils/buyerReceipt.mjs'
 import { serviceVoucherText } from '../utils/goodsType.mjs'
+import { complaintStatusLabel, complaintTypeLabel, canEscalateComplaint, complaintSubmitPayload } from '@shared/complaint.mjs'
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
@@ -188,6 +244,85 @@ const refundDialog = ref(false)
 const refunding = ref(false)
 const refundRequests = ref([])
 const refundForm = { amount: 0, reason: '' }
+
+const OPEN_COMPLAINT = new Set(['PENDING', 'MERCHANT_REPLIED', 'ARBITRATING'])
+const complaints = ref([])
+const complaintDialog = ref(false)
+const complaintSubmitting = ref(false)
+const complaintType = ref('QUALITY')
+const complaintContent = ref('')
+const complaintEvidence = ref('')
+const activeComplaint = computed(() => complaints.value.find(c => OPEN_COMPLAINT.has(c.status)))
+
+const complaintStatusClass = s => ({
+  PENDING: 'text-amber-600', MERCHANT_REPLIED: 'text-blue-600', ARBITRATING: 'text-purple-600',
+  RESOLVED: 'text-green-600', REJECTED: 'text-slate-400'
+}[s] || 'text-slate-500')
+
+const openComplaint = () => {
+  complaintType.value = 'QUALITY'
+  complaintContent.value = ''
+  complaintEvidence.value = ''
+  complaintDialog.value = true
+}
+
+const submitComplaint = async () => {
+  let payload
+  try {
+    payload = complaintSubmitPayload({
+      orderSn: orderResult.value.order.orderSn,
+      contact: contact.value,
+      queryToken: queryToken.value,
+      complaintType: complaintType.value,
+      content: complaintContent.value,
+      evidenceImages: complaintEvidence.value.split('\n').map(t => t.trim()).filter(Boolean)
+    })
+  } catch (e) { alert(e.message); return }
+  complaintSubmitting.value = true
+  try {
+    const res = await axios.post('/api/v1/public/orders/complaints', payload)
+    if (res.data.code === 200) {
+      alert('投诉已提交，商家将尽快答复')
+      complaintDialog.value = false
+      await loadComplaints()
+    } else {
+      alert(res.data.message || '提交失败')
+    }
+  } catch (e) {
+    alert(e.response?.data?.message || '提交失败，请稍后重试')
+  } finally {
+    complaintSubmitting.value = false
+  }
+}
+
+const escalateComplaint = async (c) => {
+  if (!confirm('确认申请平台介入仲裁？平台将根据双方举证作出裁决。')) return
+  try {
+    const res = await axios.post(`/api/v1/public/orders/complaints/${c.id}/escalate`, {
+      orderSn: orderResult.value.order.orderSn,
+      contact: contact.value,
+      queryToken: queryToken.value,
+      note: '商家答复未解决问题，申请平台介入'
+    })
+    if (res.data.code === 200) {
+      alert('已申请平台介入，请等待平台裁决')
+      await loadComplaints()
+    } else {
+      alert(res.data.message || '申请失败')
+    }
+  } catch (e) {
+    alert(e.response?.data?.message || '申请失败，请稍后重试')
+  }
+}
+
+const loadComplaints = async () => {
+  try {
+    const res = await axios.get('/api/v1/public/orders/complaints', {
+      params: { orderSn: orderResult.value.order.orderSn, contact: contact.value, queryToken: queryToken.value }
+    })
+    complaints.value = res.data.code === 200 ? (res.data.data || []) : []
+  } catch { complaints.value = [] }
+}
 
 const REFUNDABLE = new Set(['PAID', 'SHIPPED', 'COMPLETED'])
 const canRefund = computed(() => orderResult.value && REFUNDABLE.has(orderResult.value.order.orderStatus))
@@ -251,6 +386,7 @@ const handleSearch = async () => {
     if (res.data.code !== 200) { alert(res.data.message || '查询失败'); return }
     orderResult.value = res.data.data
     await loadRefundRequests()
+    await loadComplaints()
   } catch (e) {
     alert(e.response?.data?.message || '未查询到订单信息，请确认订单号与联系方式')
   } finally {

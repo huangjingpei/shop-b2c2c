@@ -102,6 +102,13 @@ const routes = [
         // F09：全平台商户账单查询与重算入口，仅超管；重算为聚合覆盖，不触碰结算批次锁定语义。
         meta: { title: '商户账单治理', role: 'SUPERADMIN' }
       },
+      {
+        path: '/admin/complaints',
+        name: 'AdminComplaints',
+        component: () => import('../views/admin/Complaints.vue'),
+        // F06：平台仲裁仅超管；裁决可联动退款，退款上限与状态机由后端强制。
+        meta: { title: '投诉仲裁', role: 'SUPERADMIN' }
+      },
 
       // 商家工作台视角
       {
@@ -147,6 +154,13 @@ const routes = [
         component: () => import('../views/merchant/Billing.vue'),
         // F09：账单属财务展示数据，仅店长可见（与卡密库同口径，路由守卫与后端接口双重校验）。
         meta: { title: '本店账单', requiresMerchant: true, role: 'MERCHANT_ADMIN' }
+      },
+      {
+        path: '/merchant/complaints',
+        name: 'MerchantComplaints',
+        component: () => import('../views/merchant/Complaints.vue'),
+        // F06：投诉答复与举证涉及店铺对外口径，仅店长可见；商家只能处理本店工单。
+        meta: { title: '投诉处理', requiresMerchant: true, role: 'MERCHANT_ADMIN' }
       }
     ]
   }

@@ -372,7 +372,7 @@ CREATE TABLE IF NOT EXISTS `complaint` (
   `merchant_id` BIGINT  NOT NULL COMMENT '被投诉商户ID',
   `complaint_type` VARCHAR(64) NOT NULL COMMENT '投诉类型: QUALITY, FAKE, SERVICE_NOT_DELIVERED, OTHER',
   `content` TEXT NOT NULL COMMENT '买家投诉详细说明',
-  `evidence_images` JSON DEFAULT NULL COMMENT '买家举证凭证图数组',
+  `evidence_images` TEXT DEFAULT NULL COMMENT '买家举证凭证图数组 JSON',
   `merchant_reply` TEXT DEFAULT NULL COMMENT '商家答辩说明与举证',
   `merchant_reply_time` DATETIME DEFAULT NULL COMMENT '商家答复时间',
   `admin_arbitration` TEXT DEFAULT NULL COMMENT '平台超管官方仲裁结论',
@@ -383,6 +383,21 @@ CREATE TABLE IF NOT EXISTS `complaint` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
+
+-- F06 投诉追加式操作记录（H2 用 TEXT 存举证 JSON，避免 JSON 列对字符串二次编码）。
+CREATE TABLE IF NOT EXISTS complaint_event (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  complaint_id BIGINT NOT NULL,
+  event_type VARCHAR(32) NOT NULL,
+  status_after VARCHAR(32) NOT NULL,
+  actor_role VARCHAR(32) NOT NULL,
+  actor_id BIGINT NULL,
+  actor_name VARCHAR(64) NULL,
+  note TEXT NULL,
+  evidence_images TEXT NULL,
+  created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_complaint_event ON complaint_event(complaint_id, created_at);
 
 
 

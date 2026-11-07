@@ -444,6 +444,22 @@ CREATE TABLE IF NOT EXISTS `complaint` (
   CONSTRAINT fk_complaint_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='买家维权投诉与平台官方仲裁表';
 
+-- 12.1 F06 投诉工单追加式操作记录：只插入不更新/删除，保存每次流转的操作人、说明与举证快照。
+CREATE TABLE IF NOT EXISTS `complaint_event` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  `complaint_id` BIGINT UNSIGNED NOT NULL COMMENT '关联投诉工单ID',
+  `event_type` VARCHAR(32) NOT NULL COMMENT 'SUBMITTED/MERCHANT_REPLIED/ESCALATED/RESOLVED/REJECTED',
+  `status_after` VARCHAR(32) NOT NULL COMMENT '流转后工单状态',
+  `actor_role` VARCHAR(32) NOT NULL COMMENT 'BUYER/MERCHANT_ADMIN/SUPERADMIN',
+  `actor_id` BIGINT UNSIGNED NULL COMMENT '登录操作人ID，买家匿名操作时为空',
+  `actor_name` VARCHAR(64) NULL COMMENT '操作人展示名快照',
+  `note` TEXT NULL COMMENT '当次说明快照',
+  `evidence_images` TEXT NULL COMMENT '当次举证链接 JSON 快照',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY `idx_complaint_event` (`complaint_id`, `created_at`),
+  CONSTRAINT fk_complaint_event_complaint FOREIGN KEY (`complaint_id`) REFERENCES `complaint` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='投诉工单追加式操作记录（不可更新/删除）';
+
 -- 13. 库存预占流水；索引随建表创建，避免启动时重复 CREATE INDEX。
 -- T11：到期游标索引补齐 order_id，支撑 status + expires_at + order_id 的稳定批量扫描。
 CREATE TABLE IF NOT EXISTS inventory_reservation (

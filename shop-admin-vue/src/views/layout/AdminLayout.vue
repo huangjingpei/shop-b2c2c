@@ -96,6 +96,11 @@
               <el-icon><Money /></el-icon>
               <span>商户账单治理</span>
             </el-menu-item>
+            <!-- F06：平台投诉仲裁，仅超管视角可见；后端 /api/v1/admin/complaints 二次校验。 -->
+            <el-menu-item index="/admin/complaints">
+              <el-icon><ChatDotRound /></el-icon>
+              <span>投诉仲裁</span>
+            </el-menu-item>
           </template>
 
           <!-- 商家工作台菜单 -->
@@ -130,6 +135,11 @@
             <el-menu-item v-if="roleCode !== 'MERCHANT_STAFF'" index="/merchant/billing">
               <el-icon><Money /></el-icon>
               <span>本店账单</span>
+            </el-menu-item>
+            <!-- F06：投诉答复与举证仅店长可见；商家只能处理本店工单。 -->
+            <el-menu-item v-if="roleCode !== 'MERCHANT_STAFF'" index="/merchant/complaints">
+              <el-icon><ChatDotRound /></el-icon>
+              <span>投诉处理</span>
             </el-menu-item>
           </template>
         </el-menu>
