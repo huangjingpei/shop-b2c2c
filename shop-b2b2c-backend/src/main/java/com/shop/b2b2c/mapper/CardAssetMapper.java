@@ -35,4 +35,22 @@ public interface CardAssetMapper {
     int insertVoid(CardVoidRecord record);
     @Select("SELECT * FROM virtual_card_void WHERE card_id=#{id} AND merchant_id=#{merchant}")
     CardVoidRecord voidRecord(@Param("merchant") Long merchant, @Param("id") Long id);
+    /**
+     * F12 存量一致性核对：按SKU聚合账面库存与各状态卡数、HELD预占与异常指纹计数，只读不修正。
+     * 预占子查询每SKU至多一行，不会放大卡行计数；只覆盖本店卡密商品(goods_type=2)的SKU。
+     */
+    @Select("SELECT s.id AS skuId, s.product_id AS productId, s.stock_quantity AS stockQuantity, "
+            + "COALESCE(SUM(CASE WHEN c.status=0 THEN 1 ELSE 0 END),0) AS availableCards, "
+            + "COALESCE(SUM(CASE WHEN c.status=1 THEN 1 ELSE 0 END),0) AS soldCards, "
+            + "COALESCE(SUM(CASE WHEN c.status=2 THEN 1 ELSE 0 END),0) AS voidedCards, "
+            + "COALESCE(SUM(c.fingerprint_unavailable),0) AS fingerprintUnavailable, "
+            + "COALESCE(h.heldQuantity,0) AS heldQuantity "
+            + "FROM product_sku s "
+            + "JOIN product p ON p.id=s.product_id AND p.merchant_id=s.merchant_id AND p.goods_type=2 "
+            + "LEFT JOIN product_virtual_card c ON c.sku_id=s.id AND c.product_id=s.product_id AND c.merchant_id=s.merchant_id "
+            + "LEFT JOIN (SELECT sku_id, SUM(quantity) AS heldQuantity FROM inventory_reservation "
+            + "WHERE merchant_id=#{merchant} AND status='HELD' GROUP BY sku_id) h ON h.sku_id=s.id "
+            + "WHERE s.merchant_id=#{merchant} "
+            + "GROUP BY s.id, s.product_id, s.stock_quantity, h.heldQuantity ORDER BY s.id")
+    java.util.List<com.shop.b2b2c.dto.CardConsistencyRow> consistencyRows(@Param("merchant") Long merchant);
 }

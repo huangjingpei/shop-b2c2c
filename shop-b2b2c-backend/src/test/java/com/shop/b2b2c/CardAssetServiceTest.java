@@ -1,6 +1,6 @@
 /*
  * 文件：CardAssetServiceTest.java
- * 用途：卡密初始库存、去重/批次写入、导入容量、作废拒绝及自然幂等单元测试。
+ * 用途：卡密初始库存、去重/批次写入、导入容量、作废拒绝及自然幂等、存量一致性核对单元测试。
  * 维护注意：仅使用虚构卡密与Mock事务，不能替代真实回滚/并发验证；错误断言不能输出卡密明文，数据库场景由Spring/H2和临时MySQL测试承担。
  */
 package com.shop.b2b2c;
@@ -224,5 +224,42 @@ class CardAssetServiceTest {
         when(skus.findById(2L)).thenReturn(Optional.of(foreign));
         assertEquals(403, assertThrows(BusinessException.class, () -> service.exportCards(1L, 9L, 2L, true, false, 2)).getCode());
         verifyNoInteractions(cards, audits);
+    }
+    private com.shop.b2b2c.dto.CardConsistencyRow row(long skuId, long stock, long available, long unavailable) {
+        var row = new com.shop.b2b2c.dto.CardConsistencyRow();
+        row.setSkuId(skuId); row.setProductId(1L); row.setStockQuantity(stock); row.setAvailableCards(available);
+        row.setSoldCards(0L); row.setVoidedCards(0L); row.setHeldQuantity(0L); row.setFingerprintUnavailable(unavailable);
+        return row;
+    }
+    @Test void consistencyCheckFlagsDriftAndUnavailableWithoutAutoRepair() {
+        when(assets.consistencyRows(1L)).thenReturn(List.of(row(1L, 2, 2, 0), row(2L, 5, 3, 2)));
+        var result = service.consistencyCheck(1L);
+        @SuppressWarnings("unchecked") var items = (List<com.shop.b2b2c.dto.CardConsistencyRow>) result.get("items");
+        assertTrue(items.get(0).getConsistent());
+        assertFalse(items.get(1).getConsistent());
+        assertEquals(1, result.get("abnormalCount"));
+        assertEquals(2L, result.get("fingerprintUnavailableTotal"));
+        verify(assets).consistencyRows(1L);
+        // 只读核对：不得触碰任何写入口。
+        verify(cards, never()).insert(any(ProductVirtualCard.class));
+        verify(skus, never()).addStock(any(), any(), anyInt());
+        verify(assets, never()).markVoid(any(), any());
+    }
+    @Test void consistencyCheckCountsUnavailableEvenWhenStockMatches() {
+        when(assets.consistencyRows(1L)).thenReturn(List.of(row(1L, 1, 1, 1)));
+        var result = service.consistencyCheck(1L);
+        @SuppressWarnings("unchecked") var items = (List<com.shop.b2b2c.dto.CardConsistencyRow>) result.get("items");
+        assertTrue(items.get(0).getConsistent());
+        assertEquals(1, result.get("abnormalCount"));
+        assertEquals(1L, result.get("fingerprintUnavailableTotal"));
+    }
+    @Test void consistencyCheckAllowsEmptyStoreAndRejectsUnboundAccount() {
+        when(assets.consistencyRows(1L)).thenReturn(List.of());
+        var result = service.consistencyCheck(1L);
+        assertEquals(List.of(), result.get("items"));
+        assertEquals(0, result.get("abnormalCount"));
+        assertEquals(0L, result.get("fingerprintUnavailableTotal"));
+        assertEquals(403, assertThrows(BusinessException.class, () -> service.consistencyCheck(null)).getCode());
+        assertEquals(403, assertThrows(BusinessException.class, () -> service.consistencyCheck(0L)).getCode());
     }
 }

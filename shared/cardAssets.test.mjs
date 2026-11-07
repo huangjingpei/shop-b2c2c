@@ -1,11 +1,11 @@
 /*
  * 文件：cardAssets.test.mjs
- * 用途：卡密导入SKU选择、批内边界、批次/库存游标参数、导出确认载荷及作废权限/状态规则测试。
+ * 用途：卡密导入SKU选择、批内边界、批次/库存游标参数、导出确认载荷、作废权限/状态及一致性核对行状态规则测试。
  * 维护注意：只使用虚构文本，不使用真实卡密；服务端另测历史去重、事务、并发、限量查看与导出审计。本地展示判断不能作为资产授权，也不能替代接口层拒绝员工。
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery, cardListQuery, cardExportPayload } from '../shop-admin-vue/src/utils/cardAssets.mjs'
+import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery, cardListQuery, cardExportPayload, consistencyIssue } from '../shop-admin-vue/src/utils/cardAssets.mjs'
 const form = () => ({ productId: 9, skuId: 12, rawText: ' Code-A \r\n\nCode-b' })
 test('批次查询只包含有界游标参数，可清空SKU筛选', () => {
   assert.deepEqual(cardBatchQuery(' 12 ', 30), { skuId: '12', beforeId: '30', limit: 20 })
@@ -58,4 +58,13 @@ test('只有店长和超管可以操作未售且未绑定的卡', () => {
   assert.equal(canVoidCard('MERCHANT_STAFF', { status: 0 }), false)
   assert.equal(canVoidCard('MERCHANT_ADMIN', { status: 0, orderSn: 'bound' }), false)
   assert.equal(cardStatusLabel(2), '已作废'); assert.equal(cardStatusLabel(1), '已售出'); assert.equal(cardStatusLabel(9), '未知状态')
+})
+test('F12 一致性核对行状态：异常指纹优先于漂移，严格一致才算ok', () => {
+  assert.equal(consistencyIssue({ consistent: true, fingerprintUnavailable: 0 }), 'ok')
+  assert.equal(consistencyIssue({ consistent: false, fingerprintUnavailable: 0 }), 'drift')
+  assert.equal(consistencyIssue({ consistent: true, fingerprintUnavailable: '2' }), 'unavailable')
+  assert.equal(consistencyIssue({ consistent: false, fingerprintUnavailable: 1 }), 'unavailable')
+  assert.equal(consistencyIssue({}), 'drift')
+  assert.equal(consistencyIssue(null), 'unknown')
+  assert.equal(consistencyIssue('row'), 'unknown')
 })

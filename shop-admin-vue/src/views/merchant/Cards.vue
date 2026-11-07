@@ -1,7 +1,7 @@
 <!--
 文件：Cards.vue
-用途：本店卡密去重导入、成功批次/成员查询、脱敏库存浏览、店长按SKU限量查看明文、二次确认导出及安全作废。
-维护注意：列表只展示指纹尾号派生的脱敏标识，不保存也不打印明文；单条查看与导出必须先经确认弹窗，导出结果仅在内存生成下载，不写日志/本地缓存；权限由服务端接口层核验，前端隐藏按钮不是权限边界。批次/成员游标分别管理，不伪造旧批次；未确认作废结果保留原因供重试。
+用途：本店卡密去重导入、成功批次/成员查询、脱敏库存浏览、店长按SKU限量查看明文、二次确认导出、安全作废及存量一致性核对。
+维护注意：列表只展示指纹尾号派生的脱敏标识，不保存也不打印明文；单条查看与导出必须先经确认弹窗，导出结果仅在内存生成下载，不写日志/本地缓存；权限由服务端接口层核验，前端隐藏按钮不是权限边界。批次/成员游标分别管理，不伪造旧批次；未确认作废结果保留原因供重试。一致性核对为只读账实比对，失败保留上次结果，不自动修复漂移。
 -->
 <template>
   <div class="merchant-cards">
@@ -56,6 +56,36 @@
           <el-button v-if="row.status === 2" link type="primary" @click="showVoidRecord(row)">作废记录</el-button>
         </template></el-table-column>
       </el-table>
+    </el-card>
+
+    <!-- F12 存量一致性核对：只读账实比对，异常指纹与漂移提示人工处置，不自动修复 -->
+    <el-card shadow="never" style="margin-top: 20px;">
+      <h3>库存一致性核对</h3>
+      <p>只读比对账面库存与在库未售卡数；预占中数量仅作参考。异常指纹的卡密无法参与导入去重，请按SKU筛选上方列表后走作废流程。核对不会自动修复数据，请勿用导入或作废强行平账。</p>
+      <div style="display: flex; gap: 12px; margin-bottom: 12px; align-items: center;">
+        <el-button :loading="consistencyLoading" :disabled="consistencyLoading" @click="runConsistency">开始核对</el-button>
+        <el-tag v-if="consistencyRan" :type="abnormalCount > 0 ? 'danger' : 'success'">
+          {{ abnormalCount > 0 ? `发现 ${abnormalCount} 个异常SKU（含异常指纹 ${fingerprintUnavailableTotal} 张）` : '全部SKU账实一致' }}
+        </el-tag>
+      </div>
+      <el-table v-if="consistencyRan" :data="consistencyItems" v-loading="consistencyLoading" :row-class-name="consistencyRowClass" stripe style="width: 100%">
+        <el-table-column prop="skuId" label="SKU" width="90" />
+        <el-table-column prop="productId" label="商品ID" width="90" />
+        <el-table-column prop="stockQuantity" label="账面库存" width="90" />
+        <el-table-column prop="availableCards" label="在库未售卡" width="110" />
+        <el-table-column prop="heldQuantity" label="预占中" width="85" />
+        <el-table-column prop="soldCards" label="已售" width="80" />
+        <el-table-column prop="voidedCards" label="已作废" width="85" />
+        <el-table-column prop="fingerprintUnavailable" label="异常指纹" width="90" />
+        <el-table-column label="核对结果" min-width="150">
+          <template #default="{ row }">
+            <el-tag :type="consistencyTagType(row)">{{ consistencyLabel(row) }}</el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+      <p v-if="consistencyRan && abnormalCount > 0" style="color: #b45309; margin-bottom: 0;">
+        异常处置指引：指纹异常的卡密请作废后按需重新导入；账实漂移请先核对导入批次、发卡与作废记录，仍无法定位请联系平台协助，不要用导入或作废强行平账。
+      </p>
     </el-card>
 
     <el-card shadow="never" style="margin-top: 20px;">
@@ -128,7 +158,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
-import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery, cardListQuery, cardExportPayload } from '../../utils/cardAssets.mjs'
+import { cardImportPayload, cardStatusLabel, canVoidCard, cardBatchQuery, cardListQuery, cardExportPayload, consistencyIssue } from '../../utils/cardAssets.mjs'
 import { merchantProductRows } from '../../utils/merchantProducts.mjs'
 import { sessionBucket, sessionGet } from '../../utils/authSession.mjs'
 
@@ -148,6 +178,25 @@ const pendingVoidReasons = new Map()
 const batches = ref([]), batchSku = ref(''), batchLoading = ref(false), batchNext = ref(null)
 const members = ref([]), memberLoading = ref(false), memberNext = ref(null), selectedBatch = ref(null), membersVisible = ref(false)
 let appliedBatchSku = undefined
+
+// F12 一致性核对：只读结果不落盘，失败不把旧结果当成一致。
+const consistencyItems = ref([]), consistencyLoading = ref(false), consistencyRan = ref(false)
+const abnormalCount = ref(0), fingerprintUnavailableTotal = ref(0)
+const runConsistency = async () => {
+  if (consistencyLoading.value) return
+  consistencyLoading.value = true
+  try {
+    const { data } = await request.get('/merchant/cards/consistency')
+    consistencyItems.value = data.items || []
+    abnormalCount.value = data.abnormalCount || 0
+    fingerprintUnavailableTotal.value = data.fingerprintUnavailableTotal || 0
+    consistencyRan.value = true
+  } catch { /* 请求层提示，保留上次核对结果不清空。 */ }
+  finally { consistencyLoading.value = false }
+}
+const consistencyLabel = row => ({ ok: '一致', drift: '账实漂移', unavailable: '异常指纹待处置', unknown: '未知' })[consistencyIssue(row)]
+const consistencyTagType = row => ({ ok: 'success', drift: 'danger', unavailable: 'warning', unknown: 'info' })[consistencyIssue(row)]
+const consistencyRowClass = ({ row }) => consistencyIssue(row) === 'ok' ? '' : 'consistency-abnormal'
 
 const loadBatches = async (more = false) => {
   if (batchLoading.value || (more && !batchNext.value)) return
@@ -330,5 +379,9 @@ code {
   padding: 2px 6px;
   border-radius: 4px;
   color: #0f172a;
+}
+
+:deep(.consistency-abnormal) {
+  background: #fffbeb;
 }
 </style>

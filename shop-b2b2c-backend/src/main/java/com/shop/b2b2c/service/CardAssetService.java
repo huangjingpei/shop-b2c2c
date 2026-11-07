@@ -1,6 +1,6 @@
 /*
  * 文件：CardAssetService.java
- * 用途：本店卡密去重导入、成功批次记录、安全作废、店长按SKU限量查看明文及导出审计。
+ * 用途：本店卡密去重导入、成功批次记录、安全作废、店长按SKU限量查看明文及导出审计、存量一致性核对。
  * 维护注意：独立READ_COMMITTED事务，锁顺序为商户、商品、SKU、卡；导入按商户互斥，批次/成员/卡/库存同事务。T14：仅对本店 fingerprint IS NULL 的行做内存解密比对，不再回写指纹或做历史补算；解密失败/缺少明文的行标记 fingerprint_unavailable=1、计数并跳过，不中断导入，也不输出明文。密钥按当前单密钥假设处理，轮换不在本轮范围。T15：列表只返回脱敏标识+指纹，不解密；明文查看必须按SKU限量且仅店长/超管；导出必须显式二次确认并写入 card_access_audit，审计失败不得返回明文。作废拒绝HELD预占和数量不一致，不反向锁预占行。
  */
 package com.shop.b2b2c.service;
@@ -223,6 +223,30 @@ public class CardAssetService {
         var record = assets.voidRecord(merchant, id);
         if (record == null) throw new BusinessException(404, "没有本店作废记录");
         return record;
+    }
+
+    /**
+     * F12 存量一致性核对：只读汇总本店卡密商品每个SKU的账面库存与在库未售卡数、预占与异常指纹。
+     * consistent只判定stockQuantity==availableCards；异常指纹单列计数，提示人工按SKU筛选后走作废流程。
+     * 核对结果不自动修复漂移，也不返回卡密正文或指纹；单条聚合SQL读取，无需事务。
+     */
+    public Map<String,Object> consistencyCheck(Long merchant) {
+        requireEntry(merchant);
+        List<com.shop.b2b2c.dto.CardConsistencyRow> rows = assets.consistencyRows(merchant);
+        int abnormal = 0;
+        long unavailableTotal = 0;
+        for (var row : rows) {
+            boolean consistent = row.getStockQuantity() != null && row.getStockQuantity().equals(row.getAvailableCards());
+            row.setConsistent(consistent);
+            long unavailable = row.getFingerprintUnavailable() == null ? 0 : row.getFingerprintUnavailable();
+            unavailableTotal += unavailable;
+            if (!consistent || unavailable > 0) abnormal++;
+        }
+        Map<String,Object> result = new LinkedHashMap<>();
+        result.put("items", rows);
+        result.put("abnormalCount", abnormal);
+        result.put("fingerprintUnavailableTotal", unavailableTotal);
+        return result;
     }
     private ProductSku lockSku(Long merchant, Long productId, Long skuId) {
         if (assets.lockMerchant(merchant) == null) throw new BusinessException(404, "店铺不存在");

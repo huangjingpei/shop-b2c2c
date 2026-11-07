@@ -1,6 +1,6 @@
 /*
  * 文件：Sprint1SecurityIntegrationTest.java
- * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次、状态统计、就绪探针、海报减载、店铺定向更新并发及租户安全集成回归。
+ * 用途：跨Sprint累计的建单幂等、商品/库存/卡密批次/卡密一致性核对、状态统计、就绪探针、海报减载、店铺定向更新并发及租户安全集成回归。
  * 维护注意：名称保留Sprint1但覆盖后续修复；H2独立内存库、Mock Redis，Sa-Token使用仅测试注入的内存DAO验证真实令牌生命周期；认证限流计数模拟不等于真实Redis验收。并发测试不能加测试级外层事务掩盖真实提交；调整模型时同步隔离结构，不连接业务数据库。
  */
 package com.shop.b2b2c;
@@ -1043,6 +1043,62 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].cardContent").doesNotExist()).andReturn().getResponse().getContentAsString();
         assertFalse(members.contains("batch-private-fixture"));
+    }
+
+    @Test
+    void cardConsistencyReportsDriftAndUnavailableWithoutAutoRepair() {
+        var initial = cardAssets.consistencyCheck(1L);
+        @SuppressWarnings("unchecked") var items = (List<com.shop.b2b2c.dto.CardConsistencyRow>) initial.get("items");
+        assertEquals(1, items.size());
+        assertEquals(1L, items.get(0).getSkuId());
+        assertEquals(1L, items.get(0).getStockQuantity());
+        assertEquals(1L, items.get(0).getAvailableCards());
+        assertTrue(items.get(0).getConsistent());
+        assertEquals(0, initial.get("abnormalCount"));
+
+        // merchant2的SKU账面1却无卡，天然漂移；核对按商户隔离，看不到merchant1的SKU
+        var foreign = cardAssets.consistencyCheck(2L);
+        @SuppressWarnings("unchecked") var foreignItems = (List<com.shop.b2b2c.dto.CardConsistencyRow>) foreign.get("items");
+        assertEquals(1, foreignItems.size());
+        assertEquals(2L, foreignItems.get(0).getSkuId());
+        assertFalse(foreignItems.get(0).getConsistent());
+        assertEquals(1, foreign.get("abnormalCount"));
+
+        // 漂移与异常指纹都被如实报告，核对本身不修正任何数据
+        jdbc.update("UPDATE product_sku SET stock_quantity=2 WHERE id=1");
+        jdbc.update("UPDATE product_virtual_card SET fingerprint_unavailable=1 WHERE id=1");
+        var drift = cardAssets.consistencyCheck(1L);
+        @SuppressWarnings("unchecked") var driftItems = (List<com.shop.b2b2c.dto.CardConsistencyRow>) drift.get("items");
+        assertFalse(driftItems.get(0).getConsistent());
+        assertEquals(1L, driftItems.get(0).getFingerprintUnavailable());
+        assertEquals(1, drift.get("abnormalCount"));
+        assertEquals(1L, drift.get("fingerprintUnavailableTotal"));
+        assertEquals(2, skus.selectById(1).getStockQuantity());
+        assertEquals(0, cards.selectById(1L).getStatus());
+    }
+
+    @Test
+    void cardConsistencyAfterVoidStaysConsistentAndKeepsVoidedCount() {
+        cardAssets.voidCard(1L, 200L, 1L, "expired");
+        var result = cardAssets.consistencyCheck(1L);
+        @SuppressWarnings("unchecked") var items = (List<com.shop.b2b2c.dto.CardConsistencyRow>) result.get("items");
+        assertTrue(items.get(0).getConsistent());
+        assertEquals(0L, items.get(0).getStockQuantity());
+        assertEquals(0L, items.get(0).getAvailableCards());
+        assertEquals(1L, items.get(0).getVoidedCards());
+        assertEquals(0, result.get("abnormalCount"));
+    }
+
+    @Test
+    void cardConsistencyHttpIsMerchantScopedReadOnlyAndNoStore() throws Exception {
+        mvc.perform(get("/api/v1/merchant/cards/consistency")).andExpect(status().isUnauthorized());
+        authUser("MERCHANT_STAFF", 1L); String token = loginToken();
+        mvc.perform(get("/api/v1/merchant/cards/consistency").header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(header().string("Cache-Control", "no-store"))
+                .andExpect(jsonPath("$.data.abnormalCount").value(0))
+                .andExpect(jsonPath("$.data.items[0].skuId").value("1"))
+                .andExpect(jsonPath("$.data.items[0].consistent").value(true));
     }
 
     @Test
