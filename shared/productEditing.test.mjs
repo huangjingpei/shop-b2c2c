@@ -5,7 +5,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload, skuCreatePayload, canRemoveSku } from '../shop-admin-vue/src/utils/productEditing.mjs'
+import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload, skuCreatePayload, skuSpecPayload, canRemoveSku } from '../shop-admin-vue/src/utils/productEditing.mjs'
 function snapshot() {
   return { revision: 'revision', product: { id: 1, merchantId: 2, categoryId: 1, title: '商品', mainImage: 'image', goodsType: 2, status: 1 },
     skus: [{ id: 1, skuCode: 'code', specData: '{}', price: 10, stockQuantity: 9 }] }
@@ -78,4 +78,10 @@ test('SKU删除按钮仅限零库存且非最后一个', () => {
   assert.equal(canRemoveSku({ stockQuantity: 1 }, 2), false)
   assert.equal(canRemoveSku({ stockQuantity: 0 }, 1), false)
   assert.equal(canRemoveSku(null, 2), false)
+})
+test('规格维护请求仅接受JSON对象且不超过255字符', () => {
+  assert.deepEqual(skuSpecPayload(' {"a":1} '), { specData: '{"a":1}' })
+  assert.deepEqual(skuSpecPayload('{}'), { specData: '{}' })
+  for (const bad of ['', ' ', null, undefined, '[1]', 'not-json', 'x'.repeat(256), '"str"', '123'])
+    assert.throws(() => skuSpecPayload(bad), String(bad))
 })

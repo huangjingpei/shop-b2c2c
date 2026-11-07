@@ -1,12 +1,13 @@
 /*
  * 文件：ProductEditingService.java
- * 用途：本店商品资料、全量既有SKU售价、上下架及SKU增删的事务维护与旧版本冲突检测。
+ * 用途：本店商品资料、全量既有SKU售价、上下架、SKU增删及规格维护的事务维护与旧版本冲突检测。
  * 维护注意：
- *  1. 商品后 SKU 的行锁序列和内容摘要共同防并发覆盖；摘要排除可售库存/时间字段，库存变动不要求重填资料。
- *  2. SQL 只更新白名单列，禁止复用整实体保存；历史订单快照不改，违规下架不能由商家自行恢复。
+ *  1. 商品后 SKU 的行锁序列和内容摘要共同防并发覆盖；摘要含SKU规格但排除可售库存/时间字段，库存变动不要求重填资料。
+ *  2. SQL 只更新白名单列，禁止复用整实体保存；历史订单快照不改（建单时已快照spec_info），违规下架不能由商家自行恢复。
  *  3. T09/Q16：存在未到期 HELD 库存预占时禁止商家下架商品，防止支付回调先成功后无法履约。
  *  4. SKU增删共用商品行锁串行化；新增只写初始库存（自动卡密必须为0），不写库存调整流水；删除仅限零库存且无任何
  *     订单/卡密/预占/调整/审计等引用记录的SKU，外键与uk_merchant_sku_code唯一键作并发兜底。增删后按剩余SKU派生min_price。
+ *  5. 规格维护只写spec_data：skuCode创建后不可改（代理细化）；规格本身不触发min_price变化。
  */
 package com.shop.b2b2c.service;
 
@@ -110,12 +111,7 @@ public class ProductEditingService {
         checkRevisionFormat(draft.revision());
         String code = draft.skuCode() == null ? "" : draft.skuCode().strip();
         if (code.isEmpty() || code.length() > 64) throw new BusinessException(400, "SKU编码必填且不超过64字符");
-        if (draft.specData() == null || draft.specData().length() > 255) {
-            throw new BusinessException(400, "规格须为合法JSON对象且不超过255字符");
-        }
-        try {
-            if (!json.readTree(draft.specData()).isObject()) throw new IllegalArgumentException();
-        } catch (Exception e) { throw new BusinessException(400, "规格须为合法JSON对象且不超过255字符"); }
+        validateSpec(draft.specData());
         TradeGuards.requireMoney(draft.price());
         int initialStock = draft.stockQuantity() != null ? draft.stockQuantity() : 0;
         Editor current = snapshot(merchant, id);
@@ -154,6 +150,33 @@ public class ProductEditingService {
         return snapshot(merchant, id);
     }
 
+    @Transactional(rollbackFor = Exception.class)
+    public Editor updateSpec(Long merchant, Long id, Long skuId, SpecUpdate edit) {
+        if (edit == null) throw new BusinessException(400, "规格资料不能为空");
+        checkRevisionFormat(edit.revision());
+        if (skuId == null || skuId < 1) throw new BusinessException(400, "SKU编号不合法");
+        String spec = validateSpec(edit.specData());
+        Editor current = snapshot(merchant, id);
+        requireRevision(current, edit.revision());
+        var target = current.skus().stream().filter(sku -> skuId.equals(sku.getId())).findFirst()
+                .orElseThrow(() -> new BusinessException(404, "SKU不存在或不属于本商品"));
+        if (!spec.equals(target.getSpecData()) && mapper.updateSpec(id, merchant, skuId, spec) != 1) {
+            throw new BusinessException(409, "SKU已变化，请刷新后重试");
+        }
+        return snapshot(merchant, id);
+    }
+
+    /** 规格须为合法JSON对象且不超过255字符，与发布/新增SKU同口径。 */
+    private String validateSpec(String specData) {
+        if (specData == null || specData.length() > 255) {
+            throw new BusinessException(400, "规格须为合法JSON对象且不超过255字符");
+        }
+        try {
+            if (!json.readTree(specData).isObject()) throw new IllegalArgumentException();
+        } catch (Exception e) { throw new BusinessException(400, "规格须为合法JSON对象且不超过255字符"); }
+        return specData;
+    }
+
     /** SKU集合或价格变化后重算最低售价；仅在实际变化时写定向列，兼容useAffectedRows。 */
     private void deriveMinimumAfterChange(Long merchant, Long id, BigDecimal currentMinimum, BigDecimal nextMinimum) {
         if (nextMinimum == null) return;
@@ -170,7 +193,7 @@ public class ProductEditingService {
         try {
             var payload = Arrays.asList(product.getId(), product.getMerchantId(), product.getCategoryId(), product.getTitle(),
                     product.getSubTitle(), product.getMainImage(), product.getServiceDesc(), product.getGoodsType(), product.getStatus(),
-                    money(product.getMinPrice()), skus.stream().map(sku -> Arrays.asList(sku.getId(), sku.getSkuCode(), money(sku.getPrice()))).toList());
+                    money(product.getMinPrice()), skus.stream().map(sku -> Arrays.asList(sku.getId(), sku.getSkuCode(), money(sku.getPrice()), sku.getSpecData())).toList());
             String revision = HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(json.writeValueAsBytes(payload)));
             return new Editor(product, skus, revision);
         } catch (Exception e) { throw new IllegalStateException("生成商品编辑版本失败", e); }

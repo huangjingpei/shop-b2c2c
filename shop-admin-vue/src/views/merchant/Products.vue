@@ -60,7 +60,7 @@
     </el-card>
 
     <el-dialog v-model="editVisible" title="编辑商品资料与售价" width="760px" :close-on-click-modal="false" :close-on-press-escape="!editSaving" :show-close="!editSaving">
-      <el-alert title="交付类型固定；SKU编码保存后不可修改；库存仅供查看，请通过对应库存业务维护。删除SKU仅限零库存且无历史记录。" type="info" :closable="false" />
+      <el-alert title="交付类型固定；SKU编码保存后不可修改；库存仅供查看，请通过对应库存业务维护。删除SKU仅限零库存且无历史记录。规格修改须点击行内“保存规格”单独提交。" type="info" :closable="false" />
       <el-form v-if="editForm" :model="editForm" :disabled="editSaving || editorLoading" label-width="110px" style="margin-top: 16px;">
         <el-form-item label="平台类目" required>
           <el-select v-model="editForm.categoryId"><el-option v-for="c in categories" :key="c.id" :label="c.name" :value="c.id" /></el-select>
@@ -71,7 +71,12 @@
         <el-form-item v-if="editingType === 3" label="服务交付说明"><el-input v-model="editForm.serviceDesc" type="textarea" :rows="4" maxlength="10000" /></el-form-item>
         <el-table :data="editForm.skus">
           <el-table-column prop="skuCode" label="SKU编码" />
-          <el-table-column prop="specData" label="规格" />
+          <el-table-column label="规格(JSON)" min-width="230"><template #default="{ row }">
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <el-input v-model="row.specData" size="small" :disabled="skuEditSaving" />
+              <el-button v-if="String(row.specData ?? '').trim() !== specOriginals[String(row.id)]" link type="primary" size="small" :disabled="skuEditSaving" @click="saveSpec(row)">保存规格</el-button>
+            </div>
+          </template></el-table-column>
           <el-table-column label="售价(元)" width="190"><template #default="{ row }">
             <el-input-number v-model="row.price" :min="0.01" :max="99999999.99" :precision="2" style="width: 170px;" />
           </template></el-table-column>
@@ -176,7 +181,7 @@ import { goodsTypeLabel } from '../../utils/goodsType.mjs'
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import request from '../../api/request'
-import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload, skuCreatePayload, canRemoveSku } from '../../utils/productEditing.mjs'
+import { editorForm, updatePayload, statusAction, productStatusLabel, productCreationPayload, skuCreatePayload, skuSpecPayload, canRemoveSku } from '../../utils/productEditing.mjs'
 import { inventoryPayload, canAdjustInventory } from '../../utils/inventoryAdjustment.mjs'
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 import { merchantProductRows } from '../../utils/merchantProducts.mjs'
@@ -249,6 +254,7 @@ const openEditor = async row => {
   try {
     const { data } = await request.get(`/merchant/products/${row.id}/editor`)
     editForm.value = editorForm(data); editingId.value = row.id; editingType.value = data.product.goodsType
+    specOriginals.value = Object.fromEntries(data.skus.map(s => [String(s.id), String(s.specData ?? '').trim()]))
     editVisible.value = true
   } catch { /* 请求层显示服务端错误，不记录认证配置。 */ }
   finally { editorLoading.value = false }
@@ -270,12 +276,25 @@ const saveEditor = async () => {
   finally { editSaving.value = false }
 }
 
-// 增删SKU后只用服务端快照替换SKU列表与版本号，保留未保存的资料输入。
+// 增删SKU/保存规格后只用服务端快照替换SKU列表与版本号，保留未保存的资料输入。
 const newSku = ref({ skuCode: '', specData: '', price: 1, stockQuantity: 0 })
 const skuEditSaving = ref(false)
+const specOriginals = ref({})
 const applySkuSnapshot = data => {
   editForm.value.revision = data.revision
   editForm.value.skus = data.skus.map(s => ({ id: s.id, skuCode: s.skuCode, specData: s.specData, price: Number(s.price), stockQuantity: s.stockQuantity }))
+  specOriginals.value = Object.fromEntries(data.skus.map(s => [String(s.id), String(s.specData ?? '').trim()]))
+}
+const saveSpec = async row => {
+  if (skuEditSaving.value || editSaving.value || editorLoading.value) return
+  let payload
+  try { payload = skuSpecPayload(row.specData) } catch (error) { ElMessage.warning(error.message); return }
+  skuEditSaving.value = true
+  try {
+    const { data } = await request.patch(`/merchant/products/${editingId.value}/skus/${row.id}/spec`, { ...payload, revision: editForm.value.revision })
+    applySkuSnapshot(data); ElMessage.success('规格已保存')
+  } catch { /* 冲突或拒绝由请求层提示，输入保留供修正后重试。 */ }
+  finally { skuEditSaving.value = false }
 }
 const addSku = async () => {
   if (skuEditSaving.value || editSaving.value || editorLoading.value) return

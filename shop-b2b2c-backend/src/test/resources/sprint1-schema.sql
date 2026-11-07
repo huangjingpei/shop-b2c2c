@@ -144,7 +144,7 @@ CREATE TABLE IF NOT EXISTS `product_sku` (
   `product_id` BIGINT  NOT NULL COMMENT '关联商品ID',
   `merchant_id` BIGINT  NOT NULL COMMENT '所属店铺ID',
   `sku_code` VARCHAR(64) NOT NULL COMMENT 'SKU编码',
-  `spec_data` JSON NOT NULL COMMENT '规格KV JSON (如: {"时长":"1个月 VIP"})',
+  `spec_data` VARCHAR(255) NOT NULL COMMENT '规格KV JSON文本（夹具简化：生产为JSON列；H2 JSON列会把参数化字符串包成JSON字符串字面量，且应用层把规格当不透明文本校验、不使用JSON操作符，故用VARCHAR保持与应用的文本语义一致）',
   `price` DECIMAL(10,2) NOT NULL COMMENT '售价',
   `stock_quantity` INT NOT NULL DEFAULT 0 COMMENT '可用物理库存',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,

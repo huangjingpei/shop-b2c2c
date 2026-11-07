@@ -192,4 +192,34 @@ class ProductEditingServiceTest {
         assertEquals(409, assertThrows(BusinessException.class, () -> editing.removeSku(1L, 1L, 1L, new SkuRemoval("a".repeat(64)))).getCode());
         verify(mapper, never()).insertSku(any(), any(), any()); verify(mapper, never()).deleteSku(any(), any(), any());
     }
+    @Test void updateSpecPersistsOnlyChangedSpecWithoutTouchingPriceOrMinimum() {
+        when(mapper.updateSpec(1L, 1L, 1L, "{\"规格\":\"季卡\"}")).thenReturn(1);
+        assertNotNull(editing.updateSpec(1L, 1L, 1L, new SpecUpdate(revision(), "{\"规格\":\"季卡\"}")));
+        verify(mapper).updateSpec(1L, 1L, 1L, "{\"规格\":\"季卡\"}");
+        verify(mapper, never()).updatePrice(any(), any(), any(), any()); verify(mapper, never()).updateMinPrice(any(), any(), any());
+    }
+    @Test void updateSpecSkipsWriteWhenUnchanged() {
+        sku.setSpecData("{}");
+        assertNotNull(editing.updateSpec(1L, 1L, 1L, new SpecUpdate(editing.get(1L, 1L).revision(), "{}")));
+        verify(mapper, never()).updateSpec(any(), any(), any(), any());
+    }
+    @Test void updateSpecRejectsBadInputStaleRevisionAndForeignSku() {
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.updateSpec(1L, 1L, 1L, null)).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.updateSpec(1L, 1L, 1L, new SpecUpdate("bad", "{}"))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.updateSpec(1L, 1L, null, new SpecUpdate(revision(), "{}"))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.updateSpec(1L, 1L, 1L, new SpecUpdate(revision(), null))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.updateSpec(1L, 1L, 1L, new SpecUpdate(revision(), "[1]"))).getCode());
+        assertEquals(400, assertThrows(BusinessException.class, () -> editing.updateSpec(1L, 1L, 1L, new SpecUpdate(revision(), "x".repeat(256)))).getCode());
+        assertEquals(409, assertThrows(BusinessException.class, () -> editing.updateSpec(1L, 1L, 1L, new SpecUpdate("a".repeat(64), "{}"))).getCode());
+        assertEquals(404, assertThrows(BusinessException.class, () -> editing.updateSpec(1L, 1L, 9L, new SpecUpdate(revision(), "{}"))).getCode());
+        verify(mapper, never()).updateSpec(any(), any(), any(), any());
+    }
+    @Test void specParticipatesInRevisionFingerprint() {
+        sku.setSpecData("{}");
+        String before = editing.get(1L, 1L).revision();
+        when(mapper.updateSpec(1L, 1L, 1L, "{\"规格\":\"年卡\"}"))
+                .thenAnswer(call -> { sku.setSpecData("{\"规格\":\"年卡\"}"); return 1; }); // 模拟真实写后读到的最新快照
+        var after = editing.updateSpec(1L, 1L, 1L, new SpecUpdate(before, "{\"规格\":\"年卡\"}"));
+        assertNotEquals(before, after.revision());
+    }
 }

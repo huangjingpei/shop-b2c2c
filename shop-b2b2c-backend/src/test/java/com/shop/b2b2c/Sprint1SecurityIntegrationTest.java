@@ -676,6 +676,49 @@ class Sprint1SecurityIntegrationTest {
     }
 
     @Test
+    void specUpdatePersistsWithoutTouchingOrderSnapshots() {
+        // 建单时已快照spec_info（测试辅助方法不填，此处用SQL造哨兵值），之后修改规格不改写历史订单
+        var order = unpaid("spec-hist", 1);
+        jdbc.update("UPDATE trade_order_item SET spec_info='{\"规格\":\"下单时快照\"}' WHERE order_sn=?", order.getOrderSn());
+        String before = editing.get(1L, 1L).revision();
+        var first = editing.updateSpec(1L, 1L, 1L, new com.shop.b2b2c.dto.ProductEditingDTOs.SpecUpdate(before, "{\"规格\":\"季卡\"}"));
+        assertNotEquals(before, first.revision()); // 规格纳入revision指纹
+        assertEquals("{\"规格\":\"季卡\"}", skus.selectById(1).getSpecData());
+        assertEquals("{\"规格\":\"下单时快照\"}", items.findByOrderSn(order.getOrderSn()).get(0).getSpecInfo());
+        // 未变化提交不报错且版本不变
+        var again = editing.updateSpec(1L, 1L, 1L, new com.shop.b2b2c.dto.ProductEditingDTOs.SpecUpdate(
+                editing.get(1L, 1L).revision(), "{\"规格\":\"季卡\"}"));
+        assertEquals(first.revision(), again.revision());
+        // 越店按404处理
+        assertEquals(404, assertThrows(BusinessException.class, () -> editing.updateSpec(2L, 1L, 1L,
+                new com.shop.b2b2c.dto.ProductEditingDTOs.SpecUpdate("a".repeat(64), "{}"))).getCode());
+    }
+
+    @Test
+    void specUpdateHttpRequiresManagerAndStaysTenantScoped() throws Exception {
+        var body = java.util.Map.of("revision", editing.get(1L, 1L).revision(), "specData", "{\"规格\":\"月卡\"}");
+        mvc.perform(patch("/api/v1/merchant/products/1/skus/1/spec").contentType("application/json")
+                .content(json.writeValueAsString(body))).andExpect(status().isUnauthorized());
+        authUser("MERCHANT_STAFF", 1L); String staffToken = loginToken();
+        mvc.perform(patch("/api/v1/merchant/products/1/skus/1/spec").header("Authorization", "Bearer " + staffToken)
+                .contentType("application/json").content(json.writeValueAsString(body))).andExpect(status().isForbidden());
+        // D22：角色变化撤销旧令牌，管理员操作使用重新登录的令牌
+        jdbc.update("UPDATE sys_user SET role_code='MERCHANT_ADMIN' WHERE id=200");
+        String adminToken = loginToken();
+        mvc.perform(patch("/api/v1/merchant/products/1/skus/1/spec").header("Authorization", "Bearer " + adminToken)
+                .contentType("application/json").content(json.writeValueAsString(body)))
+                .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.revision").isNotEmpty());
+        assertEquals("{\"规格\":\"月卡\"}", jdbc.queryForObject("SELECT spec_data FROM product_sku WHERE id=1", String.class));
+        assertEquals("{\"规格\":\"月卡\"}", skus.selectById(1).getSpecData());
+        // 越店（本店管理员操作他店商品）404且目标规格不变
+        var foreign = java.util.Map.of("revision", editing.get(2L, 2L).revision(), "specData", "{\"规格\":\"篡改\"}");
+        mvc.perform(patch("/api/v1/merchant/products/2/skus/2/spec").header("Authorization", "Bearer " + adminToken)
+                .contentType("application/json").content(json.writeValueAsString(foreign)))
+                .andExpect(jsonPath("$.code").value(404));
+        assertEquals("{}", skus.selectById(2).getSpecData());
+    }
+
+    @Test
     void editingDoesNotRestoreReservedStockAndDoesNotBlockOwnerRelease() {
         String revision = editing.get(1L, 1L).revision();
         intent("edit-reserved"); var lock = payments.preLockInventory("edit-reserved");

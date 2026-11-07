@@ -1,7 +1,7 @@
 /*
  * 文件：productEditing.mjs
- * 用途：商品发布初始库存、编辑表单快照、提交白名单、上下架规则及SKU增删校验。
- * 维护注意：自动卡密发布数量为0，由导入生成；库存/类型/归属/规格编码不进入编辑请求。revision必须来自服务端快照；前端规则不替代后端事务、租户和价格校验。SKU删除按钮只在零库存且非最后一个时可用，历史记录拦截由后端兜底。
+ * 用途：商品发布初始库存、编辑表单快照、提交白名单、上下架、SKU增删及规格维护校验。
+ * 维护注意：自动卡密发布数量为0，由导入生成；库存/类型/归属/SKU编码不进入编辑请求。revision必须来自服务端快照；前端规则不替代后端事务、租户和价格校验。SKU删除按钮只在零库存且非最后一个时可用，历史记录拦截由后端兜底；规格维护只提交spec_data，经行内单独保存。
  */
 export function editorForm(snapshot) {
   const p = snapshot.product
@@ -27,15 +27,19 @@ export function updatePayload(form) {
   return { revision: form.revision, categoryId: form.categoryId, title: form.title, subTitle: form.subTitle,
     mainImage: form.mainImage, serviceDesc: form.serviceDesc, skus }
 }
+export function skuSpecPayload(specData) {
+  const spec = String(specData ?? '').trim()
+  if (!spec || spec.length > 255) throw new Error('规格须为JSON对象且不超过255字符')
+  try {
+    const parsed = JSON.parse(spec)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+  } catch { throw new Error('规格须为JSON对象且不超过255字符') }
+  return { specData: spec }
+}
 export function skuCreatePayload(goodsType, draft) {
   const skuCode = String(draft?.skuCode ?? '').trim()
   if (!skuCode || skuCode.length > 64) throw new Error('SKU编码必填且不超过64字符')
-  const specData = String(draft?.specData ?? '').trim()
-  if (!specData || specData.length > 255) throw new Error('规格须为JSON对象且不超过255字符')
-  try {
-    const parsed = JSON.parse(specData)
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
-  } catch { throw new Error('规格须为JSON对象且不超过255字符') }
+  const { specData } = skuSpecPayload(draft?.specData)
   const price = Number(draft?.price)
   if (!Number.isFinite(price) || price <= 0 || price > 99999999.99
     || Math.abs(price * 100 - Math.round(price * 100)) > 0.000001) throw new Error('SKU售价须为正数、最多两位小数')

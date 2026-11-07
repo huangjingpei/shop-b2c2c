@@ -54,6 +54,9 @@ public interface ProductEditingMapper {
     @Delete("DELETE FROM product_sku WHERE id=#{sku} AND product_id=#{id} AND merchant_id=#{merchant}")
     int deleteSku(@Param("id") Long id, @Param("merchant") Long merchant, @Param("sku") Long sku);
 
+    @Update("UPDATE product_sku SET spec_data=#{spec} WHERE id=#{sku} AND product_id=#{id} AND merchant_id=#{merchant}")
+    int updateSpec(@Param("id") Long id, @Param("merchant") Long merchant, @Param("sku") Long sku, @Param("spec") String spec);
+
     @Update("UPDATE product SET min_price=#{minimum},updated_at=CURRENT_TIMESTAMP WHERE id=#{id} AND merchant_id=#{merchant}")
     int updateMinPrice(@Param("id") Long id, @Param("merchant") Long merchant, @Param("minimum") BigDecimal minimum);
 }
