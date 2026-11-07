@@ -55,7 +55,9 @@
 
         <div class="form-foot">
           <span>还没有店铺？</span>
-          <router-link to="/apply" class="apply-link">我要开店 / 查询审核进度</router-link>
+          <router-link to="/apply" class="apply-link">我要开店</router-link>
+          <span class="divider">|</span>
+          <router-link to="/apply?mode=query" class="apply-link">查询审核进度</router-link>
         </div>
       </div>
     </div>
@@ -295,9 +297,14 @@ onMounted(loadCaptcha)
   margin-top: 22px;
   display: flex;
   justify-content: center;
+  align-items: center;
   gap: 6px;
   font-size: 13px;
   color: #6b7280;
+}
+
+.divider {
+  color: #d1d5db;
 }
 
 .apply-link {

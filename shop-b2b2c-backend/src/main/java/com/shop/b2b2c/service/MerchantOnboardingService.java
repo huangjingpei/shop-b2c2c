@@ -241,6 +241,21 @@ public class MerchantOnboardingService {
         return application;
     }
 
+    /**
+     * 公开查询入口：凭手机号 + 查询凭证定位申请，不依赖申请 ID；同手机号多次申请取凭证匹配的最新一条。
+     */
+    public MerchantOnboardingApplication findByPhoneAndToken(String contactPhone, String accessToken) {
+        if (contactPhone == null || contactPhone.isBlank()) return null;
+        java.util.List<MerchantOnboardingApplication> apps = applicationMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<MerchantOnboardingApplication>()
+                        .eq(MerchantOnboardingApplication::getContactPhone, contactPhone.trim())
+                        .orderByDesc(MerchantOnboardingApplication::getId));
+        for (MerchantOnboardingApplication app : apps) {
+            if (tokenMatches(app, accessToken)) return app;
+        }
+        return null;
+    }
+
     @Transactional(rollbackFor = Exception.class)
     public MerchantOnboardingApplication updatePublic(Long id, String accessToken, ApplicationForm form) {
         requireByToken(id, accessToken);

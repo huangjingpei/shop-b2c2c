@@ -121,6 +121,18 @@ public class PublicOnboardingController {
         return R.ok(onboardingService.publicStatus(id, token, phone));
     }
 
+    @Operation(summary = "凭手机号 + 凭证查询进度（无需申请ID，供查询入口使用）")
+    @GetMapping("/applications/by-phone")
+    public R<Map<String, Object>> statusByPhone(
+            @RequestHeader(value = "X-Onboarding-Token", required = false) String token,
+            @RequestParam String phone) {
+        MerchantOnboardingApplication application = onboardingService.findByPhoneAndToken(phone, token);
+        if (application == null) {
+            throw new BusinessException(404, "入驻申请不存在或查询凭证无效");
+        }
+        return R.ok(onboardingService.publicStatus(application.getId(), token, phone));
+    }
+
     @Operation(summary = "当前生效协议列表（类型/版本/标题/哈希/快照地址）")
     @GetMapping("/protocols")
     public R<List<Map<String, Object>>> protocols(@RequestParam(required = false) String type) {

@@ -17,8 +17,13 @@
 <configuration>
 
     <property name="LOG_PATH" value="${LOG_PATH:-logs}"/>
+    <!--
+      注意：仅使用 logback-classic 原生转换词（%d/%p/%t/%logger/%m/%n/%xEx 及内置前景色 %cyan/%red/%yellow/%gray 等），
+      不使用 Spring Boot 自定义的 %clr / %highlight，避免启动阶段转换类未注册导致 Logback 配置解析失败。
+      如需级别着色，可后续由 logback 原生 EvaluatorFilter 或自定义 Converter 实现。
+    -->
     <property name="CONSOLE_PATTERN_LOCAL"
-              value="%clr(%d{HH:mm:ss.SSS}){faint} %clr(%5p) %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} : %m%n%xEx"/>
+              value="%d{HH:mm:ss.SSS} %5p [%15.15t] %cyan(%-40.40logger{39}) : %m%n%xEx"/>
     <property name="PATTERN_PROD"
               value="%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%15.15t] %-40.40logger{39} : %m%n%xEx"/>
 

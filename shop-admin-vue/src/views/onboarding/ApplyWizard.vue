@@ -28,6 +28,25 @@
         <p>准备资质 → 在线提交 → 平台人工审核（1-3 个工作日）。个人身份证、个体工商户、企业均可申请，审核通过后系统自动开通店铺与店长账号。</p>
       </div>
 
+      <!-- 查询模式：凭手机号 + 查询凭证查进度，不依赖本机保存的草稿 -->
+      <section v-if="queryMode && !draft.token" class="panel query-panel">
+        <div class="panel-head">
+          <h2>查询审核进度</h2>
+          <p>输入申请时填写的手机号与创建申请后展示的查询凭证（凭证只在创建时显示一次，丢失可联系平台）。</p>
+        </div>
+        <el-form label-width="100px" label-position="left" @submit.prevent="submitQuery">
+          <el-form-item label="申请手机号" required>
+            <el-input v-model="queryForm.phone" placeholder="申请时填写的联系电话" maxlength="20" />
+          </el-form-item>
+          <el-form-item label="查询凭证" required>
+            <el-input v-model="queryForm.token" placeholder="创建申请后返回的 accessToken" maxlength="128" show-password />
+          </el-form-item>
+          <div class="panel-actions" style="justify-content:flex-start">
+            <el-button type="primary" :loading="querying" @click="submitQuery">查询进度</el-button>
+          </div>
+        </el-form>
+      </section>
+
       <el-steps :active="step" align-center finish-status="success" class="steps">
         <el-step title="填写资料" />
         <el-step title="上传证件" />
@@ -211,18 +230,25 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElButton, ElMessage, ElUpload } from 'element-plus'
 import request from '../../api/request'
+
+const route = useRoute()
+const queryMode = ref(route.query.mode === 'query')
 
 const DRAFT_KEY = 'onboardingDraft'
 const step = ref(0)
 const saving = ref(false)
 const submitting = ref(false)
 const locked = ref(false)
+const querying = ref(false)
 const attachments = ref([])
 const statusView = ref({})
 const protocols = ref([])
 const consentChecks = reactive({})
+
+const queryForm = reactive({ phone: '', token: '' })
 
 const form = reactive({
   subjectType: 'INDIVIDUAL',
@@ -482,6 +508,19 @@ async function submitApplication() {
   }
 }
 
+/** 清除本机保存的失效凭证（如申请已删除/凭证过期），回到空白申请表单，避免重复报错。 */
+function clearStaleDraft(reason) {
+  localStorage.removeItem(DRAFT_KEY)
+  draft.id = null
+  draft.token = ''
+  draft.phone = ''
+  attachments.value = []
+  statusView.value = {}
+  locked.value = false
+  step.value = 0
+  if (reason) ElMessage.info(reason)
+}
+
 async function refreshStatus() {
   if (!draft.id || !draft.token) return
   try {
@@ -497,8 +536,50 @@ async function refreshStatus() {
     if (res.data.status === 'APPROVED' || res.data.status === 'OPENED') {
       locked.value = true
     }
-  } catch {
+  } catch (error) {
+    // 凭证不存在/失效：静默清理本机草稿，回到空白表单，不再弹错误。
+    if (error?.businessCode === 404 || error?.response?.status === 404) {
+      clearStaleDraft('本机保存的申请凭证已失效，已为你回到开店申请表单')
+      return
+    }
     ElMessage.warning('进度查询失败，请确认查询凭证与手机号一致')
+  }
+}
+
+async function submitQuery() {
+  const phone = queryForm.phone.trim()
+  const token = queryForm.token.trim()
+  if (!phone) { ElMessage.warning('请输入申请手机号'); return }
+  if (!token) { ElMessage.warning('请输入查询凭证'); return }
+  querying.value = true
+  try {
+    const res = await request.get('/onboarding/applications/by-phone', {
+      params: { phone },
+      headers: { 'X-Onboarding-Token': token },
+      skipErrorToast: true
+    })
+    // 查询成功后把申请写入本机草稿，便于后续继续操作；凭证哈希只在后端校验。
+    draft.id = res.data.id
+    draft.token = token
+    draft.phone = phone
+    form.contactPhone = phone
+    persistDraft()
+    statusView.value = res.data
+    if (['SUBMITTED', 'REVIEWING', 'APPROVED', 'OPENED', 'WITHDRAWN', 'REJECTED'].includes(res.data.status)) {
+      locked.value = true
+      step.value = 3
+    } else {
+      await loadAttachments()
+      step.value = res.data.status === 'SUPPLEMENT_REQUIRED' ? 1 : 0
+    }
+  } catch (error) {
+    if (error?.businessCode === 404 || error?.response?.status === 404) {
+      ElMessage.warning('未找到该申请，请确认手机号与查询凭证一致')
+    } else {
+      ElMessage.warning('查询失败，请稍后重试')
+    }
+  } finally {
+    querying.value = false
   }
 }
 
@@ -548,6 +629,8 @@ function formatDate(value) {
 
 onMounted(async () => {
   loadDraft()
+  // 查询模式：不自动加载本机草稿，直接展示查询表单，避免失效凭证弹错。
+  if (queryMode.value && !draft.token) return
   if (!draft.token) return
   await refreshStatus()
   if (['SUBMITTED', 'REVIEWING', 'APPROVED', 'OPENED', 'WITHDRAWN', 'REJECTED'].includes(statusView.value.status)) {
