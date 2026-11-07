@@ -39,4 +39,14 @@ public interface ReconciliationDifferenceMapper extends BaseMapper<Reconciliatio
                 .orderByAsc(ReconciliationDifference::getId)
                 .last("LIMIT " + Math.min(Math.max(limit, 1), 500)));
     }
+
+    /** F09 账单状态：账期窗口内是否存在未关闭差异（DISPUTED/RETRY/MANUAL 待办口径与列表一致）。 */
+    default long countOpenByMerchantAndBusinessDateBetween(Long merchantId, java.time.LocalDate from,
+                                                           java.time.LocalDate to) {
+        return selectCount(new LambdaQueryWrapper<ReconciliationDifference>()
+                .eq(ReconciliationDifference::getMerchantId, merchantId)
+                .in(ReconciliationDifference::getStatus, "DISPUTED", "RETRY", "MANUAL")
+                .ge(ReconciliationDifference::getBusinessDate, from)
+                .lt(ReconciliationDifference::getBusinessDate, to));
+    }
 }

@@ -95,6 +95,13 @@ const routes = [
         // G31：财务复核人入口仅超管可见；页面内的复核人选择不改变后端角色校验。
         meta: { title: '财务复核与结算', role: 'SUPERADMIN' }
       },
+      {
+        path: '/admin/billing',
+        name: 'AdminBilling',
+        component: () => import('../views/admin/Billing.vue'),
+        // F09：全平台商户账单查询与重算入口，仅超管；重算为聚合覆盖，不触碰结算批次锁定语义。
+        meta: { title: '商户账单治理', role: 'SUPERADMIN' }
+      },
 
       // 商家工作台视角
       {
@@ -127,6 +134,13 @@ const routes = [
         name: 'MerchantOrders',
         component: () => import('../views/merchant/Orders.vue'),
         meta: { title: '本店订单与履约', requiresMerchant: true }
+      },
+      {
+        path: '/merchant/billing',
+        name: 'MerchantBilling',
+        component: () => import('../views/merchant/Billing.vue'),
+        // F09：账单属财务展示数据，仅店长可见（与卡密库同口径，路由守卫与后端接口双重校验）。
+        meta: { title: '本店账单', requiresMerchant: true, role: 'MERCHANT_ADMIN' }
       }
     ]
   }

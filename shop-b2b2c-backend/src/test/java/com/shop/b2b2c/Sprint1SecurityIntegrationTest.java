@@ -109,7 +109,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -4754,5 +4754,148 @@ class Sprint1SecurityIntegrationTest {
         mvc.perform(get("/api/v1/public/products/1"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.product.detailImages").isEmpty());
+    }
+
+    // ==================== F09 商户账单生成集成回归 ====================
+
+    private void billingOrder(String sn, long merchantId, String status, String pay, String fee,
+                              int peerPayType, java.time.LocalDateTime createdAt) {
+        jdbc.update("INSERT INTO trade_order(order_sn,merchant_id,buyer_contact,query_token,goods_type,total_amount,pay_amount,commission_amount,fee_amount,order_status,peer_pay_type,created_at) "
+                        + "VALUES(?,?,?,?,1,?,?,?,?,?,?,?)",
+                sn, merchantId, "fixture-contact", "q-" + sn, new java.math.BigDecimal(pay), new java.math.BigDecimal(pay),
+                new java.math.BigDecimal(fee), new java.math.BigDecimal(fee), status, peerPayType, createdAt);
+    }
+
+    private void billingRefund(String sn, long merchantId, String amount, String feeRefund, String source, java.time.LocalDateTime successAt) {
+        jdbc.update("INSERT INTO trade_refund(refund_no,order_id,order_sn,merchant_id,channel,source,idempotency_key,refund_amount,fee_refund_amount,status,success_at) "
+                        + "VALUES(?,0,?,?,'MOCK',?,?,?,?,?,?)",
+                "RF-" + sn, sn, merchantId, source, "IK-" + sn, new java.math.BigDecimal(amount),
+                new java.math.BigDecimal(feeRefund), "SUCCESS", successAt);
+    }
+
+    @Test
+    void adminRegenerateAggregatesOrdersAndRefundsForDailyPeriod() throws Exception {
+        java.time.LocalDateTime day = java.time.LocalDateTime.of(2026, 10, 15, 10, 0);
+        billingOrder("B-DIRECT", 1L, "PAID", "100.00", "3.00", 0, day);
+        billingOrder("B-PEER", 1L, "COMPLETED", "50.00", "1.50", 1, day.plusHours(1));
+        billingRefund("B-REFUND", 1L, "10.00", "0.30", "ORDER", day.plusHours(2));
+        authUser("SUPERADMIN", null); String token = loginToken();
+
+        mvc.perform(post("/api/v1/admin/billing/statements/regenerate").header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of("shopId", 1, "periodDate", "2026-10-15", "periodType", "DAILY"))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.shopId").value(1))
+                .andExpect(jsonPath("$.data.gmv").value(150.0))
+                .andExpect(jsonPath("$.data.peerPayGmv").value(50.0))
+                .andExpect(jsonPath("$.data.directPayGmv").value(100.0))
+                .andExpect(jsonPath("$.data.ordersCnt").value(2))
+                .andExpect(jsonPath("$.data.refundAmt").value(10.0))
+                .andExpect(jsonPath("$.data.feeAmt").value(4.2))
+                .andExpect(jsonPath("$.data.status").value("SETTLED"));
+    }
+
+    @Test
+    void duplicateRegenerateKeepsSingleRowAndSameAmounts() throws Exception {
+        billingOrder("B-ONCE", 1L, "PAID", "88.00", "2.64", 0,
+                java.time.LocalDateTime.of(2026, 10, 20, 9, 0));
+        authUser("SUPERADMIN", null); String token = loginToken();
+        String body = json.writeValueAsString(java.util.Map.of("shopId", 1, "periodDate", "2026-10-20", "periodType", "DAILY"));
+
+        mvc.perform(post("/api/v1/admin/billing/statements/regenerate").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content(body)).andExpect(status().isOk());
+        mvc.perform(post("/api/v1/admin/billing/statements/regenerate").header("Authorization", "Bearer " + token)
+                .contentType("application/json").content(body)).andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.gmv").value(88.0));
+
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM billing_statement WHERE shop_id=1 AND period_date='2026-10-20'", Integer.class));
+    }
+
+    @Test
+    void merchantBillingOnlyReturnsOwnShopStatements() throws Exception {
+        billingOrder("B-M1", 1L, "PAID", "10.00", "0.30", 0,
+                java.time.LocalDateTime.of(2026, 10, 22, 9, 0));
+        billingOrder("B-M2", 2L, "PAID", "20.00", "0.60", 0,
+                java.time.LocalDateTime.of(2026, 10, 22, 9, 0));
+        authUser("SUPERADMIN", null); String adminToken = loginToken();
+        for (long shop : new long[]{1L, 2L}) {
+            mvc.perform(post("/api/v1/admin/billing/statements/regenerate").header("Authorization", "Bearer " + adminToken)
+                    .contentType("application/json")
+                    .content(json.writeValueAsString(java.util.Map.of("shopId", shop, "periodDate", "2026-10-22", "periodType", "DAILY"))))
+                    .andExpect(status().isOk());
+        }
+
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("MERCHANT_ADMIN", 1L); String merchantToken = loginToken();
+        mvc.perform(get("/api/v1/merchant/billing/statements").header("Authorization", "Bearer " + merchantToken)
+                        .param("periodType", "DAILY").param("from", "2026-10-22").param("to", "2026-10-22"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.total").value(1))
+                .andExpect(jsonPath("$.data.list[0].shopId").value(1))
+                .andExpect(jsonPath("$.data.list[0].gmv").value(10.0));
+    }
+
+    @Test
+    void billingEndpointsEnforceAuthenticationAndRole() throws Exception {
+        // 匿名 401
+        mvc.perform(get("/api/v1/merchant/billing/statements").param("periodType", "DAILY")
+                        .param("from", "2026-10-01").param("to", "2026-10-31"))
+                .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/v1/admin/billing/statements")).andExpect(status().isUnauthorized());
+
+        // 商家无权调用超管重算
+        authUser("MERCHANT_ADMIN", 1L); String merchantToken = loginToken();
+        mvc.perform(post("/api/v1/admin/billing/statements/regenerate").header("Authorization", "Bearer " + merchantToken)
+                .contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("shopId", 1, "periodDate", "2026-10-15", "periodType", "DAILY"))))
+                .andExpect(status().isForbidden());
+
+        // 超管非法请求：类型、不存在店铺
+        cn.dev33.satoken.stp.StpUtil.logout(200L);
+        jdbc.update("DELETE FROM sys_user WHERE id=200");
+        authUser("SUPERADMIN", null); String adminToken = loginToken();
+        mvc.perform(post("/api/v1/admin/billing/statements/regenerate").header("Authorization", "Bearer " + adminToken)
+                .contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("shopId", 1, "periodDate", "2026-10-15", "periodType", "WEEKLY"))))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        mvc.perform(post("/api/v1/admin/billing/statements/regenerate").header("Authorization", "Bearer " + adminToken)
+                .contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("shopId", 999, "periodDate", "2026-10-15", "periodType", "DAILY"))))
+                .andExpect(status().isNotFound()).andExpect(jsonPath("$.code").value(404));
+    }
+
+    @Test
+    void monthlyBillingNormalizesToFirstDayAndAggregatesFullMonth() throws Exception {
+        billingOrder("B-MO-1", 1L, "PAID", "30.00", "0.90", 0,
+                java.time.LocalDateTime.of(2026, 9, 5, 9, 0));
+        billingOrder("B-MO-2", 1L, "PAID", "70.00", "2.10", 0,
+                java.time.LocalDateTime.of(2026, 9, 28, 9, 0));
+        authUser("SUPERADMIN", null); String token = loginToken();
+
+        mvc.perform(post("/api/v1/admin/billing/statements/regenerate").header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of("shopId", 1, "periodDate", "2026-09-20", "periodType", "MONTHLY"))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.periodDate").value("2026-09-01"))
+                .andExpect(jsonPath("$.data.gmv").value(100.0)).andExpect(jsonPath("$.data.ordersCnt").value(2))
+                .andExpect(jsonPath("$.data.feeAmt").value(3.0));
+    }
+
+    @Test
+    void adminBillingCsvExportContainsHeaderAndEscapedRows() throws Exception {
+        billingOrder("B-CSV", 1L, "PAID", "100.00", "3.00", 0,
+                java.time.LocalDateTime.of(2026, 10, 25, 9, 0));
+        authUser("SUPERADMIN", null); String token = loginToken();
+        mvc.perform(post("/api/v1/admin/billing/statements/regenerate").header("Authorization", "Bearer " + token)
+                .contentType("application/json")
+                .content(json.writeValueAsString(java.util.Map.of("shopId", 1, "periodDate", "2026-10-25", "periodType", "DAILY"))))
+                .andExpect(status().isOk());
+
+        String csv = mvc.perform(get("/api/v1/admin/billing/statements/export").header("Authorization", "Bearer " + token)
+                        .param("periodType", "DAILY").param("from", "2026-10-25").param("to", "2026-10-25"))
+                .andExpect(status().isOk()).andExpect(header().string("Content-Type", "text/csv;charset=UTF-8"))
+                .andReturn().getResponse().getContentAsString();
+        String[] lines = csv.split("\n");
+        assertTrue(lines[0].startsWith("period_date,period_type,shop_id"));
+        assertTrue(lines[1].contains("store1") && lines[1].contains("100.00"));
     }
 }

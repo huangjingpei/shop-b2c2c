@@ -1059,17 +1059,7 @@ public class ReconciliationService {
     }
 
     private String cell(String value) {
-        if (value == null) {
-            return "";
-        }
-        String safe = value.replace("\"", "\"\"");
-        if (safe.startsWith("=") || safe.startsWith("+") || safe.startsWith("-") || safe.startsWith("@")) {
-            safe = "'" + safe;
-        }
-        if (safe.contains(",") || safe.contains("\"") || safe.contains("\n") || safe.contains("\r")) {
-            return "\"" + safe + "\"";
-        }
-        return safe;
+        return com.shop.b2b2c.common.CsvEscaper.escape(value);
     }
 
     private static final class Counts {

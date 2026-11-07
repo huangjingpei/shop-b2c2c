@@ -337,7 +337,8 @@ CREATE TABLE IF NOT EXISTS `billing_statement` (
   `fee_amt` DECIMAL(12,2) NOT NULL DEFAULT 0.00 COMMENT '平台软件技术服务费扣收额',
   `status` VARCHAR(32) NOT NULL DEFAULT 'SETTLED' COMMENT '账单状态: PENDING, SETTLED, DISPUTED',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY `uk_shop_period` (`shop_id`, `period_date`, `period_type`)
 );
 
 -- 12. 买家维权投诉与超管仲裁工单表
@@ -634,6 +635,7 @@ CREATE TABLE IF NOT EXISTS reconciliation_difference (
   biz_id BIGINT NULL,
   order_sn VARCHAR(64) NULL,
   channel_trade_no VARCHAR(128) NULL,
+  business_date DATE NULL,
   expected_amount DECIMAL(12,2) NULL,
   actual_amount DECIMAL(12,2) NULL,
   status VARCHAR(24) NOT NULL DEFAULT 'DISPUTED',

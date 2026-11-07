@@ -92,6 +92,10 @@
               <el-icon><Wallet /></el-icon>
               <span>财务复核与结算</span>
             </el-menu-item>
+            <el-menu-item index="/admin/billing">
+              <el-icon><Money /></el-icon>
+              <span>商户账单治理</span>
+            </el-menu-item>
           </template>
 
           <!-- 商家工作台菜单 -->
@@ -116,6 +120,11 @@
             <el-menu-item index="/merchant/orders">
               <el-icon><List /></el-icon>
               <span>订单履约与发货</span>
+            </el-menu-item>
+            <!-- F09：账单与卡密库同口径，仅店长可见；员工直接输入地址也会被路由守卫与后端双重拒绝。 -->
+            <el-menu-item v-if="roleCode !== 'MERCHANT_STAFF'" index="/merchant/billing">
+              <el-icon><Money /></el-icon>
+              <span>本店账单</span>
             </el-menu-item>
           </template>
         </el-menu>
