@@ -5,6 +5,7 @@
  * T32 新增 payChannel（真实支付渠道 WECHAT/ALIPAY）：新订单按此写入 trade_order.pay_channel；payment_channel_type 的 A/B/C 仅保留为迁移来源。
  * O9 新增 idCardExpiry/licenseExpiry（LocalDate，可空）：审核通过时从入驻申请快照的证件有效期，
  * 是资质到期提醒、限制上新、逾期30天自动冻结的唯一数据源；商家更新有效期只写本表两列。
+ * F07 新增 shippingFee（可空兜底为0）：实物订单每单固定运费，0=包邮；只计入实付与商家应收，不进入服务费基数。
  */
 package com.shop.b2b2c.entity;
 
@@ -32,6 +33,8 @@ public class MerchantStore {
     private String contactPhone;
     private Integer status = 1; // 0-待审, 1-正常, 2-打烊, 3-封禁
     private BigDecimal commissionRate = new BigDecimal("3.00");
+    /** F07 实物订单每单固定运费（元），0 表示包邮；仅实物订单计入实付，不计入服务费基数。 */
+    private BigDecimal shippingFee;
 
     // ==================== 增量商业变现与合规直收扩展 ====================
     private BigDecimal monthlyFee = BigDecimal.ZERO; // 月度技术服务费 (前期=0)

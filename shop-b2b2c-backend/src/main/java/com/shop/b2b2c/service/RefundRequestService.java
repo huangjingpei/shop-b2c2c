@@ -52,6 +52,10 @@ public class RefundRequestService {
         if (!REFUNDABLE_STATUSES.contains(order.getOrderStatus())) {
             throw new BusinessException(409, "当前订单状态不支持申请退款");
         }
+        // F07：已完成订单自 finish_time 起算售后受理期，超期不再接受新申请；未完成/缺完成时间不拦截。
+        if (!com.shop.b2b2c.common.OrderLifecycle.withinAfterSale(order, LocalDateTime.now())) {
+            throw new BusinessException(409, "订单已超过售后受理期，无法申请退款");
+        }
         BigDecimal amount = req.refundAmount();
         if (amount == null || amount.signum() <= 0 || amount.scale() > 2) {
             throw new BusinessException(400, "退款金额不合法");

@@ -49,13 +49,15 @@ public interface MerchantStoreMapper extends BaseMapper<MerchantStore> {
             + "notice = COALESCE(#{notice}, notice), "
             + "logo_url = COALESCE(#{logoUrl}, logo_url), "
             + "contact_phone = COALESCE(#{contactPhone}, contact_phone), "
-            + "custom_pay_qrcode = COALESCE(#{customPayQrcode}, custom_pay_qrcode) "
+            + "custom_pay_qrcode = COALESCE(#{customPayQrcode}, custom_pay_qrcode), "
+            + "shipping_fee = COALESCE(#{shippingFee}, shipping_fee) "
             + "WHERE id = #{id}")
     int updateProfileOnly(@org.apache.ibatis.annotations.Param("id") Long id,
                           @org.apache.ibatis.annotations.Param("notice") String notice,
                           @org.apache.ibatis.annotations.Param("logoUrl") String logoUrl,
                           @org.apache.ibatis.annotations.Param("contactPhone") String contactPhone,
-                          @org.apache.ibatis.annotations.Param("customPayQrcode") String customPayQrcode);
+                          @org.apache.ibatis.annotations.Param("customPayQrcode") String customPayQrcode,
+                          @org.apache.ibatis.annotations.Param("shippingFee") java.math.BigDecimal shippingFee);
 
     @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET "
             + "monthly_fee = COALESCE(#{monthlyFee}, monthly_fee), "

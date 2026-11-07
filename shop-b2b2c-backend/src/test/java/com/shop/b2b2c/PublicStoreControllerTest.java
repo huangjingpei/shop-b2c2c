@@ -38,7 +38,7 @@ class PublicStoreControllerTest {
             .build()
             .perform(get("/api/v1/public/stores/7"))
             .andExpect(status().isOk()).andExpect(header().string("Cache-Control", "no-store"))
-            .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.length()").value(6))
+            .andExpect(jsonPath("$.code").value(200)).andExpect(jsonPath("$.data.length()").value(7))
             .andExpect(jsonPath("$.data.id").value("7")).andExpect(jsonPath("$.data.storeName").value("空店"))
             .andExpect(jsonPath("$.data.notice").value("真实公告"))
             .andExpect(jsonPath("$.data.contactPhone").value("public-contact"))

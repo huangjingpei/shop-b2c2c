@@ -5,6 +5,8 @@
  * T33：refundedAmount/feeRefundedAmount 含处理中预占，不能据此单独把订单视为已退款；订单是否 REFUNDED 由 trade_refund 成功记录累计判断。
  * T34：新增订单级服务费快照字段；下单时按商家当前费率固化，支付成功后按快照扣费，后续费率调整不得回溯已下单订单。
  * T40：platformTradeNo 仅阶段二平台代收写入；阶段一必须保持为空，不得用商家直收流水回填。
+ * F07：receiverName/receiverPhone/receiverRegion/receiverAddress 为下单时实物收货快照，仅 goodsType=1 写入；
+ *      数字商品保持为空；shippingAmount 单独快照，不参与服务费计费基数。
  */
 package com.shop.b2b2c.entity;
 
@@ -64,6 +66,15 @@ public class TradeOrder {
     private String trackingNumber;
     private LocalDateTime deliveryTime;
     private LocalDateTime finishTime;
+    // ==================== F07 实物收货地址快照 ====================
+    /** 收件人姓名；仅实物订单(goodsType=1)在创建时快照，数字商品与定制服务保持为空。 */
+    private String receiverName;
+    /** 收件人手机号；仅实物订单快照，用于物流面单，不替代 buyerContact 查单凭据。 */
+    private String receiverPhone;
+    /** 省市区文本快照；仅实物订单快照。 */
+    private String receiverRegion;
+    /** 详细收货地址；仅实物订单快照。 */
+    private String receiverAddress;
     private String queryToken;
 
     // ==================== 增量代付与两段式锁扩展 ====================

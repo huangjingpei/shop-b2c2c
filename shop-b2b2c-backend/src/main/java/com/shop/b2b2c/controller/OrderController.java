@@ -1,7 +1,7 @@
 /*
  * 文件：OrderController.java
  * 用途：待付款建单、免登录查单、商家发货、平台订单及统一状态统计入口；建单代付编码复用PeerStatus。
- * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入。D25：统计接口同一窗口合入 trade_refund 成功账本（success_at 切日）得出实际退款/净额/扣冲正佣金，扣冲正佣金仍非到账证明。T24：商家/平台订单列表改为 created_at+id keyset 分页（不透明 cursor，非法参数 400），返回 page.total/hasMore/nextCursor，禁止 OFFSET 与静默截断。T26：推单海报在幂等事务提交后由 attachPoster 生成，不在建单事务内光栅化。Q13-A（2026-11-06 口径澄清）：实物订单发货对店长与员工开放；推单/改价、资金操作、卡密明文与虚拟履约仍仅店长。T36：建单/查单限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。
+ * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入。D25：统计接口同一窗口合入 trade_refund 成功账本（success_at 切日）得出实际退款/净额/扣冲正佣金，扣冲正佣金仍非到账证明。T24：商家/平台订单列表改为 created_at+id keyset 分页（不透明 cursor，非法参数 400），返回 page.total/hasMore/nextCursor，禁止 OFFSET 与静默截断。T26：推单海报在幂等事务提交后由 attachPoster 生成，不在建单事务内光栅化。Q13-A（2026-11-06 口径澄清）：实物订单发货对店长与员工开放；推单/改价、资金操作、卡密明文与虚拟履约仍仅店长。T36：建单/查单限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。F07：实物订单建单强制收件人/手机号/省市区/详细地址快照，并按店铺固定运费计入实付；数字商品免地址。买家可凭领取凭证确认收货（SHIPPED→COMPLETED）；发货超期自动完成与售后时效口径见OrderLifecycle。
  */
 package com.shop.b2b2c.controller;
 
@@ -60,6 +60,7 @@ public class OrderController {
     private final com.shop.b2b2c.service.MerchantAccountService merchantAccountService;
     /** O4 商家写接口营业状态闸门：发货/推单/虚拟履约前店铺必须 status==1。 */
     private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
+    private final com.shop.b2b2c.service.OrderReceiptService receiptService;
 
     @Data
     public static class CheckoutDTO {
@@ -72,6 +73,11 @@ public class OrderController {
         private Integer quantity;
         private String buyerContact; // 手机号或邮箱 (免密查单凭据)
         private String paymentChannel; // WECHAT / ALIPAY
+        // F07：实物订单必填的收货地址快照；数字商品/定制服务忽略这四项。
+        private String receiverName;
+        private String receiverPhone;
+        private String receiverRegion;
+        private String receiverAddress;
     }
 
     @Operation(summary = "【公开】创建单店待付款订单（不扣库存、不履约）")
@@ -129,8 +135,17 @@ public class OrderController {
         String queryToken = UUID.randomUUID().toString().replace("-", "");
 
         // 计算金额；费率一律取当前生效政策，不再读取 merchant_store.commission_rate。
-        BigDecimal totalAmount = sku.getPrice().multiply(new BigDecimal(dto.getQuantity()));
-        TradeGuards.requireMoney(totalAmount);
+        BigDecimal goodsAmount = sku.getPrice().multiply(new BigDecimal(dto.getQuantity()));
+        TradeGuards.requireMoney(goodsAmount);
+        // F07：实物订单必须提供完整收货地址；数字商品/定制服务不读取、不保存地址。
+        com.shop.b2b2c.common.ShippingAddress.Snapshot receiver = com.shop.b2b2c.common.ShippingAddress.require(
+                product.getGoodsType(), dto.getReceiverName(), dto.getReceiverPhone(),
+                dto.getReceiverRegion(), dto.getReceiverAddress());
+        BigDecimal shippingAmount = com.shop.b2b2c.common.ShippingAddress.requiredForGoodsType(product.getGoodsType())
+                ? normalizeShippingFee(store.getShippingFee())
+                : BigDecimal.ZERO.setScale(2, java.math.RoundingMode.HALF_UP);
+        BigDecimal payAmount = goodsAmount.add(shippingAmount);
+        TradeGuards.requireMoney(payAmount);
 
         // 创建订单主表
         TradeOrder order = new TradeOrder();
@@ -138,10 +153,11 @@ public class OrderController {
         order.setMerchantId(store.getId());
         order.setBuyerContact(dto.getBuyerContact().trim());
         order.setGoodsType(product.getGoodsType());
-        order.setTotalAmount(totalAmount);
-        order.setPayAmount(totalAmount); // 实付
-        // T34/T39：固化订单级服务费快照与费率政策版本，后续费率调整不回溯本单。
-        feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(store.getId()), totalAmount);
+        com.shop.b2b2c.common.ShippingAddress.apply(order, receiver);
+        order.setTotalAmount(payAmount);
+        order.setPayAmount(payAmount); // 实付 = 商品金额 + 实物运费
+        // T34/T39：固化订单级服务费快照与费率政策版本，后续费率调整不回溯本单；运费不进入服务费基数。
+        feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(store.getId()), goodsAmount, shippingAmount);
         // T32：阶段一商家直收；渠道只接受 WECHAT/ALIPAY，不接受旧 A/B/C 或 MOCK。
         String payChannel = PayChannel.normalize(
                 dto.getPaymentChannel() == null || dto.getPaymentChannel().isBlank()
@@ -172,7 +188,7 @@ public class OrderController {
         item.setSpecInfo(sku.getSpecData());
         item.setPrice(sku.getPrice());
         item.setQuantity(dto.getQuantity());
-        item.setSubtotal(totalAmount);
+        item.setSubtotal(goodsAmount);
         itemMapper.save(item);
 
         Map<String, Object> result = new HashMap<>();
@@ -181,10 +197,35 @@ public class OrderController {
         result.put("queryToken", queryToken);
         result.put("orderStatus", order.getOrderStatus());
         result.put("payAmount", order.getPayAmount());
+        result.put("goodsAmount", goodsAmount);
+        result.put("shippingAmount", shippingAmount);
         result.put("goodsType", order.getGoodsType());
         result.put("cards", List.of());
         result.put("paymentAvailable", false);
         return R.ok("订单已创建，等待付款；支付通道暂未开放", result);
+    }
+
+    /** F07：店铺固定运费为历史/脏数据兜底：null 或负数按 0 处理，按分四舍五入。 */
+    private static BigDecimal normalizeShippingFee(BigDecimal shippingFee) {
+        BigDecimal value = shippingFee == null ? BigDecimal.ZERO : shippingFee.max(BigDecimal.ZERO);
+        return value.setScale(2, java.math.RoundingMode.HALF_UP);
+    }
+
+    @Operation(summary = "买家确认收货：SHIPPED→COMPLETED（凭领取凭证，重复提交幂等）")
+    @PostMapping("/api/v1/public/orders/confirm-receipt")
+    public R<Map<String, Object>> confirmReceipt(@RequestBody com.shop.b2b2c.dto.BuyerLookupRequest request,
+            jakarta.servlet.http.HttpServletResponse response) {
+        if (response != null) {
+            response.setHeader("Cache-Control", "no-store");
+        }
+        TradeOrder order = receiptService.confirm(request);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("orderSn", order.getOrderSn());
+        result.put("orderStatus", order.getOrderStatus());
+        result.put("finishTime", order.getFinishTime());
+        result.put("afterSaleDeadline", com.shop.b2b2c.common.OrderLifecycle
+                .afterSaleDeadline(order).orElse(null));
+        return R.ok("确认收货成功", result);
     }
 
     @Operation(summary = "已停用的GET查单入口：领取凭证和联系方式不能放URL")

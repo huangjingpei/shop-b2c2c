@@ -80,6 +80,26 @@ public interface TradeOrderMapper extends BaseMapper<TradeOrder> {
                                          @org.apache.ibatis.annotations.Param("cursor") Long cursor,
                                          @org.apache.ibatis.annotations.Param("limit") int limit);
 
+    /**
+     * F07：自动完成候选 = 实物、已发货、有发货时间且超过阈值的订单；存在待审批退款或未结投诉时跳过，
+     * 避免在争议处理中把订单置为完成。按 id 游标分页，单轮只取 limit 条。
+     */
+    @Select("SELECT o.id FROM trade_order o "
+            + "WHERE o.order_status = 'SHIPPED' AND o.goods_type = 1 AND o.delivery_time IS NOT NULL "
+            + "AND o.delivery_time <= #{cutoff} AND o.id > #{cursor} "
+            + "AND NOT EXISTS (SELECT 1 FROM refund_request r WHERE r.order_id = o.id AND r.status = 'PENDING') "
+            + "AND NOT EXISTS (SELECT 1 FROM complaint c WHERE c.order_id = o.id "
+            + "AND c.status IN ('PENDING','MERCHANT_REPLIED','ARBITRATING')) "
+            + "ORDER BY o.id LIMIT #{limit}")
+    List<Long> findAutoCompleteCandidateIds(@Param("cutoff") LocalDateTime cutoff,
+                                            @Param("cursor") Long cursor,
+                                            @Param("limit") int limit);
+
+    /** F07：自动完成 CAS，只有仍为 SHIPPED 才写入 COMPLETED 与 finish_time，避免覆盖并发退款/收货。 */
+    @org.apache.ibatis.annotations.Update("UPDATE trade_order SET order_status = 'COMPLETED', "
+            + "finish_time = #{finishTime} WHERE id = #{id} AND order_status = 'SHIPPED'")
+    int completeIfShipped(@Param("id") Long id, @Param("finishTime") LocalDateTime finishTime);
+
     default Optional<TradeOrder> findById(Long id) {
         return Optional.ofNullable(selectById(id));
     }

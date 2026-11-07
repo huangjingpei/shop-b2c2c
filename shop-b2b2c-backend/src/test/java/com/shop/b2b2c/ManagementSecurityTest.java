@@ -131,8 +131,8 @@ class ManagementSecurityTest {
         var store = new MerchantStore(); store.setId(1L); store.setOwnerName("private-owner");
         store.setIdCardNumber("private-id"); store.setStoreName("shop");
         var json = new ObjectMapper().valueToTree(PublicStoreView.from(store));
-        assertEquals(6, json.size());
-        for (String field : Set.of("id","storeCode","storeName","logoUrl","notice","contactPhone")) assertTrue(json.has(field));
+        assertEquals(7, json.size());
+        for (String field : Set.of("id","storeCode","storeName","logoUrl","notice","contactPhone","shippingFee")) assertTrue(json.has(field));
         assertFalse(json.has("ownerName")); assertFalse(json.has("idCardNumber"));
         assertFalse(json.has("commissionRate")); assertFalse(json.has("feeStatus"));
         assertNull(PublicStoreView.from(null));

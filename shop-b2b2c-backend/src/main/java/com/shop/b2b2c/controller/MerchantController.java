@@ -380,13 +380,17 @@ public class MerchantController {
         ManagementGuards.text(updateDTO.getLogoUrl(), 255, false);
         ManagementGuards.text(updateDTO.getContactPhone(), 32, false);
         ManagementGuards.text(updateDTO.getCustomPayQrcode(), 512, false);
+        // F07：实物订单固定运费，传 null 保持原值；0 表示包邮，上限 1000 元防误填。
+        if (updateDTO.getShippingFee() != null) {
+            ManagementGuards.amount(updateDTO.getShippingFee(), new java.math.BigDecimal("1000.00"));
+        }
         com.shop.b2b2c.service.AuthSessionService.requireManagementRole();
         Long merchantId = SecurityUtils.requireCurrentMerchantId();
         MerchantStore store = storeMapper.findById(merchantId)
                 .orElseThrow(() -> new BusinessException(404, "店铺不存在"));
         storeGuard.requireOpen(store);
         storeMapper.updateProfileOnly(merchantId, updateDTO.getNotice(), updateDTO.getLogoUrl(),
-                updateDTO.getContactPhone(), updateDTO.getCustomPayQrcode());
+                updateDTO.getContactPhone(), updateDTO.getCustomPayQrcode(), updateDTO.getShippingFee());
 
         return R.ok("店铺资料保存成功", null);
     }

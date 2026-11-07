@@ -83,6 +83,24 @@ F06：查单结果内可提交维权投诉、查看商家答复与平台裁决�
         </div>
       </div>
 
+      <!-- F07 实物收货信息与确认收货 -->
+      <div v-if="orderResult.order.goodsType === 1 && orderResult.order.receiverAddress"
+           class="py-3 border-b border-slate-100 text-xs text-slate-600 space-y-1">
+        <div class="font-bold text-slate-700">收货信息</div>
+        <div>{{ orderResult.order.receiverName }} {{ orderResult.order.receiverPhone }}</div>
+        <div>{{ orderResult.order.receiverRegion }} {{ orderResult.order.receiverAddress }}</div>
+      </div>
+      <div v-if="canConfirm(orderResult.order.orderStatus)" class="py-3 border-b border-slate-100 flex items-center justify-between">
+        <div class="text-xs text-slate-600">收到货后请确认，系统也会在发货超期后自动完成。</div>
+        <button @click="handleConfirmReceipt" :disabled="confirmingReceipt"
+                class="px-3 py-1.5 rounded bg-green-50 text-green-700 text-xs font-bold hover:bg-green-100 disabled:opacity-50">
+          {{ confirmingReceipt ? '提交中...' : '确认收货' }}
+        </button>
+      </div>
+      <div v-if="orderResult.order.afterSaleDeadline" class="py-2 border-b border-slate-100 text-[11px] text-slate-500">
+        售后受理截止：{{ orderResult.order.afterSaleDeadline }}
+      </div>
+
       <!-- 退款申请入口：仅已支付/已发货/已完成可申请 -->
       <div v-if="canRefund" class="py-3 border-b border-slate-100 flex items-center justify-between">
         <div class="text-xs text-slate-600">实付 ￥{{ orderResult.order.payAmount }}，可申请退款</div>
@@ -229,6 +247,7 @@ F06：查单结果内可提交维权投诉、查看商家答复与平台裁决�
 import { receiptRequest, receiptRouteQuery } from '../utils/buyerReceipt.mjs'
 import { serviceVoucherText } from '../utils/goodsType.mjs'
 import { complaintStatusLabel, complaintTypeLabel, canEscalateComplaint, complaintSubmitPayload } from '@shared/complaint.mjs'
+import { canConfirmReceipt } from '@shared/orderReceipt.mjs'
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import axios from 'axios'
@@ -244,6 +263,9 @@ const refundDialog = ref(false)
 const refunding = ref(false)
 const refundRequests = ref([])
 const refundForm = { amount: 0, reason: '' }
+// F07：确认收货只对 SHIPPED 显示；提交后本地更新状态，无需重新输入凭证。
+const confirmingReceipt = ref(false)
+const canConfirm = (status) => canConfirmReceipt(status)
 
 const OPEN_COMPLAINT = new Set(['PENDING', 'MERCHANT_REPLIED', 'ARBITRATING'])
 const complaints = ref([])
@@ -373,6 +395,32 @@ const loadRefundRequests = async () => {
     })
     refundRequests.value = res.data.code === 200 ? (res.data.data || []) : []
   } catch { refundRequests.value = [] }
+}
+
+const handleConfirmReceipt = async () => {
+  if (!orderResult.value) return
+  if (!confirm('确认已收到商品？确认后订单将进入售后受理期。')) return
+  confirmingReceipt.value = true
+  try {
+    const res = await axios.post('/api/v1/public/orders/confirm-receipt', {
+      orderSn: orderResult.value.order.orderSn,
+      contact: contact.value,
+      queryToken: queryToken.value
+    })
+    if (res.data.code === 200) {
+      // 只用服务端返回的状态/时间回写当前结果，避免整页重查再次要求敏感凭证。
+      orderResult.value.order.orderStatus = res.data.data.orderStatus
+      orderResult.value.order.finishTime = res.data.data.finishTime
+      orderResult.value.order.afterSaleDeadline = res.data.data.afterSaleDeadline
+      alert('确认收货成功，订单已完成')
+    } else {
+      alert(res.data.message || '确认收货失败')
+    }
+  } catch (e) {
+    alert(e.response?.data?.message || '确认收货失败，请稍后重试')
+  } finally {
+    confirmingReceipt.value = false
+  }
 }
 
 const handleSearch = async () => {

@@ -26,7 +26,13 @@ public class PeerPayDTOs {
         private Integer quantity;
         private String buyerContact;
         private String peerMessage;
+        /** F07 兼容字段：详细收货地址；实物订单必填，与 receiverAddress 等价。 */
         private String recipientAddress;
+        // F07：实物订单必填的收件人快照；数字商品/定制服务忽略。
+        private String receiverName;
+        private String receiverPhone;
+        private String receiverRegion;
+        private String receiverAddress;
     }
 
     @Data
@@ -39,6 +45,11 @@ public class PeerPayDTOs {
         private BigDecimal negotiatedPrice;
         private String customerContact;
         private String sellerNote;
+        // F07：商家代客推单可代填收货地址；四项全空表示尚未采集，任一项填写则四项必须齐全。
+        private String receiverName;
+        private String receiverPhone;
+        private String receiverRegion;
+        private String receiverAddress;
     }
 
     @Data

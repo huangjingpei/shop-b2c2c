@@ -80,6 +80,15 @@ T24 补充：加载更多遇服务端400“分页游标不正确”时清空游�
               <span style="color: #64748b;">提单买家：</span>
               <span style="font-weight: 600;">{{ row.order.buyerContact }}</span>
             </div>
+            <!-- F07 实物订单收货地址快照：发货面单依据，历史单可能为空 -->
+            <div v-if="row.order.goodsType === 1" style="font-size: 11px; margin-top: 3px; color: #334155;">
+              <span style="color: #64748b;">收货：</span>
+              <span v-if="row.order.receiverAddress">
+                {{ row.order.receiverName }} {{ row.order.receiverPhone }}<br>
+                {{ row.order.receiverRegion }} {{ row.order.receiverAddress }}
+              </span>
+              <span v-else style="color: #d97706;">未采集收货地址（历史单）</span>
+            </div>
             <div style="font-size: 12px; margin-top: 2px;">
               <span style="color: #64748b;">实际付款人：</span>
               <span v-if="row.order.peerPayerId" style="font-weight: 600; color: #16a34a;">

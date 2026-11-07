@@ -68,6 +68,10 @@ public class ComplaintService {
         if (!REFUNDABLE_ORDER_STATUSES.contains(order.getOrderStatus())) {
             throw new BusinessException(409, "当前订单状态不支持发起投诉");
         }
+        // F07：已完成订单超过售后受理期后不再接受新投诉；未完成/缺完成时间不拦截。
+        if (!com.shop.b2b2c.common.OrderLifecycle.withinAfterSale(order, java.time.LocalDateTime.now())) {
+            throw new BusinessException(409, "订单已超过售后受理期，无法发起投诉");
+        }
         String type = req.complaintType().trim().toUpperCase(Locale.ROOT);
         if (!COMPLAINT_TYPES.contains(type)) {
             throw new BusinessException(400, "投诉类型不合法");

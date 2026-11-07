@@ -106,6 +106,8 @@ class Sprint1SecurityIntegrationTest {
     @MockBean com.shop.b2b2c.service.payment.PaymentChannelRegistry channelRegistry;
     @Autowired com.shop.b2b2c.service.MerchantNotificationService notificationService;
     @Autowired com.shop.b2b2c.mapper.MerchantNotificationOutboxMapper notificationOutboxMapper;
+    @Autowired com.shop.b2b2c.service.OrderReceiptService receiptService;
+    @Autowired com.shop.b2b2c.config.OrderAutoCompleteJob autoCompleteJob;
 
     @BeforeEach
     void fixtures() {
@@ -1785,7 +1787,8 @@ class Sprint1SecurityIntegrationTest {
     @Test
     void checkoutOnlyCreatesUnpaidOrderAndDoesNotDeliver() throws Exception {
         mvc.perform(post("/api/v1/public/orders/checkout").header("Idempotency-Key", java.util.UUID.randomUUID().toString()).contentType("application/json")
-                        .content("{\"merchantId\":1,\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"buyer@example.com\"}"))
+                        .content("{\"merchantId\":1,\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"buyer@example.com\","
+                                + "\"receiverName\":\"张三\",\"receiverPhone\":\"13800138000\",\"receiverRegion\":\"广东省 深圳市 南山区\",\"receiverAddress\":\"科技园南路 88 号 3 栋 501\"}"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.orderStatus").value("UNPAID"))
                 .andExpect(jsonPath("$.data.cards").isEmpty()).andExpect(jsonPath("$.data.paymentAvailable").value(false));
         assertEquals(1, skus.selectById(1).getStockQuantity());
@@ -2588,7 +2591,8 @@ class Sprint1SecurityIntegrationTest {
     @Test
     void checkoutRejectsCrossProductSkuWithoutSideEffects() throws Exception {
         mvc.perform(post("/api/v1/public/orders/checkout").header("Idempotency-Key", java.util.UUID.randomUUID().toString()).contentType("application/json")
-                        .content("{\"productId\":1,\"skuId\":2,\"quantity\":1,\"buyerContact\":\"buyer\"}"))
+                        .content("{\"productId\":1,\"skuId\":2,\"quantity\":1,\"buyerContact\":\"buyer\","
+                                + "\"receiverName\":\"张三\",\"receiverPhone\":\"13800138000\",\"receiverRegion\":\"广东省 深圳市 南山区\",\"receiverAddress\":\"科技园南路 88 号 3 栋 501\"}"))
                 .andExpect(jsonPath("$.code").value(400));
         assertEquals(0, orders.selectCount(null));
         assertEquals(1, skus.selectById(2).getStockQuantity());
@@ -2849,6 +2853,8 @@ class Sprint1SecurityIntegrationTest {
     void newOrderNumbersUseFullUuidAndRejectInvalidNegotiation() {
         OrderController.CheckoutDTO dto = new OrderController.CheckoutDTO();
         dto.setProductId(1L); dto.setSkuId(1L); dto.setQuantity(1); dto.setBuyerContact("buyer");
+        dto.setReceiverName("张三"); dto.setReceiverPhone("13800138000");
+        dto.setReceiverRegion("广东省 深圳市 南山区"); dto.setReceiverAddress("科技园南路 88 号 3 栋 501");
         String first = (String) orderController.checkout(dto).getData().get("orderSn");
         String second = (String) orderController.checkout(dto).getData().get("orderSn");
         assertTrue(first.matches("ORD[0-9a-f]{32}")); assertNotEquals(first, second);
@@ -2866,6 +2872,8 @@ class Sprint1SecurityIntegrationTest {
 
         PeerPayDTOs.BuyerCreateRequest buyer = new PeerPayDTOs.BuyerCreateRequest();
         buyer.setProductId(1L); buyer.setSkuId(1L); buyer.setQuantity(1); buyer.setBuyerContact("buyer");
+        buyer.setReceiverName("张三"); buyer.setReceiverPhone("13800138000");
+        buyer.setReceiverRegion("广东省 深圳市 南山区"); buyer.setReceiverAddress("科技园南路 88 号 3 栋 501");
         String buyerSn = (String) payments.createBuyerPeerPay(buyer).get("orderSn");
         assertFifteenMinuteDeadline(orders.findByOrderSn(buyerSn).orElseThrow());
 
@@ -3041,6 +3049,9 @@ class Sprint1SecurityIntegrationTest {
     private OrderController.CheckoutDTO checkoutRequest() {
         var dto = new OrderController.CheckoutDTO();
         dto.setProductId(1L); dto.setSkuId(1L); dto.setQuantity(1); dto.setBuyerContact("buyer@example.com");
+        // F07：实物订单必须携带完整收货地址。
+        dto.setReceiverName("张三"); dto.setReceiverPhone("13800138000");
+        dto.setReceiverRegion("广东省 深圳市 南山区"); dto.setReceiverAddress("科技园南路 88 号 3 栋 501");
         return dto;
     }
 
@@ -3108,7 +3119,8 @@ class Sprint1SecurityIntegrationTest {
 
     @Test
     void checkoutHttpRequiresKeyAndReturnsOriginalOrderOnRetry() throws Exception {
-        String body = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"buyer\"}";
+        String body = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"buyer\","
+                + "\"receiverName\":\"张三\",\"receiverPhone\":\"13800138000\",\"receiverRegion\":\"广东省 深圳市 南山区\",\"receiverAddress\":\"科技园南路 88 号 3 栋 501\"}";
         mvc.perform(post("/api/v1/public/orders/checkout").contentType("application/json").content(body))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
         String first = mvc.perform(post("/api/v1/public/orders/checkout").header("Idempotency-Key", "http-key-123456789")
@@ -3120,7 +3132,8 @@ class Sprint1SecurityIntegrationTest {
 
     @Test
     void buyerHttpReplayReturnsOriginalShareAndQueryCredentials() throws Exception {
-        String body = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"buyer\"}";
+        String body = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"buyer\","
+                + "\"receiverName\":\"张三\",\"receiverPhone\":\"13800138000\",\"receiverRegion\":\"广东省 深圳市 南山区\",\"receiverAddress\":\"科技园南路 88 号 3 栋 501\"}";
         String first = mvc.perform(post("/api/v1/peer-pay/buyer/create").header("Idempotency-Key", "buyer-key-12345678")
                 .contentType("application/json").content(body)).andExpect(jsonPath("$.code").value(200)).andReturn().getResponse().getContentAsString();
         String second = mvc.perform(post("/api/v1/peer-pay/buyer/create").header("Idempotency-Key", "buyer-key-12345678")
@@ -3253,6 +3266,8 @@ class Sprint1SecurityIntegrationTest {
         assertTrue(receipt.matches("[0-9a-f]{32}"));
         PeerPayDTOs.BuyerCreateRequest request = new PeerPayDTOs.BuyerCreateRequest();
         request.setProductId(1L); request.setSkuId(1L); request.setQuantity(1); request.setBuyerContact("buyer@example.com");
+        request.setReceiverName("张三"); request.setReceiverPhone("13800138000");
+        request.setReceiverRegion("广东省 深圳市 南山区"); request.setReceiverAddress("科技园南路 88 号 3 栋 501");
         var created = payments.createBuyerPeerPay(request); String buyerReceipt = (String) created.get("queryToken");
         assertTrue(buyerReceipt.matches("[0-9a-f]{32}"));
         assertFalse(created.get("cashierUrl").toString().contains(buyerReceipt));
@@ -4200,7 +4215,9 @@ class Sprint1SecurityIntegrationTest {
                 "productId", 1L,
                 "skuId", 1L,
                 "quantity", 1,
-                "buyerContact", "13800000000"
+                "buyerContact", "13800000000",
+                "receiverName", "张三", "receiverPhone", "13800138000",
+                "receiverRegion", "广东省 深圳市 南山区", "receiverAddress", "科技园南路 88 号 3 栋 501"
         );
         mvc.perform(post("/api/v1/public/orders/checkout")
                         .header("Idempotency-Key", "idemp-r35-bad-id-1234567890")
@@ -4215,7 +4232,9 @@ class Sprint1SecurityIntegrationTest {
                 "productId", "1",
                 "skuId", "1",
                 "quantity", 1,
-                "buyerContact", "13800000000"
+                "buyerContact", "13800000000",
+                "receiverName", "张三", "receiverPhone", "13800138000",
+                "receiverRegion", "广东省 深圳市 南山区", "receiverAddress", "科技园南路 88 号 3 栋 501"
         );
         mvc.perform(post("/api/v1/public/orders/checkout")
                         .header("Idempotency-Key", "idemp-r35-good-id-1234567890")
@@ -4339,6 +4358,8 @@ class Sprint1SecurityIntegrationTest {
         buyer.setSkuId(1L);
         buyer.setQuantity(1);
         buyer.setBuyerContact("13812345678");
+        buyer.setReceiverName("张三"); buyer.setReceiverPhone("13800138000");
+        buyer.setReceiverRegion("广东省 深圳市 南山区"); buyer.setReceiverAddress("科技园南路 88 号 3 栋 501");
 
         // 1. 建单事务只落库：服务层不渲染海报，订单与明细已提交
         Map<String, Object> created = payments.createBuyerPeerPay(buyer);
@@ -4438,7 +4459,8 @@ class Sprint1SecurityIntegrationTest {
                     .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("建单过于频繁")));
 
             // B. 普通公开 checkout 建单超限：返回 429
-            String checkoutBody = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"13800000001\",\"merchantId\":1}";
+            String checkoutBody = "{\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"13800000001\",\"merchantId\":1,"
+                    + "\"receiverName\":\"张三\",\"receiverPhone\":\"13800138000\",\"receiverRegion\":\"广东省 深圳市 南山区\",\"receiverAddress\":\"科技园南路 88 号 3 栋 501\"}";
             mvc.perform(post("/api/v1/public/orders/checkout")
                             .header("Idempotency-Key", "flood-checkout-" + UUID.randomUUID())
                             .contentType("application/json")
@@ -5116,5 +5138,161 @@ class Sprint1SecurityIntegrationTest {
         String[] lines = csv.split("\n");
         assertTrue(lines[0].startsWith("period_date,period_type,shop_id"));
         assertTrue(lines[1].contains("store1") && lines[1].contains("100.00"));
+    }
+
+    // ==================== F07 实物收货地址、运费、确认收货与自动完成 ====================
+
+    private String physicalCheckoutBody(String contact, boolean withAddress) {
+        String base = "{\"merchantId\":1,\"productId\":1,\"skuId\":1,\"quantity\":1,\"buyerContact\":\"" + contact + "\"";
+        if (!withAddress) {
+            return base + "}";
+        }
+        return base + ",\"receiverName\":\"张三\",\"receiverPhone\":\"13800138000\","
+                + "\"receiverRegion\":\"广东省 深圳市 南山区\",\"receiverAddress\":\"科技园南路 88 号 3 栋 501\"}";
+    }
+
+    @Test
+    void f07PhysicalCheckoutRequiresAddressAndSnapshotsShippingWithoutFeeBase() throws Exception {
+        physicalProduct();
+        jdbc.update("UPDATE merchant_store SET shipping_fee=8.00 WHERE id=1");
+
+        // 1. 实物订单缺地址拒绝，且不产生订单/明细副作用
+        mvc.perform(post("/api/v1/public/orders/checkout")
+                        .header("Idempotency-Key", "f07-no-address-key-0001")
+                        .contentType("application/json")
+                        .content(physicalCheckoutBody("13900000021", false)))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        assertEquals(0, orders.selectCount(null));
+
+        // 2. 合法地址建单：运费只计入实付，服务费基数仍为商品金额
+        String res = mvc.perform(post("/api/v1/public/orders/checkout")
+                        .header("Idempotency-Key", "f07-with-address-key-0001")
+                        .contentType("application/json")
+                        .content(physicalCheckoutBody("13900000022", true)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.goodsAmount").value(10.0))
+                .andExpect(jsonPath("$.data.shippingAmount").value(8.0))
+                .andExpect(jsonPath("$.data.payAmount").value(18.0))
+                .andReturn().getResponse().getContentAsString();
+        String orderSn = com.fasterxml.jackson.databind.json.JsonMapper.builder().build()
+                .readTree(res).get("data").get("orderSn").asText();
+        TradeOrder saved = orders.findByOrderSn(orderSn).orElseThrow();
+        assertEquals("张三", saved.getReceiverName());
+        assertEquals("13800138000", saved.getReceiverPhone());
+        assertEquals("广东省 深圳市 南山区", saved.getReceiverRegion());
+        assertEquals("科技园南路 88 号 3 栋 501", saved.getReceiverAddress());
+        assertEquals(0, new java.math.BigDecimal("8.00").compareTo(saved.getShippingAmount()));
+        assertEquals(0, new java.math.BigDecimal("10.00").compareTo(saved.getFeeBaseAmount()));
+        assertEquals(0, new java.math.BigDecimal("18.00").compareTo(saved.getPayAmount()));
+
+        // 3. 数字商品（夹具默认 goods_type=2）不要求地址，也不收运费
+        jdbc.update("UPDATE merchant_store SET shipping_fee=8.00 WHERE id=2");
+        jdbc.update("UPDATE product SET goods_type=2 WHERE id=2");
+        String digital = mvc.perform(post("/api/v1/public/orders/checkout")
+                        .header("Idempotency-Key", "f07-digital-key-000001")
+                        .contentType("application/json")
+                        .content("{\"merchantId\":2,\"productId\":2,\"skuId\":2,\"quantity\":1,\"buyerContact\":\"13900000023\"}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.shippingAmount").value(0.0))
+                .andExpect(jsonPath("$.data.payAmount").value(10.0))
+                .andReturn().getResponse().getContentAsString();
+        assertNotNull(digital);
+    }
+
+    @Test
+    void f07BuyerCanConfirmReceiptIdempotentlyAndOnlyFromShipped() throws Exception {
+        physicalProduct();
+        String res = mvc.perform(post("/api/v1/public/orders/checkout")
+                        .header("Idempotency-Key", "f07-receipt-create-0001")
+                        .contentType("application/json")
+                        .content(physicalCheckoutBody("13900000031", true)))
+                .andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
+        com.fasterxml.jackson.databind.JsonNode data = com.fasterxml.jackson.databind.json.JsonMapper.builder()
+                .build().readTree(res).get("data");
+        String orderSn = data.get("orderSn").asText();
+        String queryToken = data.get("queryToken").asText();
+
+        // UNPAID 不可确认收货
+        String body = json.writeValueAsString(java.util.Map.of(
+                "orderSn", orderSn, "contact", "13900000031", "queryToken", queryToken));
+        mvc.perform(post("/api/v1/public/orders/confirm-receipt").contentType("application/json").content(body))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409));
+
+        // 发货后确认收货，写完成时间并返回售后截止
+        TradeOrder order = orders.findByOrderSn(orderSn).orElseThrow();
+        order.setOrderStatus("SHIPPED");
+        order.setDeliveryTime(LocalDateTime.now().minusHours(2));
+        orders.save(order);
+        mvc.perform(post("/api/v1/public/orders/confirm-receipt").contentType("application/json").content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.orderStatus").value("COMPLETED"))
+                .andExpect(jsonPath("$.data.afterSaleDeadline").isNotEmpty());
+        TradeOrder completed = orders.selectById(order.getId());
+        assertNotNull(completed.getFinishTime());
+
+        // 重复提交幂等：不重复写完成时间，也不再报错
+        LocalDateTime firstFinish = completed.getFinishTime();
+        mvc.perform(post("/api/v1/public/orders/confirm-receipt").contentType("application/json").content(body))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.orderStatus").value("COMPLETED"));
+        assertEquals(firstFinish, orders.selectById(order.getId()).getFinishTime());
+
+        // 凭证错误不改状态
+        String bad = json.writeValueAsString(java.util.Map.of(
+                "orderSn", orderSn, "contact", "13900000031", "queryToken", "wrong-token"));
+        mvc.perform(post("/api/v1/public/orders/confirm-receipt").contentType("application/json").content(bad))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        assertEquals("COMPLETED", orders.selectById(order.getId()).getOrderStatus());
+    }
+
+    @Test
+    void f07ShippedOrdersAutoCompleteAfterThresholdAndSkipRecentOnes() {
+        physicalProduct();
+        TradeOrder expired = unpaid("f07-auto-old", 1);
+        expired.setGoodsType(1);
+        expired.setOrderStatus("SHIPPED");
+        expired.setDeliveryTime(LocalDateTime.now().minusDays(com.shop.b2b2c.common.OrderLifecycle.AUTO_COMPLETE_DAYS + 1));
+        orders.save(expired);
+
+        TradeOrder recent = unpaid("f07-auto-new", 1);
+        recent.setGoodsType(1);
+        recent.setOrderStatus("SHIPPED");
+        recent.setDeliveryTime(LocalDateTime.now().minusDays(1));
+        orders.save(recent);
+
+        TradeOrder digital = unpaid("f07-auto-digital", 1);
+        digital.setGoodsType(2);
+        digital.setOrderStatus("SHIPPED");
+        digital.setDeliveryTime(LocalDateTime.now().minusDays(30));
+        orders.save(digital);
+
+        int completed = autoCompleteJob.complete(LocalDateTime.now());
+        assertEquals(1, completed);
+        assertEquals("COMPLETED", orders.selectById(expired.getId()).getOrderStatus());
+        assertNotNull(orders.selectById(expired.getId()).getFinishTime());
+        assertEquals("SHIPPED", orders.selectById(recent.getId()).getOrderStatus());
+        assertEquals("SHIPPED", orders.selectById(digital.getId()).getOrderStatus());
+    }
+
+    @Test
+    void f07CompletedOrderRefundIsRejectedAfterAfterSaleWindow() throws Exception {
+        jdbc.update("INSERT INTO trade_order(order_sn,merchant_id,buyer_contact,query_token,goods_type,total_amount,pay_amount,"
+                        + "fee_amount,commission_amount,collection_mode,pay_channel,order_status,peer_pay_type,finish_time,created_at) "
+                        + "VALUES('F07-OLD',1,'13900000041','f07-tk-old',1,100.00,100.00,0,0,'MERCHANT_DIRECT','WECHAT','COMPLETED',0,?,?)",
+                LocalDateTime.now().minusDays(com.shop.b2b2c.common.OrderLifecycle.AFTER_SALE_DAYS + 2),
+                LocalDateTime.now().minusDays(30));
+        jdbc.update("INSERT INTO trade_order(order_sn,merchant_id,buyer_contact,query_token,goods_type,total_amount,pay_amount,"
+                        + "fee_amount,commission_amount,collection_mode,pay_channel,order_status,peer_pay_type,finish_time,created_at) "
+                        + "VALUES('F07-NEW',1,'13900000042','f07-tk-new',1,100.00,100.00,0,0,'MERCHANT_DIRECT','WECHAT','COMPLETED',0,?,?)",
+                LocalDateTime.now().minusDays(3), LocalDateTime.now().minusDays(10));
+
+        mvc.perform(post("/api/v1/public/orders/refund-requests").contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of("orderSn", "F07-OLD", "contact", "13900000041",
+                                "queryToken", "f07-tk-old", "refundAmount", 30.00, "reason", "超期申请"))))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409))
+                .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("售后受理期")));
+        mvc.perform(post("/api/v1/public/orders/refund-requests").contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of("orderSn", "F07-NEW", "contact", "13900000042",
+                                "queryToken", "f07-tk-new", "refundAmount", 30.00, "reason", "窗口内申请"))))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("PENDING"));
     }
 }

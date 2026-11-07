@@ -77,7 +77,7 @@ class MerchantStoreUpdateTest {
             security.when(SecurityUtils::getCurrentRoleCode).thenReturn("MERCHANT_ADMIN");
             assertEquals(200, c.updateMerchantProfile(body).getCode());
             verify(stores).findById(1L);
-            verify(stores).updateProfileOnly(1L, "allowed notice", "", null, null);
+            verify(stores).updateProfileOnly(1L, "allowed notice", "", null, null, null);
             verifyNoMoreInteractions(stores);
         }
         reset(stores);

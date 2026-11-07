@@ -33,9 +33,18 @@ public class ServiceFeeSnapshotService {
      * 保证 T33 退款冲正仍按 commission_amount 口径工作。
      */
     public void apply(TradeOrder order, MerchantFeePolicy policy, BigDecimal goodsAmount) {
+        apply(order, policy, goodsAmount, BigDecimal.ZERO);
+    }
+
+    /**
+     * F07：运费单独快照，只计入实付与商家应收，不进入服务费计费基数（base 仍为商品成交额）。
+     */
+    public void apply(TradeOrder order, MerchantFeePolicy policy, BigDecimal goodsAmount, BigDecimal shippingAmount) {
         if (policy == null) {
             throw new BusinessException(409, "缺少有效费率政策，禁止生成订单快照");
         }
+        BigDecimal shipping = (shippingAmount == null ? BigDecimal.ZERO : shippingAmount)
+                .max(BigDecimal.ZERO).setScale(2, RoundingMode.HALF_UP);
         Integer policyBps = policy.getRateBps();
         int rateBps = policyBps == null ? 0 : policyBps;
         if (rateBps != 0 && (rateBps < 100 || rateBps > 1000)) {
@@ -61,7 +70,7 @@ public class ServiceFeeSnapshotService {
         order.setGoodsAmount(base);
         order.setMerchantDiscountAmount(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
         order.setPlatformDiscountAmount(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
-        order.setShippingAmount(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
+        order.setShippingAmount(shipping);
         order.setOrderTaxAmount(BigDecimal.ZERO.setScale(2, RoundingMode.HALF_UP));
         order.setFeePolicyId(policy.getId());
         order.setFeeRateBps(rateBps);

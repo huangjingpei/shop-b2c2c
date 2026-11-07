@@ -37,6 +37,13 @@ O9：资质有效期卡片展示身份证/营业执照到期状态（规则见 u
             <el-form-item label="客服联系电话">
               <el-input v-model="store.contactPhone" placeholder="用于买家售后沟通" />
             </el-form-item>
+            <!-- F07 实物订单固定运费：数字商品不收取，0 表示包邮 -->
+            <el-form-item label="实物订单运费">
+              <el-input-number v-model="store.shippingFee" :min="0" :max="1000" :precision="2" :step="1" />
+              <span style="margin-left: 10px; font-size: 12px; color: #64748b;">
+                元/单，0 表示包邮；仅实物订单计入实付，不参与服务费基数
+              </span>
+            </el-form-item>
             <el-form-item v-if="isManager">
               <el-button type="primary" :loading="saving" @click="saveProfile">保存修改</el-button>
             </el-form-item>
@@ -160,6 +167,8 @@ const loadProfile = async () => {
   try {
     const res = await request.get('/merchant/profile')
     store.value = res.data.store || {}
+    // 旧接口/旧数据可能没有 shippingFee，统一回显为 0（包邮），避免输入框空值。
+    if (store.value.shippingFee == null) store.value.shippingFee = 0
     paymentAccount.value = res.data.paymentAccount || {}
   } catch (e) {
     console.error(e)

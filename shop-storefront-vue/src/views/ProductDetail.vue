@@ -165,6 +165,41 @@ T30：交付标签与结算说明不得宣传未开通的支付直结、资金�
                 class="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-orange-500"
               />
             </div>
+
+            <!-- F07 实物收货地址：数字商品/定制服务不展示、不提交 -->
+            <div v-if="isPhysical" class="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2">
+              <div class="text-xs font-bold text-slate-700">收货信息 <span class="text-red-500">*</span></div>
+              <div class="grid grid-cols-2 gap-2">
+                <input
+                  v-model="receiverName"
+                  type="text"
+                  maxlength="32"
+                  placeholder="收货人姓名"
+                  class="px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-orange-500"
+                />
+                <input
+                  v-model="receiverPhone"
+                  type="tel"
+                  maxlength="11"
+                  placeholder="收货人手机号"
+                  class="px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-orange-500"
+                />
+              </div>
+              <input
+                v-model="receiverRegion"
+                type="text"
+                maxlength="64"
+                placeholder="省 / 市 / 区"
+                class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-orange-500"
+              />
+              <input
+                v-model="receiverAddress"
+                type="text"
+                maxlength="200"
+                placeholder="详细地址（街道、门牌号）"
+                class="w-full px-3 py-2 rounded-lg border border-slate-300 text-sm focus:outline-none focus:border-orange-500"
+              />
+            </div>
           </div>
         </div>
 
@@ -174,6 +209,10 @@ T30：交付标签与结算说明不得宣传未开通的支付直结、资金�
             <span>结算支付通道 (支付能力暂未开放)</span>
             <span class="font-bold text-slate-700">下单仅创建待付款订单</span>
           </div>
+          <div v-if="isPhysical" class="flex items-center justify-between text-xs text-slate-500 mb-3">
+            <span>商品 ￥{{ calculateTotal() }}</span>
+            <span>{{ shippingFee > 0 ? `运费 ￥${shippingFee.toFixed(2)}` : '店铺包邮' }}</span>
+          </div>
 
           <div class="flex items-center space-x-3">
             <button
@@ -182,7 +221,7 @@ T30：交付标签与结算说明不得宣传未开通的支付直结、资金�
               class="flex-1 py-3.5 rounded-lg bg-orange-600 hover:bg-orange-700 disabled:bg-slate-300 text-white font-black text-sm tracking-wide transition shadow-sm flex items-center justify-center space-x-2"
             >
               <span v-if="submitting">正在调起收银台...</span>
-              <span v-else>创建订单 ￥{{ calculateTotal() }}</span>
+              <span v-else>创建订单 ￥{{ payableTotal() }}</span>
             </button>
 
             <!-- ★ 找人代付核心通道 -->
@@ -294,7 +333,7 @@ T30：交付标签与结算说明不得宣传未开通的支付直结、资金�
             <div class="flex-1 min-w-0">
               <h4 class="text-xs font-bold text-slate-800 truncate">{{ product.title }}</h4>
               <div class="text-[11px] text-slate-500 mt-0.5">{{ formatSpec(currentSku.specData) }} × {{ quantity }}</div>
-              <div class="text-xs font-black text-rose-600 mt-1">代付金额: ￥{{ calculateTotal() }}</div>
+              <div class="text-xs font-black text-rose-600 mt-1">代付金额: ￥{{ payableTotal() }}<span v-if="isPhysical && shippingFee > 0" class="font-normal text-slate-500">（含运费）</span></div>
             </div>
           </div>
 
@@ -309,6 +348,21 @@ T30：交付标签与结算说明不得宣传未开通的支付直结、资金�
               placeholder="请输入您的手机号（好友代付成功后商品归您所有）" 
               class="w-full px-3.5 py-2.5 rounded-lg border border-slate-300 text-xs focus:outline-none focus:border-rose-500"
             />
+          </div>
+
+          <!-- F07 实物代付单收货信息 -->
+          <div v-if="isPhysical" class="rounded-xl border border-rose-200 bg-rose-50/50 p-3 space-y-2">
+            <div class="text-xs font-bold text-slate-700">收货信息 <span class="text-rose-500">*</span></div>
+            <div class="grid grid-cols-2 gap-2">
+              <input v-model="receiverName" type="text" maxlength="32" placeholder="收货人姓名"
+                class="px-3 py-2 rounded-lg border border-slate-300 text-xs focus:outline-none focus:border-rose-500" />
+              <input v-model="receiverPhone" type="tel" maxlength="11" placeholder="收货人手机号"
+                class="px-3 py-2 rounded-lg border border-slate-300 text-xs focus:outline-none focus:border-rose-500" />
+            </div>
+            <input v-model="receiverRegion" type="text" maxlength="64" placeholder="省 / 市 / 区"
+              class="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs focus:outline-none focus:border-rose-500" />
+            <input v-model="receiverAddress" type="text" maxlength="200" placeholder="详细地址（街道、门牌号）"
+              class="w-full px-3 py-2 rounded-lg border border-slate-300 text-xs focus:outline-none focus:border-rose-500" />
           </div>
 
           <!-- 求助代付留言 -->
@@ -456,6 +510,7 @@ import { useRoute } from 'vue-router'
 import axios from 'axios'
 import { loadProductDetail, parseDetailImages, isSkuSoldOut, isProductSoldOut } from '../utils/productDetail.mjs'
 import { copyText } from '@shared/clipboard.mjs'
+import { isPhysicalGoods, validateReceiver } from '@shared/orderReceipt.mjs'
 
 const route = useRoute()
 const loading = ref(false)
@@ -466,6 +521,11 @@ const store = ref(null)
 const currentSku = ref(null)
 const quantity = ref(1)
 const buyerContact = ref('')
+// F07：实物订单收货地址；数字商品/定制服务不展示也不提交。
+const receiverName = ref('')
+const receiverPhone = ref('')
+const receiverRegion = ref('')
+const receiverAddress = ref('')
 const successResult = ref(null)
 const errorMsg = ref('')
 const retry = ref(0)
@@ -484,6 +544,15 @@ const calculateTotal = () => {
   const base = currentSku.value?.price || 0
   return (base * (quantity.value || 1)).toFixed(2)
 }
+
+// F07：实物订单展示店铺固定运费，实付=商品金额+运费；数字商品不显示运费。
+const isPhysical = computed(() => isPhysicalGoods(product.value?.goodsType))
+const shippingFee = computed(() => {
+  if (!isPhysical.value) return 0
+  const fee = Number(store.value?.shippingFee ?? 0)
+  return Number.isFinite(fee) && fee > 0 ? fee : 0
+})
+const payableTotal = () => (Number(calculateTotal()) + shippingFee.value).toFixed(2)
 
 const formatSpec = (jsonStr) => {
   try {
@@ -540,11 +609,28 @@ watch([() => route.params.id, retry], ([newId]) => {
   }
 }, { immediate: true })
 
+// F07：实物订单地址前端先校验，后端仍会二次校验；数字商品返回 null。
+const collectReceiver = () => {
+  try {
+    return validateReceiver(product.value?.goodsType, {
+      receiverName: receiverName.value,
+      receiverPhone: receiverPhone.value,
+      receiverRegion: receiverRegion.value,
+      receiverAddress: receiverAddress.value
+    })
+  } catch (e) {
+    alert(e.message)
+    return null
+  }
+}
+
 const handleCheckout = async () => {
   if (!buyerContact.value.trim()) {
     alert('请输入联系手机号或邮箱！')
     return
   }
+  const receiver = collectReceiver()
+  if (receiver === null) return
   submitting.value = true
   try {
     const payload = {
@@ -553,7 +639,8 @@ const handleCheckout = async () => {
       skuId: currentSku.value.id,
       quantity: quantity.value,
       buyerContact: buyerContact.value.trim(),
-      paymentChannel: 'WECHAT'
+      paymentChannel: 'WECHAT',
+      ...(receiver || {})
     }
     const prepared = checkoutSubmission.prepare(payload)
     const res = await axios.post('/api/v1/public/orders/checkout', prepared.body, { headers: prepared.headers })
@@ -594,6 +681,8 @@ const handleCreatePeerPay = async () => {
     alert('请输入联系手机号或邮箱，用于接收商品与免密查单！')
     return
   }
+  const receiver = collectReceiver()
+  if (receiver === null) return
   generatingPeerPay.value = true
   try {
     const payload = {
@@ -602,7 +691,8 @@ const handleCreatePeerPay = async () => {
       skuId: currentSku.value.id,
       quantity: quantity.value,
       buyerContact: buyerContact.value.trim(),
-      peerMessage: peerMessage.value.trim()
+      peerMessage: peerMessage.value.trim(),
+      ...(receiver || {})
     }
     const prepared = peerSubmission.prepare(payload)
     const res = await axios.post('/api/v1/peer-pay/buyer/create', prepared.body, { headers: prepared.headers })

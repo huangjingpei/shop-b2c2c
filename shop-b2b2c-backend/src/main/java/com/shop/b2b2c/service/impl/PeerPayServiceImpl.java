@@ -66,9 +66,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         if (req.getPeerMessage() != null && req.getPeerMessage().trim().length() > 200) {
             throw new BusinessException(400, "代付留言长度不能超过200字符");
         }
-        if (req.getRecipientAddress() != null && req.getRecipientAddress().trim().length() > 255) {
-            throw new BusinessException(400, "收件人地址长度不能超过255字符");
-        }
+
 
         Product product = productMapper.findById(req.getProductId())
                 .orElseThrow(() -> new BusinessException("商品不存在"));
@@ -93,7 +91,18 @@ public class PeerPayServiceImpl implements PeerPayService {
         String queryToken = UUID.randomUUID().toString().replace("-", "");
         String peerPayToken = "PAY" + UUID.randomUUID().toString().replace("-", "").substring(0, 12).toUpperCase();
 
-        BigDecimal totalAmount = sku.getPrice().multiply(new BigDecimal(req.getQuantity()));
+        BigDecimal goodsAmount = sku.getPrice().multiply(new BigDecimal(req.getQuantity()));
+        TradeGuards.requireMoney(goodsAmount);
+        // F07：实物代付单同样必须采集完整收货地址；recipientAddress 作为详细地址的兼容字段。
+        String detailAddress = req.getReceiverAddress() != null && !req.getReceiverAddress().isBlank()
+                ? req.getReceiverAddress() : req.getRecipientAddress();
+        com.shop.b2b2c.common.ShippingAddress.Snapshot receiver = com.shop.b2b2c.common.ShippingAddress.require(
+                product.getGoodsType(), req.getReceiverName(), req.getReceiverPhone(),
+                req.getReceiverRegion(), detailAddress);
+        BigDecimal shippingAmount = com.shop.b2b2c.common.ShippingAddress.requiredForGoodsType(product.getGoodsType())
+                ? normalizeShippingFee(store.getShippingFee())
+                : BigDecimal.ZERO.setScale(2, java.math.RoundingMode.HALF_UP);
+        BigDecimal totalAmount = goodsAmount.add(shippingAmount);
         TradeGuards.requireMoney(totalAmount);
 
         // 创建订单主表 (peer_status = 'INIT', 标记两段式意向生成)
@@ -102,10 +111,11 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setMerchantId(store.getId());
         order.setBuyerContact(req.getBuyerContact().trim());
         order.setGoodsType(product.getGoodsType());
+        com.shop.b2b2c.common.ShippingAddress.apply(order, receiver);
         order.setTotalAmount(totalAmount);
         order.setPayAmount(totalAmount);
-        // T34/T39：快照费率唯一取自当前生效政策，不回溯、不再读 merchant_store.commission_rate。
-        feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(store.getId()), totalAmount);
+        // T34/T39：快照费率唯一取自当前生效政策，不回溯、不再读 merchant_store.commission_rate；运费不入服务费基数。
+        feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(store.getId()), goodsAmount, shippingAmount);
         order.setOrderStatus("UNPAID");
         order.setSharingStatus("PENDING");
         // T32：阶段一固定商家直收，真实渠道与 A/B/C 收款模式解耦；旧 payment_channel 仅保留迁移值。
@@ -142,7 +152,7 @@ public class PeerPayServiceImpl implements PeerPayService {
         item.setSpecInfo(sku.getSpecData());
         item.setPrice(sku.getPrice());
         item.setQuantity(req.getQuantity());
-        item.setSubtotal(totalAmount);
+        item.setSubtotal(goodsAmount);
         itemMapper.save(item);
 
         // T26：海报不在此事务内渲染，由控制器在事务提交后调用 attachPoster 按需生成，避免 PNG 光栅化拉长建单事务。
@@ -194,9 +204,17 @@ public class PeerPayServiceImpl implements PeerPayService {
         // 商家议价定价：支持自主协商优惠改价推单
         BigDecimal unitPrice = (req.getNegotiatedPrice() != null && req.getNegotiatedPrice().compareTo(BigDecimal.ZERO) > 0)
                 ? req.getNegotiatedPrice() : sku.getPrice();
-        BigDecimal totalAmount = unitPrice.multiply(new BigDecimal(req.getQuantity()));
+        BigDecimal goodsAmount = unitPrice.multiply(new BigDecimal(req.getQuantity()));
 
-        TradeGuards.requireMoney(totalAmount);
+        TradeGuards.requireMoney(goodsAmount);
+        // F07：商家推单可代填地址；四项全空表示尚未采集，任一项填写则必须四项齐全。
+        com.shop.b2b2c.common.ShippingAddress.Snapshot receiver = com.shop.b2b2c.common.ShippingAddress.optional(
+                product.getGoodsType(), req.getReceiverName(), req.getReceiverPhone(),
+                req.getReceiverRegion(), req.getReceiverAddress());
+        BigDecimal shippingAmount = com.shop.b2b2c.common.ShippingAddress.requiredForGoodsType(product.getGoodsType())
+                ? normalizeShippingFee(store.getShippingFee())
+                : BigDecimal.ZERO.setScale(2, java.math.RoundingMode.HALF_UP);
+        BigDecimal totalAmount = goodsAmount.add(shippingAmount);
 
         String orderSn = "ORD" + UUID.randomUUID().toString().replace("-", "");
         String queryToken = UUID.randomUUID().toString().replace("-", "");
@@ -208,9 +226,10 @@ public class PeerPayServiceImpl implements PeerPayService {
         order.setBuyerContact(req.getCustomerContact() != null && !req.getCustomerContact().isBlank() 
                 ? req.getCustomerContact().trim() : "商户代客推单客户");
         order.setGoodsType(product.getGoodsType());
+        com.shop.b2b2c.common.ShippingAddress.apply(order, receiver);
         order.setTotalAmount(totalAmount);
         order.setPayAmount(totalAmount);
-        feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(merchantId), totalAmount);
+        feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(merchantId), goodsAmount, shippingAmount);
         order.setOrderStatus("UNPAID");
         order.setSharingStatus("PENDING");
         // T32：阶段一固定商家直收，真实渠道与 A/B/C 收款模式解耦；旧 payment_channel 仅保留迁移值。
@@ -641,6 +660,12 @@ public class PeerPayServiceImpl implements PeerPayService {
         // 4. 单字段更新 poster_url，绝不回写并覆盖已被并发支付更新的订单状态 (R26)
         orderMapper.updatePosterUrl(order.getId(), posterBase64);
         return posterBase64;
+    }
+
+    /** F07：店铺固定运费兜底，null/负数按 0，保留两位小数。 */
+    private static BigDecimal normalizeShippingFee(BigDecimal shippingFee) {
+        BigDecimal value = shippingFee == null ? BigDecimal.ZERO : shippingFee.max(BigDecimal.ZERO);
+        return value.setScale(2, java.math.RoundingMode.HALF_UP);
     }
 }
 
