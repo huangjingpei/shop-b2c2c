@@ -5,8 +5,9 @@
  *  1. 切换只改 merchant_store.collection_mode，只影响新订单；不得回写 trade_order，也不得改在途订单/退款。
  *  2. 切到 PLATFORM_COLLECT 必须校验 merchant_payment_account.binding_status=BOUND、sub_mchid 非空、
  *     settlement_account_id 非空，不满足直接 409，不做“先切后补”。
- *  3. 生效模式优先级：环境变量应急关闭 > 数据库总闸 enabled > 商家配置模式；本服务不改变阶段一支付入口，
- *     PaymentGatewayService 仍拒绝 PLATFORM_COLLECT 订单，真正按生效模式下单在 M4 接入。
+ *  3. 生效模式优先级：环境变量应急关闭 > 数据库总闸 enabled > 商家配置模式；M4 起下单经 {@link #modeForNewOrder}
+ *     写订单快照，平台代收还须分账通道已启用且绑定就绪，否则 409 拒绝建单，不降级为商家直收。
+ *     支付通道入口（PaymentGatewayService）对 PLATFORM_COLLECT 仍拒绝，平台收银台接入由 M6 依据真实凭据完成。
  *  4. 模式更新使用 CAS（当前模式仍等于读取值才更新），并发切换只有一个成功并只写一条审计。
  *  5. 不返回银行卡号、证件号、渠道密钥或原始报文。
  */
@@ -40,18 +41,22 @@ public class MerchantCollectionModeService {
     private final PlatformCollectionConfigMapper configMapper;
     private final MerchantCollectionSwitchAuditMapper auditMapper;
     private final MerchantPaymentAccountMapper paymentAccountMapper;
+    /** M4：下单前读取平台代收分账通道（资质）开关；阶段一商家直收不经过此依赖。 */
+    private final PlatformCollectionService platformCollectionService;
     private final boolean emergencyDisabled;
 
     public MerchantCollectionModeService(MerchantStoreMapper storeMapper,
                                          PlatformCollectionConfigMapper configMapper,
                                          MerchantCollectionSwitchAuditMapper auditMapper,
                                          MerchantPaymentAccountMapper paymentAccountMapper,
+                                         PlatformCollectionService platformCollectionService,
                                          @Value("${payment.platform-collection.emergency-disabled:false}")
                                          boolean emergencyDisabled) {
         this.storeMapper = storeMapper;
         this.configMapper = configMapper;
         this.auditMapper = auditMapper;
         this.paymentAccountMapper = paymentAccountMapper;
+        this.platformCollectionService = platformCollectionService;
         this.emergencyDisabled = emergencyDisabled;
     }
 
@@ -154,13 +159,35 @@ public class MerchantCollectionModeService {
         return auditMapper.findByMerchant(merchantId, limit);
     }
 
-    /**
-     * 新订单应使用的收款模式：环境应急关闭优先，其次全局总闸，最后商家配置。
-     * M4 接入下单前仍须再次校验渠道绑定与订单创建时的快照规则。
-     */
+    /** 解析生效模式但不做下单前置校验；后台查询与下单前校验共用同一优先级。 */
     public String effectiveMode(Long merchantId) {
         MerchantStore store = requireStore(merchantId);
         return effectiveMode(CollectionMode.requireKnown(store.getCollectionMode()), configOrDefault());
+    }
+
+    /**
+     * M4：下单前解析订单应写入的收款模式快照。
+     * 商家直收直接返回；平台代收必须在建单时确认分账通道已启用且渠道绑定仍满足三要素，
+     * 否则 409 拒绝建单——不降级为商家直收，也不先建单再补绑定。
+     */
+    public String modeForNewOrder(Long merchantId, String payChannel) {
+        MerchantStore store = requireStore(merchantId);
+        String mode = effectiveMode(CollectionMode.requireKnown(store.getCollectionMode()), configOrDefault());
+        if (!CollectionMode.PLATFORM_COLLECT.equals(mode)) {
+            return mode;
+        }
+        if (!platformCollectionService.enabled()) {
+            throw new BusinessException(409, "平台代收分账通道未启用（需分账资质与通道联调），暂不能创建平台代收订单");
+        }
+        String channel = payChannel == null || payChannel.isBlank()
+                ? normalizedChannel(store) : com.shop.b2b2c.common.PayChannel.normalize(payChannel);
+        MerchantPaymentAccount account = paymentAccountMapper
+                .findByMerchantIdAndChannel(merchantId, channel).orElse(null);
+        String blockReason = bindingBlockReason(account);
+        if (blockReason != null) {
+            throw new BusinessException(409, "平台代收渠道未就绪：" + blockReason + "（渠道 " + channel + "）");
+        }
+        return mode;
     }
 
     private String effectiveMode(String configuredMode, PlatformCollectionConfig config) {

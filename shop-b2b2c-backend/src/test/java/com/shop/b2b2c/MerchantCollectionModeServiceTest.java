@@ -52,6 +52,8 @@ class MerchantCollectionModeServiceTest {
     private final PlatformCollectionConfigMapper configs = mock(PlatformCollectionConfigMapper.class);
     private final MerchantCollectionSwitchAuditMapper audits = mock(MerchantCollectionSwitchAuditMapper.class);
     private final MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+    private final com.shop.b2b2c.service.PlatformCollectionService platforms =
+            mock(com.shop.b2b2c.service.PlatformCollectionService.class);
 
     @Test
     void emergencySwitchForcesMerchantDirectEvenWhenGateAndStoreSayPlatform() {
@@ -259,8 +261,72 @@ class MerchantCollectionModeServiceTest {
         assertEquals(0L, view.getVersion());
     }
 
+    @Test
+    void newDirectOrderDoesNotQueryPlatformChannelOrBinding() {
+        MerchantCollectionModeService service = service(false);
+        when(stores.findById(MERCHANT_ID)).thenReturn(Optional.of(store(CollectionMode.MERCHANT_DIRECT)));
+        when(configs.findSingleton()).thenReturn(config(true));
+
+        assertEquals(CollectionMode.MERCHANT_DIRECT, service.modeForNewOrder(MERCHANT_ID, "WECHAT"));
+        verifyNoInteractions(platforms);
+        verify(accounts, never()).findByMerchantIdAndChannel(anyLong(), anyString());
+    }
+
+    @Test
+    void newOrderPrefersEffectiveGateOverConfiguredPlatformMode() {
+        MerchantCollectionModeService service = service(false);
+        when(stores.findById(MERCHANT_ID)).thenReturn(Optional.of(store(CollectionMode.PLATFORM_COLLECT)));
+        when(configs.findSingleton()).thenReturn(config(false));
+
+        assertEquals(CollectionMode.MERCHANT_DIRECT, service.modeForNewOrder(MERCHANT_ID, "WECHAT"));
+        verifyNoInteractions(platforms);
+    }
+
+    @Test
+    void newPlatformOrderIsRejectedWhenQualificationChannelIsDisabled() {
+        MerchantCollectionModeService service = service(false);
+        when(stores.findById(MERCHANT_ID)).thenReturn(Optional.of(store(CollectionMode.PLATFORM_COLLECT)));
+        when(configs.findSingleton()).thenReturn(config(true));
+        when(platforms.enabled()).thenReturn(false);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.modeForNewOrder(MERCHANT_ID, "WECHAT"));
+
+        assertEquals(409, error.getCode());
+        assertTrue(error.getMessage().contains("分账通道未启用"));
+        verify(accounts, never()).findByMerchantIdAndChannel(anyLong(), anyString());
+    }
+
+    @Test
+    void newPlatformOrderIsRejectedWhenBindingIsNotReady() {
+        MerchantCollectionModeService service = service(false);
+        when(stores.findById(MERCHANT_ID)).thenReturn(Optional.of(store(CollectionMode.PLATFORM_COLLECT)));
+        when(configs.findSingleton()).thenReturn(config(true));
+        when(platforms.enabled()).thenReturn(true);
+        when(accounts.findByMerchantIdAndChannel(MERCHANT_ID, "WECHAT"))
+                .thenReturn(Optional.of(account("BINDING", "MCH-1", 31L)));
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.modeForNewOrder(MERCHANT_ID, "WECHAT"));
+
+        assertEquals(409, error.getCode());
+        assertTrue(error.getMessage().contains("BOUND"));
+    }
+
+    @Test
+    void newPlatformOrderSnapshotsPlatformCollectOnlyWhenChannelAndBindingAreReady() {
+        MerchantCollectionModeService service = service(false);
+        when(stores.findById(MERCHANT_ID)).thenReturn(Optional.of(store(CollectionMode.PLATFORM_COLLECT)));
+        when(configs.findSingleton()).thenReturn(config(true));
+        when(platforms.enabled()).thenReturn(true);
+        when(accounts.findByMerchantIdAndChannel(MERCHANT_ID, "WECHAT"))
+                .thenReturn(Optional.of(account("BOUND", "MCH-1", 31L)));
+
+        assertEquals(CollectionMode.PLATFORM_COLLECT, service.modeForNewOrder(MERCHANT_ID, "WECHAT"));
+    }
+
     private MerchantCollectionModeService service(boolean emergencyDisabled) {
-        return new MerchantCollectionModeService(stores, configs, audits, accounts, emergencyDisabled);
+        return new MerchantCollectionModeService(stores, configs, audits, accounts, platforms, emergencyDisabled);
     }
 
     private void assertPlatformSwitchRejected(MerchantCollectionModeService service, String reasonKeyword) {

@@ -4,11 +4,12 @@
  * 维护注意：先锁订单再处理库存/预占/卡密；预占扣库存，付款核销不重复扣。支付截止严格从下单时刻起算 15 分钟，预占成功只回写订单原始截止时间，不得重置为“当下 +15 分钟”；取消预占只回到意向态，不抹掉该截止时间。卡密缺货必须回滚。公开代付详情不能返回卡密或服务凭证；当前无真实支付渠道，不能把内部落账方法当作验签或到账证明。
  * T26：createBuyerPeerPay/createPushPayOrder 的事务内禁止渲染海报（PNG 光栅化耗时且放大锁等待）；海报由 attachPoster 在事务提交后按需生成并单字段回写，失败不回滚订单。
  * D38：生成结果改为 PNG 落盘、poster_url 只存公开访问路径（历史 Base64 行原样返回兼容）；返回字段名沿用 posterBase64 以免破坏前端契约。
+ * M4：createBuyerPeerPay/createPushPayOrder 建单时按生效收款模式写 trade_order.collection_mode 快照；
+ *     平台代收未启用或渠道绑定未就绪直接 409，不得按商家直收静默降级。
  */
 package com.shop.b2b2c.service.impl;
 
 import com.shop.b2b2c.common.BusinessException;
-import com.shop.b2b2c.common.CollectionMode;
 import com.shop.b2b2c.common.PayChannel;
 import com.shop.b2b2c.common.PeerStatus;
 import com.shop.b2b2c.common.TradeGuards;
@@ -50,6 +51,8 @@ public class PeerPayServiceImpl implements PeerPayService {
     private final com.shop.b2b2c.service.payment.PaymentGatewayService paymentGateway;
     /** D38：海报 PNG 落盘并返回公开路径，trade_order.poster_url 只存路径或历史 Base64，不再写入新 Base64。 */
     private final com.shop.b2b2c.service.PosterStorageService posterStorage;
+    /** M4：代付/推单建单同样按生效收款模式写快照；平台代收未就绪直接 409。 */
+    private final com.shop.b2b2c.service.MerchantCollectionModeService collectionModeService;
 
     @Value("${app.frontend.storefront-url:http://localhost:3002}")
     private String storefrontUrl;
@@ -124,11 +127,12 @@ public class PeerPayServiceImpl implements PeerPayService {
         feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(store.getId()), goodsAmount, shippingAmount);
         order.setOrderStatus("UNPAID");
         order.setSharingStatus("PENDING");
-        // T32：阶段一固定商家直收，真实渠道与 A/B/C 收款模式解耦；旧 payment_channel 仅保留迁移值。
+        // T32/M4：收款模式取生效快照（商家直收为基线），与旧 A/B/C 通道解耦；旧 payment_channel 仅保留迁移值。
         String payChannel = PayChannel.normalize(
                 store.getPayChannel() == null || store.getPayChannel().isBlank()
                         ? PayChannel.WECHAT : store.getPayChannel());
-        order.setCollectionMode(CollectionMode.MERCHANT_DIRECT);
+        // M4：按生效模式写快照；平台代收未就绪时 409，不降级为商家直收。
+        order.setCollectionMode(collectionModeService.modeForNewOrder(store.getId(), payChannel));
         order.setPayChannel(payChannel);
         order.setPaymentChannel(payChannel);
         order.setQueryToken(queryToken);
@@ -238,11 +242,12 @@ public class PeerPayServiceImpl implements PeerPayService {
         feeSnapshotService.apply(order, feePolicyService.getEffectivePolicy(merchantId), goodsAmount, shippingAmount);
         order.setOrderStatus("UNPAID");
         order.setSharingStatus("PENDING");
-        // T32：阶段一固定商家直收，真实渠道与 A/B/C 收款模式解耦；旧 payment_channel 仅保留迁移值。
+        // T32/M4：收款模式取生效快照（商家直收为基线），与旧 A/B/C 通道解耦；旧 payment_channel 仅保留迁移值。
         String payChannel = PayChannel.normalize(
                 store.getPayChannel() == null || store.getPayChannel().isBlank()
                         ? PayChannel.WECHAT : store.getPayChannel());
-        order.setCollectionMode(CollectionMode.MERCHANT_DIRECT);
+        // M4：卖家代客推单同样按生效模式写快照，平台代收未就绪时 409。
+        order.setCollectionMode(collectionModeService.modeForNewOrder(merchantId, payChannel));
         order.setPayChannel(payChannel);
         order.setPaymentChannel(payChannel);
         order.setQueryToken(queryToken);

@@ -1,12 +1,11 @@
 /*
  * 文件：OrderController.java
  * 用途：待付款建单、免登录查单、商家发货、平台订单及统一状态统计入口；建单代付编码复用PeerStatus。
- * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入。D25：统计接口同一窗口合入 trade_refund 成功账本（success_at 切日）得出实际退款/净额/扣冲正佣金，扣冲正佣金仍非到账证明。T24：商家/平台订单列表改为 created_at+id keyset 分页（不透明 cursor，非法参数 400），返回 page.total/hasMore/nextCursor，禁止 OFFSET 与静默截断。T26：推单海报在幂等事务提交后由 attachPoster 生成，不在建单事务内光栅化。Q13-A（2026-11-06 口径澄清）：实物订单发货对店长与员工开放；推单/改价、资金操作、卡密明文与虚拟履约仍仅店长。T36：建单/查单限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。F07：实物订单建单强制收件人/手机号/省市区/详细地址快照，并按店铺固定运费计入实付；数字商品免地址。买家可凭领取凭证确认收货（SHIPPED→COMPLETED）；发货超期自动完成与售后时效口径见OrderLifecycle。
+ * 维护注意：HTTP建单强制Idempotency-Key；不得伪造到账或交付。列表/统计不读取海报正文，商家按需接口另行校验归属。查单用独立凭证/白名单；统计用OrderStatistics，金额不是账本收入。D25：统计接口同一窗口合入 trade_refund 成功账本（success_at 切日）得出实际退款/净额/扣冲正佣金，扣冲正佣金仍非到账证明。T24：商家/平台订单列表改为 created_at+id keyset 分页（不透明 cursor，非法参数 400），返回 page.total/hasMore/nextCursor，禁止 OFFSET 与静默截断。T26：推单海报在幂等事务提交后由 attachPoster 生成，不在建单事务内光栅化。Q13-A（2026-11-06 口径澄清）：实物订单发货对店长与员工开放；推单/改价、资金操作、卡密明文与虚拟履约仍仅店长。T36：建单/查单限流IP由ClientIpResolver解析，仅可信代理才读X-Forwarded-For。F07：实物订单建单强制收件人/手机号/省市区/详细地址快照，并按店铺固定运费计入实付；数字商品免地址。买家可凭领取凭证确认收货（SHIPPED→COMPLETED）；发货超期自动完成与售后时效口径见OrderLifecycle。M4：建单收款模式按生效快照（应急关闭>总闸>商家配置），平台代收未就绪时 409 且不落单，不降级。
  */
 package com.shop.b2b2c.controller;
 
 import com.shop.b2b2c.common.BusinessException;
-import com.shop.b2b2c.common.CollectionMode;
 import com.shop.b2b2c.common.OrderCursor;
 import com.shop.b2b2c.common.PayChannel;
 import com.shop.b2b2c.common.PeerStatus;
@@ -62,6 +61,8 @@ public class OrderController {
     private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
     private final com.shop.b2b2c.service.OrderReceiptService receiptService;
     private final com.shop.b2b2c.service.OrderCancellationService cancellationService;
+    /** M4：建单按生效收款模式写快照；平台代收未就绪直接 409，不降级。 */
+    private final com.shop.b2b2c.service.MerchantCollectionModeService collectionModeService;
 
     @Data
     public static class CheckoutDTO {
@@ -165,7 +166,8 @@ public class OrderController {
                         ? (store.getPayChannel() == null || store.getPayChannel().isBlank()
                             ? PayChannel.WECHAT : store.getPayChannel())
                         : dto.getPaymentChannel());
-        order.setCollectionMode(CollectionMode.MERCHANT_DIRECT);
+        // M4：按生效模式写订单快照（应急关闭 > 总闸 > 商家配置）；平台代收未就绪时 409，不静默降级。
+        order.setCollectionMode(collectionModeService.modeForNewOrder(store.getId(), payChannel));
         order.setPayChannel(payChannel);
         order.setPaymentChannel(payChannel);
         order.setOrderStatus("UNPAID");
