@@ -3,8 +3,10 @@
  * 用途：M1 商家收款双轨模式开关：全局总闸、单商家模式切换、前置绑定校验、切换审计与生效模式解析。
  * 维护注意：
  *  1. 切换只改 merchant_store.collection_mode，只影响新订单；不得回写 trade_order，也不得改在途订单/退款。
- *  2. 切到 PLATFORM_COLLECT 必须校验 merchant_payment_account.binding_status=BOUND、sub_mchid 非空、
- *     settlement_account_id 非空，不满足直接 409，不做“先切后补”。
+ *  2. 切到 PLATFORM_COLLECT 必须先满足资质硬闸（PlatformCollectionService.enabled()，即
+ *     shop.settlement.platform-collect-enabled=true），再校验 merchant_payment_account.binding_status=BOUND、
+ *     sub_mchid 非空、settlement_account_id 非空；任一不满足直接 409，不做“先切后补”，
+ *     避免资质未开通时误切导致该商家新订单全部 409 停售。
  *  3. 生效模式优先级：环境变量应急关闭 > 数据库总闸 enabled > 商家配置模式；M4 起下单经 {@link #modeForNewOrder}
  *     写订单快照，平台代收还须分账通道已启用且绑定就绪，否则 409 拒绝建单，不降级为商家直收。
  *     支付通道入口（PaymentGatewayService）对 PLATFORM_COLLECT 仍拒绝，平台收银台接入由 M6 依据真实凭据完成。
@@ -130,6 +132,10 @@ public class MerchantCollectionModeService {
             throw new BusinessException(409, "收款模式已是 " + toMode + "，无需重复切换");
         }
         if (CollectionMode.PLATFORM_COLLECT.equals(toMode)) {
+            if (!platformCollectionService.enabled()) {
+                throw new BusinessException(409, "无法切换到平台代收：分账通道未启用"
+                        + "（需分账资质与通道联调，shop.settlement.platform-collect-enabled=true）");
+            }
             String channel = normalizedChannel(store);
             MerchantPaymentAccount account = paymentAccountMapper
                     .findByMerchantIdAndChannel(merchantId, channel).orElse(null);

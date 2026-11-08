@@ -1,12 +1,12 @@
 /*
  * 文件：MerchantCollectionModeServiceTest.java
- * 用途：M1 收款双轨模式开关的隔离规则用例：生效模式优先级、非法/重复切换、平台代收前置三要素、
- *      切回直收、CAS 并发冲突、总闸更新与切换审计写入。
+ * 用途：M1 收款双轨模式开关的隔离规则用例：生效模式优先级、非法/重复切换、平台代收前置
+ *      （资质硬闸 + 绑定三要素）、切回直收、CAS 并发冲突、总闸更新与切换审计写入。
  * 维护注意：
  *  1. 全部 Mockito 隔离，不连数据库；真实唯一键/外键、权限 401/403 与审计持久化由
  *     MerchantCollectionModeIntegrationTest 的 H2 用例覆盖。
- *  2. 锁定“切平台代收必须 BOUND + sub_mchid + settlement_account_id，缺一即 409 且不写审计”的语义；
- *     若未来放宽前置或允许先切后补，本用例必须失败并同步设计文档。
+ *  2. 锁定“切平台代收必须资质硬闸已启用 + BOUND + sub_mchid + settlement_account_id，缺一即 409 且不写审计”
+ *     的语义；若未来放宽前置或允许先切后补，本用例必须失败并同步设计文档。
  *  3. 不验证任何渠道 API；当前无真实微信/支付宝凭据。
  */
 package com.shop.b2b2c;
@@ -131,9 +131,27 @@ class MerchantCollectionModeServiceTest {
     }
 
     @Test
+    void platformSwitchIsRejectedWhenQualificationChannelIsDisabled() {
+        MerchantCollectionModeService service = service(false);
+        when(stores.findById(MERCHANT_ID)).thenReturn(Optional.of(store(CollectionMode.MERCHANT_DIRECT)));
+        when(platforms.enabled()).thenReturn(false);
+
+        BusinessException error = assertThrows(BusinessException.class,
+                () -> service.switchMode(MERCHANT_ID, CollectionMode.PLATFORM_COLLECT, "试点", OPERATOR_ID));
+
+        assertEquals(409, error.getCode());
+        assertTrue(error.getMessage().contains("分账通道未启用"));
+        // 资质硬闸先于绑定校验：不查账户、不更新、不写审计。
+        verify(accounts, never()).findByMerchantIdAndChannel(anyLong(), anyString());
+        verify(stores, never()).updateCollectionModeCas(anyLong(), anyString(), anyString());
+        verifyNoInteractions(audits);
+    }
+
+    @Test
     void platformSwitchRequiresExistingBoundAccountWithSubMchidAndSettlementAccount() {
         MerchantCollectionModeService service = service(false);
         when(stores.findById(MERCHANT_ID)).thenReturn(Optional.of(store(CollectionMode.MERCHANT_DIRECT)));
+        when(platforms.enabled()).thenReturn(true);
 
         // 无进件账户
         when(accounts.findByMerchantIdAndChannel(MERCHANT_ID, "WECHAT")).thenReturn(Optional.empty());
@@ -165,6 +183,7 @@ class MerchantCollectionModeServiceTest {
         MerchantStore platform = store(CollectionMode.PLATFORM_COLLECT);
         // 第一次读取用于切换前校验，切换成功后的视图重新读取已变更的店铺。
         when(stores.findById(MERCHANT_ID)).thenReturn(Optional.of(direct), Optional.of(platform));
+        when(platforms.enabled()).thenReturn(true);
         when(accounts.findByMerchantIdAndChannel(MERCHANT_ID, "WECHAT"))
                 .thenReturn(Optional.of(account("BOUND", "MCH-1", 31L)));
         when(configs.findSingleton()).thenReturn(config(true));
@@ -194,6 +213,7 @@ class MerchantCollectionModeServiceTest {
     void concurrentSwitchLosingCasGetsConflictAndWritesNoAudit() {
         MerchantCollectionModeService service = service(false);
         when(stores.findById(MERCHANT_ID)).thenReturn(Optional.of(store(CollectionMode.MERCHANT_DIRECT)));
+        when(platforms.enabled()).thenReturn(true);
         when(accounts.findByMerchantIdAndChannel(MERCHANT_ID, "WECHAT"))
                 .thenReturn(Optional.of(account("BOUND", "MCH-1", 31L)));
         when(stores.updateCollectionModeCas(anyLong(), anyString(), anyString())).thenReturn(0);
