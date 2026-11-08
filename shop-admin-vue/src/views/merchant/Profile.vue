@@ -4,12 +4,14 @@
 维护注意：仅能访问会话绑定店铺；银行资料应受权限和脱敏控制。保存成功不代表真实渠道变更，展示字段需与后端白名单一致。
 O9：资质有效期卡片展示身份证/营业执照到期状态（规则见 utils/qualificationExpiry.mjs），
     店长可更新为未来日期（PUT /merchant/profile/qualification-expiries）；到期当天即限制发布新商品，逾期30天自动冻结。
+M2：收款卡片只展示后端返回的真实进件/结算账户状态；无记录显示“未提交/未配置”，禁止兜底“审核中”或写死银行名。
+    收款模式以 effectiveCollectionMode 为准，商家直收与平台代收的清算说明不同，不能写死“平台不碰货款”。
 -->
 <template>
   <div class="merchant-profile">
     <div class="page-title">
-      <h2>店铺资料与个人合规分账设置</h2>
-      <p>维护店铺对外展示信息，查验微信收付通/支付宝直付通个人银联储蓄卡二级绑定信息</p>
+      <h2>店铺资料与收款账户</h2>
+      <p>维护店铺对外展示信息，查看当前生效收款模式、渠道进件状态与已登记结算账户</p>
     </div>
 
     <el-row :gutter="24">
@@ -75,15 +77,30 @@ O9：资质有效期卡片展示身份证/营业执照到期状态（规则见 u
         </el-card>
       </el-col>
 
-      <!-- 合规资金二级分账账户 (零二清) -->
       <el-col :span="11">
-        <el-card shadow="never" class="box-card">
+        <el-card v-if="!isManager" shadow="never" class="box-card">
           <template #header>
-            <span class="card-header">官方二级分账结算账户 (零二清合规)</span>
+            <span class="card-header">收款与渠道进件状态</span>
+          </template>
+          <el-empty :image-size="70" description="收款模式、进件状态与结算账户仅店长可见" />
+        </el-card>
+        <el-card v-else shadow="never" class="box-card">
+          <template #header>
+            <span class="card-header">收款与渠道进件状态</span>
           </template>
 
           <div class="account-badge">
-            <div class="badge-title">自然人小微进件状态</div>
+            <div class="badge-title">当前生效收款模式</div>
+            <el-tag :type="collectionModeView.type" size="large" effect="dark">
+              {{ collectionModeView.label }}
+            </el-tag>
+          </div>
+
+          <el-alert v-if="collectionModeView.unknown" type="warning" :closable="false" style="margin-top: 12px;"
+            title="未获取到当前收款模式，请刷新页面或联系平台运营确认，切勿据此判断资金路径" />
+
+          <div class="account-badge" style="margin-top: 12px;">
+            <div class="badge-title">渠道进件状态</div>
             <el-tag :type="paymentAccountView.type" size="large" effect="dark">
               {{ paymentAccountView.label }}
             </el-tag>
@@ -91,26 +108,48 @@ O9：资质有效期卡片展示身份证/营业执照到期状态（规则见 u
 
           <el-descriptions :column="1" border style="margin-top: 16px;">
             <el-descriptions-item label="渠道通道">
-              微信电商收付通 (WeChat Ecommerce Pay)
+              {{ paymentAccount.channel === 'ALIPAY' ? '支付宝' : (paymentAccount.channel === 'WECHAT' ? '微信支付' : '未配置') }}
             </el-descriptions-item>
             <el-descriptions-item label="二级商户号 (sub_mchid)">
-              <code>{{ paymentAccount.subMchid || '未分配' }}</code>
+              <code>{{ paymentAccount.subMchid || '未进件' }}</code>
             </el-descriptions-item>
             <el-descriptions-item label="结算人姓名">
-              {{ paymentAccount.bankAccountName || store.ownerName }}
+              {{ paymentAccount.bankAccountName || '未配置' }}
             </el-descriptions-item>
             <el-descriptions-item label="收款个人储蓄卡">
-              {{ maskBankCard(paymentAccount.bankAccountNumber) }}
+              {{ maskBankCard(paymentAccount.bankAccountNumber) || '未配置' }}
             </el-descriptions-item>
             <el-descriptions-item label="开户银行">
-              {{ paymentAccount.bankName || '中国工商银行' }}
+              {{ paymentAccount.bankName || '未配置' }}
             </el-descriptions-item>
             <el-descriptions-item label="结算清算说明">
-              <span style="font-size: 12px; color: #64748b;">
-                每笔订单买家付款后资金直入专户，履约完成后 API 自动解冻划拨到您的个人卡中，平台不碰货款。
-              </span>
+              <span style="font-size: 12px; color: #64748b;">{{ settlementNote }}</span>
             </el-descriptions-item>
           </el-descriptions>
+        </el-card>
+
+        <!-- M2 阶段一结算账户：只展示后端脱敏值与真实核验状态，不提供前端伪造的审核结论 -->
+        <el-card v-if="isManager" shadow="never" class="box-card settlement-card">
+          <template #header>
+            <span class="card-header">已登记结算账户</span>
+          </template>
+          <el-empty v-if="settlementAccountViews.length === 0" :image-size="60"
+            description="尚未登记结算账户，请联系平台运营登记并核验" />
+          <el-table v-else :data="settlementAccountViews" size="small">
+            <el-table-column prop="bankName" label="开户银行" min-width="110" />
+            <el-table-column prop="accountNoMasked" label="账号（脱敏）" min-width="120" />
+            <el-table-column label="核验状态" min-width="90">
+              <template #default="{ row }">
+                <el-tag :type="row.statusType" effect="plain">{{ row.statusLabel }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="默认" width="70">
+              <template #default="{ row }">
+                <el-tag v-if="row.isDefault" type="success" size="small">默认</el-tag>
+                <span v-else>—</span>
+              </template>
+            </el-table-column>
+          </el-table>
         </el-card>
       </el-col>
     </el-row>
@@ -121,7 +160,7 @@ O9：资质有效期卡片展示身份证/营业执照到期状态（规则见 u
 import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
-import { paymentAccountView as buildPaymentAccountView } from '../../utils/orderStatistics.mjs'
+import { paymentAccountView as buildPaymentAccountView, settlementAccountView } from '../../utils/orderStatistics.mjs'
 import { qualificationView, validateExpiryUpdate } from '../../utils/qualificationExpiry.mjs'
 import { sessionBucket, sessionGet } from '../../utils/authSession.mjs'
 
@@ -129,6 +168,8 @@ const saving = ref(false)
 const savingExpiry = ref(false)
 const store = ref({})
 const paymentAccount = ref({})
+const settlementAccounts = ref([])
+const effectiveCollectionMode = ref('')
 // 会话隔离：读实际 token 所在桶（商家页缺商家桶时回落超管桶）。
 const sessionRole = sessionGet(localStorage, 'roleCode', sessionBucket(localStorage, 'MERCHANT'))
 const isManager = ref(sessionRole === 'MERCHANT_ADMIN' || sessionRole === 'SUPERADMIN')
@@ -137,6 +178,30 @@ const isManager = ref(sessionRole === 'MERCHANT_ADMIN' || sessionRole === 'SUPER
 const expiryForm = reactive({ idCardExpiry: '', licenseExpiry: '' })
 
 const paymentAccountView = computed(() => buildPaymentAccountView(paymentAccount.value))
+
+// M2：仅按后端 effectiveCollectionMode 展示；缺失显示未知，不默认成商家直收。
+const collectionModeView = computed(() => {
+  const mode = effectiveCollectionMode.value
+  if (mode === 'MERCHANT_DIRECT') return { label: '商家直收', type: 'success', unknown: false }
+  if (mode === 'PLATFORM_COLLECT') return { label: '平台代收', type: 'warning', unknown: false }
+  return { label: '模式未获取', type: 'info', unknown: true }
+})
+
+const settlementNote = computed(() => {
+  const mode = effectiveCollectionMode.value
+  if (mode === 'MERCHANT_DIRECT') {
+    return '买家货款直接进入您的渠道账户，平台不接触货款；平台仅按订单收取技术服务费。'
+  }
+  if (mode === 'PLATFORM_COLLECT') {
+    return '买家货款进入平台服务商商户号，由微信/支付宝按分账指令结算到已绑定账户；平台按订单留存服务费，不形成资金池。'
+  }
+  return '当前收款模式未获取，请勿据此判断资金路径。'
+})
+
+const settlementAccountViews = computed(() => settlementAccounts.value.map(account => ({
+  ...account,
+  ...settlementAccountView(account)
+}))
 
 const localToday = () => {
   const now = new Date()
@@ -170,6 +235,8 @@ const loadProfile = async () => {
     // 旧接口/旧数据可能没有 shippingFee，统一回显为 0（包邮），避免输入框空值。
     if (store.value.shippingFee == null) store.value.shippingFee = 0
     paymentAccount.value = res.data.paymentAccount || {}
+    settlementAccounts.value = Array.isArray(res.data.settlementAccounts) ? res.data.settlementAccounts : []
+    effectiveCollectionMode.value = res.data.effectiveCollectionMode || ''
   } catch (e) {
     console.error(e)
   }
@@ -232,6 +299,10 @@ onMounted(() => {
 .card-header {
   font-weight: 600;
   font-size: 15px;
+}
+
+.settlement-card {
+  margin-top: 24px;
 }
 
 .account-badge {

@@ -3709,6 +3709,8 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.store.storeName").value("store1"))
                 .andExpect(jsonPath("$.data.store.idCardNumber").doesNotExist())
                 .andExpect(jsonPath("$.data.paymentAccount").doesNotExist())
+                // M2：员工看不到生效收款模式；店长才返回，页面据此展示真实资金路径。
+                .andExpect(jsonPath("$.data.effectiveCollectionMode").doesNotExist())
                 .andReturn().getResponse().getContentAsString();
         assertFalse(staffProfile.contains("110101199001011234"));
         assertFalse(staffProfile.contains("6222021234567890123"));
@@ -3722,6 +3724,8 @@ class Sprint1SecurityIntegrationTest {
                 .andExpect(jsonPath("$.data.store.ownerName").value("owner"))
                 .andExpect(jsonPath("$.data.store.idCardNumber").value("1101**********1234"))
                 .andExpect(jsonPath("$.data.paymentAccount.bankAccountNumber").value("****0123"))
+                // M2：总闸默认关闭，生效模式必须是商家直收，不得凭商家配置或页面写死。
+                .andExpect(jsonPath("$.data.effectiveCollectionMode").value("MERCHANT_DIRECT"))
                 .andReturn().getResponse().getContentAsString();
         assertFalse(managerProfile.contains("110101199001011234"));
         assertFalse(managerProfile.contains("6222021234567890123"));

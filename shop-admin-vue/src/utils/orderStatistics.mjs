@@ -3,6 +3,7 @@
  * 用途：展示服务端状态统计和真实店铺信息，不在浏览器重新计算交易/退款金额。
  * 维护注意：金额字符串直接格式化保留大额分位精度；缺失值显示未知，不能回退旧总额或以0替代。上架数量仅按商品status=1，不代表店铺当前可交易；营业和费率必须来自实际资料。
  * D25：实际退款/退款净额/扣冲正佣金由服务端按 trade_refund 成功账本（success_at 切日）计算；支付按订单创建、退款按成功时点，跨期口径净额与扣冲正佣金可为负（实际退款恒非负），缺失账本时显示未知不得按0展示。
+ * M2：渠道进件与结算账户必须区分“未提交/待核验/已核验/已驳回/已停用/未知”，无记录不得兜底为“审核中”。
  */
 export function amountText(value) {
   if (typeof value !== 'string' || !/^\d+(\.\d{1,2})?$/.test(value)) return '—'
@@ -41,10 +42,22 @@ export function storeDisplay(store) {
     status: ({ 0: '待审核', 1: '正常营业', 2: '已打烊', 3: '已封禁', 4: '已注销' })[s.status] ?? '状态未知' }
 }
 
-/** T31：支付账户审核状态，REJECTED 不能与待审核混淆。 */
+/** T31/M2：渠道进件状态；无记录显示未提交，不能把空对象伪装成审核中。 */
 export function paymentAccountView(account) {
   const status = account?.applyStatus
+  if (!status) return { label: '未提交渠道进件', type: 'info' }
   if (status === 'PASSED') return { label: '官方审核已通过并开通', type: 'success' }
   if (status === 'REJECTED') return { label: '审核已驳回，请修改资料后重新提交', type: 'danger' }
-  return { label: '审核中', type: 'warning' }
+  if (status === 'AUDITING' || status === 'PENDING') return { label: '渠道审核中', type: 'warning' }
+  return { label: `未知进件状态：${status}`, type: 'info' }
+}
+
+/** M2：阶段一结算账户核验状态；未知值原样提示，不猜测为已通过。 */
+export function settlementAccountView(account) {
+  const status = account?.status
+  if (status === 'VERIFIED') return { label: '已核验', type: 'success' }
+  if (status === 'PENDING') return { label: '待核验', type: 'warning' }
+  if (status === 'REJECTED') return { label: '已驳回', type: 'danger' }
+  if (status === 'DISABLED') return { label: '已停用', type: 'info' }
+  return { label: status ? `未知状态：${status}` : '状态未知', type: 'info' }
 }

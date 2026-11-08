@@ -1,7 +1,7 @@
 /*
  * 文件：MerchantController.java
  * 用途：平台商户配置及商家本店资料接口。
- * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效。T39 起超管开通也必须走入驻申请与审核留痕，阶段一收款账户写入 merchant_settlement_account，不再生成 SUB+时间戳/PASSED 假进件值。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。Q13-A：员工资料读取走白名单，身份证/银行卡默认脱敏，资料修改仅店长。O4：应急开通建店后店铺为 status=0 待开通（协议签齐自动开通或超管 open 兜底）；商家资料修改等写操作先经 MerchantStoreGuard.requireOpen 闸门。O6：冻结/解封/关店/注销走 POST /store-status（MerchantStoreStatusService 状态机，CAS+审计）；旧 PUT /status 仅保留打烊/恢复开关，不再支持直接置 3。
+ * 维护注意：管理参数必须在持久化前校验，所有既有店铺更新只写本操作允许列，禁止定向SQL后再save旧实体；同列并发最后提交者生效。T39 起超管开通也必须走入驻申请与审核留痕，阶段一收款账户写入 merchant_settlement_account，不再生成 SUB+时间戳/PASSED 假进件值。服务费状态按ServiceFeeStatus保留五种编码，配置标记不代表扣费或停服生效。Q13-A：员工资料读取走白名单，身份证/银行卡默认脱敏，资料修改仅店长。O4：应急开通建店后店铺为 status=0 待开通（协议签齐自动开通或超管 open 兜底）；商家资料修改等写操作先经 MerchantStoreGuard.requireOpen 闸门。O6：冻结/解封/关店/注销走 POST /store-status（MerchantStoreStatusService 状态机，CAS+审计）；旧 PUT /status 仅保留打烊/恢复开关，不再支持直接置 3。M2：商家资料仅对店长返回 effectiveCollectionMode（环境应急关闭/总闸/商家配置解析结果），员工不返回；页面据此展示真实收款模式，不得写死直收说明。
  */
 package com.shop.b2b2c.controller;
 
@@ -20,6 +20,7 @@ import com.shop.b2b2c.entity.MerchantStore;
 import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import com.shop.b2b2c.mapper.SysUserMapper;
+import com.shop.b2b2c.service.MerchantCollectionModeService;
 import com.shop.b2b2c.service.MerchantFeePolicyService;
 import com.shop.b2b2c.service.MerchantOnboardingService;
 import com.shop.b2b2c.service.MerchantSettlementAccountService;
@@ -46,6 +47,8 @@ public class MerchantController {
     private final MerchantOnboardingService onboardingService;
     private final MerchantSettlementAccountService settlementAccountService;
     private final MerchantFeePolicyService feePolicyService;
+    /** M2：只读取生效收款模式用于商家页如实展示，不在资料接口切换模式。 */
+    private final MerchantCollectionModeService collectionModeService;
     /** O4 商家写接口营业状态闸门；统一收口在 MerchantStoreGuard，不在各接口各写一套。 */
     private final com.shop.b2b2c.service.MerchantStoreGuard storeGuard;
     /** O6 店铺状态机：冻结/解封/关店/注销统一入口（CAS + 审计同事务）。 */
@@ -364,6 +367,8 @@ public class MerchantController {
             map.put("paymentAccount", paymentAccount);
             // T39 阶段一收款账户：只返回脱敏值，店长可见，员工不返回。
             map.put("settlementAccounts", settlementAccountService.maskedList(merchantId));
+            // M2 如实展示实际生效模式（总闸/应急关闭可能覆盖商家配置），避免页面写死“平台不碰货款”。
+            map.put("effectiveCollectionMode", collectionModeService.effectiveMode(merchantId));
         } else {
             // Q13-A：员工只能读取展示资料，不返回经营者姓名、身份证、费率与收款账户。
             map.put("store", AuthController.staffStoreView(store));

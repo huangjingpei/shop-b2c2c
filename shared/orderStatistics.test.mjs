@@ -5,7 +5,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { amountText, statisticsView, listedProductCount, storeDisplay, paymentAccountView, sharingRecordLabel } from '../shop-admin-vue/src/utils/orderStatistics.mjs'
+import { amountText, statisticsView, listedProductCount, storeDisplay, paymentAccountView, settlementAccountView, sharingRecordLabel } from '../shop-admin-vue/src/utils/orderStatistics.mjs'
 test('金额字符串保持大额分位，不转浮点', () => {
   assert.equal(amountText('9007199254740993.03'), '9007199254740993.03')
   assert.equal(amountText('0'), '0.00'); assert.equal(amountText('0.1'), '0.10')
@@ -35,12 +35,23 @@ test('零佣金率和真实店铺状态不被演示值覆盖', () => {
   assert.equal(storeDisplay({ status: 4 }).status, '已注销')
   assert.notEqual(storeDisplay().code, 'STORE001')
 })
-test('支付账户审核状态区分通过、驳回与待审核', () => {
+test('M2：渠道进件区分通过、驳回、审核中与未提交，空对象不再伪装审核中', () => {
   assert.equal(paymentAccountView({ applyStatus: 'PASSED' }).type, 'success')
   assert.equal(paymentAccountView({ applyStatus: 'REJECTED' }).label.includes('驳回'), true)
   assert.equal(paymentAccountView({ applyStatus: 'REJECTED' }).type, 'danger')
-  assert.equal(paymentAccountView({ applyStatus: 'PENDING' }).label, '审核中')
-  assert.equal(paymentAccountView({}).label, '审核中')
+  assert.equal(paymentAccountView({ applyStatus: 'AUDITING' }).label, '渠道审核中')
+  assert.equal(paymentAccountView({ applyStatus: 'PENDING' }).label, '渠道审核中')
+  assert.equal(paymentAccountView({}).label, '未提交渠道进件')
+  assert.equal(paymentAccountView().label, '未提交渠道进件')
+  assert.equal(paymentAccountView({ applyStatus: 'UNKNOWN_CHANNEL' }).type, 'info')
+})
+test('M2：结算账户核验状态不猜测已通过，未知值原样提示', () => {
+  assert.equal(settlementAccountView({ status: 'VERIFIED' }).type, 'success')
+  assert.equal(settlementAccountView({ status: 'PENDING' }).label, '待核验')
+  assert.equal(settlementAccountView({ status: 'REJECTED' }).type, 'danger')
+  assert.equal(settlementAccountView({ status: 'DISABLED' }).type, 'info')
+  assert.equal(settlementAccountView({}).label, '状态未知')
+  assert.equal(settlementAccountView({ status: 'WEIRD' }).label, '未知状态：WEIRD')
 })
 test('内部FINISHED记录不表述为资金到账', () => {
   assert.equal(sharingRecordLabel('FINISHED'), '记录完成（待对账）')
