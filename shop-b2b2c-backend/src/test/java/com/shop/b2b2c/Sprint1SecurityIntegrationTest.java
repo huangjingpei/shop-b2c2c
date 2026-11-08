@@ -5590,17 +5590,17 @@ class Sprint1SecurityIntegrationTest {
         mvc.perform(post(url + eventId + "/disposition").header("Authorization", "Bearer " + token)
                         .contentType("application/json")
                         .content(json.writeValueAsString(java.util.Map.of(
-                                "action", "REFUND_PAYMENT", "note", "已走退款流程")))
+                                "action", "REFUND_PAYMENT", "note", "已走退款流程"))))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
         mvc.perform(post(url + eventId + "/disposition").header("Authorization", "Bearer " + token)
                         .contentType("application/json")
                         .content(json.writeValueAsString(java.util.Map.of(
-                                "action", "NO_ACTION_REQUIRED", "note", "x")))
+                                "action", "NO_ACTION_REQUIRED", "note", "x"))))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
         mvc.perform(post(url + successId + "/disposition").header("Authorization", "Bearer " + token)
                         .contentType("application/json")
                         .content(json.writeValueAsString(java.util.Map.of(
-                                "action", "NO_ACTION_REQUIRED", "note", "核对后无需处理")))
+                                "action", "NO_ACTION_REQUIRED", "note", "核对后无需处理"))))
                 .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
         assertEquals(0, jdbc.queryForObject(
                 "SELECT COUNT(*) FROM payment_exception_disposition", Integer.class).intValue());
