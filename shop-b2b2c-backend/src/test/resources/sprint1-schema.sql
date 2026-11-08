@@ -954,4 +954,17 @@ CREATE TABLE IF NOT EXISTS payment_close_receipt (
 CREATE INDEX IF NOT EXISTS idx_close_receipt_order ON payment_close_receipt(order_sn, channel, attempt_no);
 CREATE INDEX IF NOT EXISTS idx_close_receipt_retry ON payment_close_receipt(result, attempted_at);
 
+-- 40. 支付异常人工处置（F08，H2 隔离夹具）：event_id 唯一、只增不改、不设外键
+CREATE TABLE IF NOT EXISTS payment_exception_disposition (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  event_id BIGINT NOT NULL,
+  order_sn VARCHAR(64) NULL,
+  action VARCHAR(32) NOT NULL,
+  note VARCHAR(200) NOT NULL,
+  operator_id BIGINT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT uk_payment_disposition_event UNIQUE (event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_payment_disposition_action ON payment_exception_disposition(action, created_at);
+
 

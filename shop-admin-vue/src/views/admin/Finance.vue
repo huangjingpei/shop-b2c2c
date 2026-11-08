@@ -6,6 +6,8 @@
   2. 复核人候选来自 /admin/settlement/reviewers，已排除当前账号；严格模式无第二账号时显示“需至少分配两个财务账号”，不得用通用报错代替。
   3. 宽松模式允许不选复核人，提交后由后端按操作人落 SAME_OPERATOR；页面不得自行伪造 confirmedBy。
   4. 确认成功后刷新列表；金额、状态迁移以后端事务结果为准，不在前端预扣余额。
+  5. 支付异常队列只读展示异常事件与已记录的人工处置结论；处置弹窗仅提交结论与说明，
+     不改事件状态/资金标记、订单或退款账本，退款/补偿仍须走渠道或既有退款流程。
 -->
 <template>
   <div class="finance-page">
@@ -89,6 +91,43 @@
       <el-empty v-else-if="!batches.length" description="该店铺暂无结算批次" />
     </el-card>
 
+    <el-card shadow="never" class="table-card">
+      <template #header>
+        <div class="card-header">
+          <span>支付异常队列</span>
+          <span class="count">需人工核对 · 共 {{ exceptions.length }} 条</span>
+        </div>
+      </template>
+      <el-table :data="exceptions" stripe v-loading="exceptionLoading">
+        <el-table-column prop="orderSn" label="订单号" min-width="150" />
+        <el-table-column prop="merchantId" label="店铺ID" width="90" />
+        <el-table-column prop="channel" label="渠道" width="90" />
+        <el-table-column label="金额" width="120">
+          <template #default="{ row }">
+            ￥{{ row.payAmount ?? '-' }} {{ row.currency || '' }}
+          </template>
+        </el-table-column>
+        <el-table-column prop="eventStatus" label="事件状态" width="140" />
+        <el-table-column label="资金往来" width="100">
+          <template #default="{ row }">{{ fundsLabel(row.fundsReceived) }}</template>
+        </el-table-column>
+        <el-table-column prop="errorMessage" label="异常说明" min-width="180"
+          show-overflow-tooltip />
+        <el-table-column label="处置" width="230">
+          <template #default="{ row }">
+            <div v-if="row.dispositionAction" class="disposition-cell">
+              <el-tag size="small" type="success">{{ actionLabel(row.dispositionAction) }}</el-tag>
+              <span class="hint">{{ row.dispositionNote }}</span>
+              <span class="hint">操作人 {{ row.disposedBy }} · {{ formatTime(row.disposedAt) }}</span>
+            </div>
+            <el-button v-else size="small" type="primary" link
+              @click="openDispositionDialog(row)">记录处置</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty v-if="!exceptions.length" description="暂无待核对的支付异常" />
+    </el-card>
+
     <el-dialog v-model="rechargeDialogVisible" title="确认充值到账" width="480px" @closed="resetSelection">
       <el-form label-width="110px">
         <el-form-item label="充值单号">{{ rechargeTarget.rechargeNo }}</el-form-item>
@@ -134,6 +173,32 @@
           @click="submitBatch">确认批次</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="dispositionDialogVisible" title="记录支付异常处置" width="520px"
+      @closed="resetDisposition">
+      <el-alert
+        title="本操作只记录人工核对结论，不改写支付事件状态、资金标记、订单或退款账本；退款/补偿仍须走渠道或既有退款流程。"
+        type="info" :closable="false" show-icon />
+      <el-form label-width="100px" class="disposition-form">
+        <el-form-item label="订单号">{{ dispositionTarget.orderSn || '-' }}</el-form-item>
+        <el-form-item label="处置结论" required>
+          <el-select v-model="dispositionAction" placeholder="请选择处置结论" style="width: 100%">
+            <el-option v-for="item in exceptionActions" :key="item.value"
+              :label="item.label" :value="item.value" />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="处置说明" required>
+          <el-input v-model="dispositionNote" type="textarea" :rows="3" maxlength="200"
+            show-word-limit placeholder="2-200 字，写明核对依据与结论" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="dispositionDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="dispositionSubmitting"
+          :disabled="!dispositionAction || !dispositionNote.trim()"
+          @click="submitDisposition">提交处置</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -155,6 +220,31 @@ const batches = ref([])
 const batchMerchantId = ref('')
 const reviewers = ref([])
 const dualApprovalRequired = ref(false)
+
+// 异常队列与人工处置：结论白名单须与后端 PaymentExceptionDispositionService 保持一致。
+const exceptionActions = [
+  { value: 'REFUND_CONFIRMED', label: '退款已确认（渠道或既有退款流程）' },
+  { value: 'DUPLICATE_RESOLVED', label: '重复付款已核销' },
+  { value: 'CHANNEL_VERIFIED', label: '渠道流水已核对' },
+  { value: 'NO_ACTION_REQUIRED', label: '核对后无需处理' }
+]
+const exceptionLoading = ref(false)
+const exceptions = ref([])
+const dispositionDialogVisible = ref(false)
+const dispositionTarget = ref({})
+const dispositionAction = ref('')
+const dispositionNote = ref('')
+const dispositionSubmitting = ref(false)
+
+const fundsLabel = value => {
+  if (value === 1) return '有渠道流水'
+  if (value === 0) return '明确无'
+  return '未判定'
+}
+
+const actionLabel = value => exceptionActions.find(item => item.value === value)?.label || value
+
+const formatTime = value => (value ? String(value).replace('T', ' ').slice(0, 19) : '-')
 
 const reviewerPolicy = computed(() => reviewerState({
   dualApprovalRequired: dualApprovalRequired.value,
@@ -190,6 +280,19 @@ const loadRecharges = async () => {
   recharges.value = Array.isArray(res.data) ? res.data : []
 }
 
+const loadExceptions = async () => {
+  exceptionLoading.value = true
+  try {
+    const res = await request.get('/admin/settlement/payment-exceptions')
+    exceptions.value = Array.isArray(res.data?.items) ? res.data.items : []
+  } catch (error) {
+    // 加载失败保留上次数据，避免把旧队列清空造成“已无异常”的误判。
+    ElMessage.error(error.response?.data?.message || '支付异常队列加载失败')
+  } finally {
+    exceptionLoading.value = false
+  }
+}
+
 const loadBatches = async () => {
   if (!batchMerchantId.value) {
     batches.value = []
@@ -209,7 +312,7 @@ const loadBatches = async () => {
 const loadAll = async () => {
   loading.value = true
   try {
-    await Promise.all([loadReviewers(), loadMerchants(), loadRecharges()])
+    await Promise.all([loadReviewers(), loadMerchants(), loadRecharges(), loadExceptions()])
   } catch (error) {
     ElMessage.error(error.response?.data?.message || '财务数据加载失败')
   } finally {
@@ -232,6 +335,45 @@ const openBatchDialog = row => {
 
 const resetSelection = () => {
   selectedReviewer.value = ''
+}
+
+const openDispositionDialog = row => {
+  dispositionTarget.value = row
+  dispositionAction.value = ''
+  dispositionNote.value = ''
+  dispositionDialogVisible.value = true
+}
+
+const resetDisposition = () => {
+  dispositionAction.value = ''
+  dispositionNote.value = ''
+}
+
+const submitDisposition = async () => {
+  if (dispositionSubmitting.value) return
+  if (!dispositionAction.value) {
+    ElMessage.warning('请选择处置结论')
+    return
+  }
+  const note = dispositionNote.value.trim()
+  if (note.length < 2 || note.length > 200) {
+    ElMessage.warning('处置说明必须为 2-200 字')
+    return
+  }
+  dispositionSubmitting.value = true
+  try {
+    await request.post(
+      `/admin/settlement/payment-exceptions/${dispositionTarget.value.id}/disposition`,
+      { action: dispositionAction.value, note }
+    )
+    ElMessage.success('处置结论已记录')
+    dispositionDialogVisible.value = false
+    await loadExceptions()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '处置记录失败')
+  } finally {
+    dispositionSubmitting.value = false
+  }
 }
 
 const guardSelection = () => {
@@ -353,5 +495,15 @@ onMounted(loadAll)
 .muted {
   font-size: 12px;
   color: #94a3b8;
+}
+
+.disposition-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.disposition-form {
+  margin-top: 12px;
 }
 </style>

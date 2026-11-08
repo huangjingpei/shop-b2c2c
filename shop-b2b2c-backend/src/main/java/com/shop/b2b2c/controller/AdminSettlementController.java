@@ -8,12 +8,16 @@
  *  4. 复核人候选只返回启用中的其他 SUPERADMIN，不返回密码；是否允许同人由 FinanceApprovalGuard 判定。
  *  5. T+1 跑批入口与记录查询只暴露跑批状态/计数，不返回渠道报文；业务日默认按 Asia/Shanghai 取昨天。
  *  6. F10 SaaS 月费账单与交易抽佣/结算批次分离；缴费确认只接受线下 OFFLINE 凭证，不写 merchant_account 账本。
+ *  7. 支付异常处置只记录人工核对结论，不改 payment_event 的 event_status/funds_received，也不改订单与退款账本；
+ *     退款/补偿仍须走渠道或既有退款流程，处置接口不得被当作资金操作。
  */
 package com.shop.b2b2c.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.shop.b2b2c.common.R;
+import com.shop.b2b2c.dto.PaymentExceptionDispositionRequest;
+import com.shop.b2b2c.dto.PaymentExceptionDispositionView;
 import com.shop.b2b2c.dto.SettlementDTOs;
 import com.shop.b2b2c.entity.MerchantAccount;
 import com.shop.b2b2c.entity.MerchantCollectionStatusAudit;
@@ -31,6 +35,7 @@ import com.shop.b2b2c.service.MerchantAccountService;
 import com.shop.b2b2c.service.ReconciliationBatchService;
 import com.shop.b2b2c.service.ReconciliationService;
 import com.shop.b2b2c.service.SettlementService;
+import com.shop.b2b2c.service.payment.PaymentExceptionDispositionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
@@ -68,6 +73,7 @@ public class AdminSettlementController {
     private final SysUserMapper userMapper;
     private final FinanceApprovalGuard approvalGuard;
     private final com.shop.b2b2c.mapper.PaymentEventMapper paymentEventMapper;
+    private final PaymentExceptionDispositionService exceptionDispositionService;
 
     @Operation(summary = "支付异常队列：迟到支付/重复付款/金额或商户不符等需人工补偿的事件")
     @GetMapping("/payment-exceptions")
@@ -88,6 +94,16 @@ public class AdminSettlementController {
         result.put("items", paymentEventMapper.findPaymentExceptions(safeReason, safeLimit, safeOffset));
         result.put("note", "异常事件仅用于人工核对；退款/补偿须走渠道或既有退款流程，本接口不修改资金状态");
         return R.ok(result);
+    }
+
+    @Operation(summary = "记录支付异常处置结论（只审计，不发起退款）")
+    @PostMapping("/payment-exceptions/{eventId}/disposition")
+    public R<PaymentExceptionDispositionView> disposePaymentException(
+            @PathVariable long eventId,
+            @RequestBody(required = false) PaymentExceptionDispositionRequest request) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok("处置结论已记录", exceptionDispositionService.dispose(
+                eventId, request, StpUtil.getLoginIdAsLong()));
     }
 
     @Operation(summary = "查询可选的财务复核人（排除当前操作人）")

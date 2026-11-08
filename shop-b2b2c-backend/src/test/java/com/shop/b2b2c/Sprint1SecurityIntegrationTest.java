@@ -116,7 +116,7 @@ class Sprint1SecurityIntegrationTest {
     @BeforeEach
     void fixtures() {
         when(redis.<Long>execute(any(), anyList(), any(), any())).thenReturn(1L);
-        for (String table : List.of("payment_close_receipt", "payment_callback_audit", "complaint_event", "complaint", "refund_request", "billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
+        for (String table : List.of("payment_exception_disposition", "payment_close_receipt", "payment_callback_audit", "complaint_event", "complaint", "refund_request", "billing_statement", "merchant_notification_outbox", "payment_event", "card_reissue", "card_import_item", "card_import_batch", "virtual_card_void", "inventory_adjustment", "sys_user", "order_idempotency", "inventory_reservation", "trade_refund", "trade_order_item", "trade_order", "product_virtual_card", "product_sku", "product", "product_violation_audit", "merchant_fee_audit", "merchant_fee_policy", "merchant_payment_account", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
         }
         for (int id = 1; id <= 2; id++) {
@@ -5540,5 +5540,117 @@ class Sprint1SecurityIntegrationTest {
                         .param("reason", "重复"))
                 .andExpect(status().isOk()).andExpect(jsonPath("$.data.items.length()").value(1))
                 .andExpect(jsonPath("$.data.items[0].orderSn").value("F08-ORD-2"));
+    }
+
+    @Test
+    void f08PaymentExceptionDispositionRequiresSuperadmin() throws Exception {
+        jdbc.update("INSERT INTO payment_event(channel,pay_trade_no,order_sn,merchant_id,pay_amount,currency,"
+                + "event_status,error_message,funds_received) "
+                + "VALUES('WECHAT','F08-DISP-AUTH','F08-DISP-AUTH',1,10.00,'CNY','LATE_PAYMENT','迟到支付',1)");
+        long eventId = jdbc.queryForObject(
+                "SELECT id FROM payment_event WHERE pay_trade_no='F08-DISP-AUTH'", Long.class);
+        String body = json.writeValueAsString(java.util.Map.of(
+                "action", "NO_ACTION_REQUIRED", "note", "核对后无需处理"));
+
+        mvc.perform(post("/api/v1/admin/settlement/payment-exceptions/" + eventId + "/disposition")
+                        .contentType("application/json").content(body))
+                .andExpect(status().isUnauthorized());
+
+        authUser("MERCHANT_ADMIN", 1L);
+        String token = loginToken();
+        mvc.perform(post("/api/v1/admin/settlement/payment-exceptions/" + eventId + "/disposition")
+                        .header("Authorization", "Bearer " + token)
+                        .contentType("application/json").content(body))
+                .andExpect(status().isForbidden());
+
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM payment_exception_disposition", Integer.class).intValue(),
+                "未授权或非超管请求不得落处置记录");
+    }
+
+    @Test
+    void f08PaymentExceptionDispositionRecordsAuditWithoutChangingEventOrFunds() throws Exception {
+        jdbc.update("INSERT INTO payment_event(channel,pay_trade_no,order_sn,merchant_id,pay_amount,currency,"
+                + "payer_id,event_status,error_message,raw_payload,funds_received) "
+                + "VALUES('WECHAT','F08-DISP-1','F08-ORD-DISP',1,10.00,'CNY','payer-secret-disp','LATE_PAYMENT',"
+                + "'订单已关闭后的迟到支付','{\"secret\":\"raw-body-disp\"}',1)");
+        jdbc.update("INSERT INTO payment_event(channel,pay_trade_no,order_sn,merchant_id,pay_amount,currency,"
+                + "event_status,funds_received) "
+                + "VALUES('ALIPAY','F08-DISP-OK','F08-ORD-OK',1,20.00,'CNY','SUCCESS',1)");
+        long eventId = jdbc.queryForObject(
+                "SELECT id FROM payment_event WHERE pay_trade_no='F08-DISP-1'", Long.class);
+        long successId = jdbc.queryForObject(
+                "SELECT id FROM payment_event WHERE pay_trade_no='F08-DISP-OK'", Long.class);
+
+        authUser("SUPERADMIN", null);
+        String token = loginToken();
+        String url = "/api/v1/admin/settlement/payment-exceptions/";
+
+        // 结论不在白名单、说明过短、事件不在异常队列，均拒绝且不落记录
+        mvc.perform(post(url + eventId + "/disposition").header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of(
+                                "action", "REFUND_PAYMENT", "note", "已走退款流程")))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        mvc.perform(post(url + eventId + "/disposition").header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of(
+                                "action", "NO_ACTION_REQUIRED", "note", "x")))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        mvc.perform(post(url + successId + "/disposition").header("Authorization", "Bearer " + token)
+                        .contentType("application/json")
+                        .content(json.writeValueAsString(java.util.Map.of(
+                                "action", "NO_ACTION_REQUIRED", "note", "核对后无需处理")))
+                .andExpect(status().isBadRequest()).andExpect(jsonPath("$.code").value(400));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM payment_exception_disposition", Integer.class).intValue());
+
+        String validBody = json.writeValueAsString(java.util.Map.of(
+                "action", "REFUND_CONFIRMED", "note", "已走渠道退款流程"));
+        mvc.perform(post(url + eventId + "/disposition").header("Authorization", "Bearer " + token)
+                        .contentType("application/json").content(validBody))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.eventId").value(eventId))
+                .andExpect(jsonPath("$.data.orderSn").value("F08-ORD-DISP"))
+                .andExpect(jsonPath("$.data.action").value("REFUND_CONFIRMED"))
+                .andExpect(jsonPath("$.data.note").value("已走渠道退款流程"))
+                .andExpect(jsonPath("$.data.operatorId").value(200));
+
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM payment_exception_disposition", Integer.class).intValue());
+        assertEquals("REFUND_CONFIRMED", jdbc.queryForObject(
+                "SELECT action FROM payment_exception_disposition WHERE event_id=?", String.class, eventId));
+        assertEquals("已走渠道退款流程", jdbc.queryForObject(
+                "SELECT note FROM payment_exception_disposition WHERE event_id=?", String.class, eventId));
+        assertEquals(200, jdbc.queryForObject(
+                "SELECT operator_id FROM payment_exception_disposition WHERE event_id=?",
+                Long.class, eventId).intValue());
+        // 处置不得改写支付事件状态、资金标记或原始报文
+        assertEquals("LATE_PAYMENT", jdbc.queryForObject(
+                "SELECT event_status FROM payment_event WHERE id=?", String.class, eventId));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT funds_received FROM payment_event WHERE id=?", Integer.class, eventId).intValue());
+        assertEquals("{\"secret\":\"raw-body-disp\"}", jdbc.queryForObject(
+                "SELECT raw_payload FROM payment_event WHERE id=?", String.class, eventId));
+
+        // 同一事件重复处置返回 409，不产生第二行
+        mvc.perform(post(url + eventId + "/disposition").header("Authorization", "Bearer " + token)
+                        .contentType("application/json").content(validBody))
+                .andExpect(status().isConflict()).andExpect(jsonPath("$.code").value(409));
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM payment_exception_disposition", Integer.class).intValue());
+
+        // 队列保留已处置事件并回传处置结论，仍不泄露原始报文与付款人标识
+        String response = mvc.perform(get("/api/v1/admin/settlement/payment-exceptions")
+                        .header("Authorization", "Bearer " + token))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.items.length()").value(1))
+                .andExpect(jsonPath("$.data.items[0].eventStatus").value("LATE_PAYMENT"))
+                .andExpect(jsonPath("$.data.items[0].dispositionAction").value("REFUND_CONFIRMED"))
+                .andExpect(jsonPath("$.data.items[0].dispositionNote").value("已走渠道退款流程"))
+                .andExpect(jsonPath("$.data.items[0].disposedBy").value(200))
+                .andReturn().getResponse().getContentAsString();
+        assertFalse(response.contains("raw-body-disp"));
+        assertFalse(response.contains("payer-secret-disp"));
     }
 }

@@ -127,16 +127,20 @@ public interface PaymentEventMapper extends BaseMapper<PaymentEvent> {
 
     /**
      * F08 支付异常队列：只读取需人工补偿的异常态，按 id 倒序分页；reason 可选按错误说明模糊过滤。
-     * 显式列白名单，禁止 SELECT * 回传 raw_payload/payer_id。
+     * 显式列白名单，禁止 SELECT * 回传 raw_payload/payer_id；LEFT JOIN 只追加人工处置结论，
+     * 已处置事件仍保留在队列中，且不因 JOIN 改写 payment_event 的状态与资金标记。
      */
     @Select("<script>"
-            + "SELECT id, merchant_id AS merchantId, channel, order_sn AS orderSn, pay_amount AS payAmount, "
-            + "currency, event_status AS eventStatus, error_message AS errorMessage, "
-            + "funds_received AS fundsReceived, created_at AS createdAt "
-            + "FROM payment_event WHERE event_status IN ('LATE_PAYMENT','DUPLICATE_PAYMENT','AMOUNT_MISMATCH',"
+            + "SELECT e.id, e.merchant_id AS merchantId, e.channel, e.order_sn AS orderSn, "
+            + "e.pay_amount AS payAmount, e.currency, e.event_status AS eventStatus, "
+            + "e.error_message AS errorMessage, e.funds_received AS fundsReceived, e.created_at AS createdAt, "
+            + "d.id AS dispositionId, d.action AS dispositionAction, d.note AS dispositionNote, "
+            + "d.operator_id AS disposedBy, d.created_at AS disposedAt "
+            + "FROM payment_event e LEFT JOIN payment_exception_disposition d ON d.event_id = e.id "
+            + "WHERE e.event_status IN ('LATE_PAYMENT','DUPLICATE_PAYMENT','AMOUNT_MISMATCH',"
             + "'CURRENCY_MISMATCH','MERCHANT_MISMATCH','MANUAL_REVIEW','FULFILLMENT_FAILED') "
-            + "<if test='reason != null and reason != \"\"'>AND error_message LIKE CONCAT('%', #{reason}, '%') </if>"
-            + "ORDER BY id DESC LIMIT #{limit} OFFSET #{offset}"
+            + "<if test='reason != null and reason != \"\"'>AND e.error_message LIKE CONCAT('%', #{reason}, '%') </if>"
+            + "ORDER BY e.id DESC LIMIT #{limit} OFFSET #{offset}"
             + "</script>")
     List<com.shop.b2b2c.dto.PaymentExceptionView> findPaymentExceptions(@Param("reason") String reason,
                                                                          @Param("limit") int limit,

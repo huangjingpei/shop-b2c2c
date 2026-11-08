@@ -61,8 +61,8 @@ Sprint 35 已实现取消/超时后的 `closePaymentBestEffort`：渠道未配�
 | `payment.close-retry.enabled` | `true` | 关闭后只停止重试，不影响关单与回执 |
 | `payment.close-retry.delay-ms` | `600000` | 固定间隔 10 分钟 |
 | `payment.close-retry.interval-minutes` | `10` | 失败后至少间隔 10 分钟再重试 |
-| `payment.close-retry.max-attempts` | `5` | 同一订单最多 5 次关单尝试（含首次） |
-| `payment.close-retry.window-hours` | `72` | 只扫描 72 小时内的回执 |
+| `payment.close-retry.max-attempts` | `6` | 同一订单最多 6 次关单尝试（含首次），方案 B 已确认 |
+| `payment.close-retry.window-hours` | `24` | 只扫描 24 小时内的回执，方案 B 已确认 |
 | 批量 | `100` | 单轮最多 100 条（代码常量） |
 
 `SKIPPED` 不自动重试：账户审核通过或适配器启用后不会自动补调，仍需商家主动关单或人工核对。
