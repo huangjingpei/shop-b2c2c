@@ -2,6 +2,7 @@
 文件：Merchants.vue
 用途：平台商户资料、佣金、服务费、营业状态和收款模式配置页面。
 维护注意：进件仍有模拟数据，不能把成功提示当真实渠道开通；后台校验为权威；服务费五种编码分别展示，未知值须明确选择，配置不代表扣费或停服；日期按LocalDate提交。G31：调价与开店初始费率必须提供复核人入口，候选排除当前账号；无第二账号时明确提示“需至少分配两个财务账号”，前端不绕过后端双人复核。O6：打烊/开业仅营业(1)/打烊(2)走旧开关；冻结/解封/关店/注销统一走 /store-status（原因码必填、解封双人、终态警示），状态审计只读时间线来自 /store-status-audits；动作/原因码规则集中在 utils/storeStatusActions.mjs，与后端字典同步维护。
+M3：平台代收总闸与商家收款模式切换仅超管；展示以 M1 接口返回为准，列表列按 collectionModeView 解析，总闸未获取时不得默认为商家直收；切平台代收缺 BOUND/sub_mchid/结算账户时显示 409 原因，不伪造成功。
 -->
 <template>
   <div class="merchants-page">
@@ -15,6 +16,25 @@
 
     <el-alert v-if="reviewerPolicy.singleAdminMode" :title="reviewerPolicy.singleAdminNotice"
       type="warning" :closable="false" show-icon class="policy-alert" />
+
+    <!-- M3：平台代收总闸；关闭时所有新订单按商家直收，不批量修改商家配置 -->
+    <el-card shadow="never" class="gate-card">
+      <div class="gate-row">
+        <div>
+          <div class="gate-title">平台代收总闸</div>
+          <div class="gate-note">关闭时全部新订单按商家直收；开启后仅对商家配置为平台代收且渠道绑定就绪的订单生效。</div>
+        </div>
+        <div class="gate-actions">
+          <el-tag v-if="collectionConfig === null" type="info" effect="plain">总闸状态未获取</el-tag>
+          <el-tag v-else-if="collectionConfig.emergencyDisabled" type="warning" effect="plain">环境应急关闭</el-tag>
+          <el-switch :model-value="Boolean(collectionConfig?.enabled)" :loading="gateSaving"
+            :disabled="collectionConfig === null || collectionConfig?.emergencyDisabled"
+            active-text="开启" inactive-text="关闭" @change="toggleCollectionGate" />
+        </div>
+      </div>
+      <el-alert v-if="collectionConfig?.emergencyDisabled" type="warning" :closable="false" show-icon
+        title="环境变量已强制关闭平台代收，页面开关不改变实际资金路径；请先移除应急配置。" />
+    </el-card>
 
     <el-card shadow="never" class="table-card">
       <el-table :data="merchants" stripe style="width: 100%" v-loading="loading">
@@ -58,18 +78,13 @@
           </template>
         </el-table-column>
 
-        <!-- ★ 结算收款通道模式 -->
-        <el-table-column label="收款结算模式" width="140">
+        <!-- ★ M3 收款模式：按总闸解析生效值；商家配置仍如实显示为待生效 -->
+        <el-table-column label="收款模式" width="150">
           <template #default="{ row }">
-            <el-tag v-if="row.paymentChannelType === 'A'" type="primary" size="small">
-              A-电商收付通
-            </el-tag>
-            <el-tag v-else-if="row.paymentChannelType === 'B'" type="warning" size="small">
-              B-商户直收码
-            </el-tag>
-            <el-tag v-else type="info" size="small">
-              C-沙箱测试桩
-            </el-tag>
+            <el-tag :type="rowModeView(row).type" size="small">{{ rowModeView(row).label }}</el-tag>
+            <div v-if="rowModeView(row).pending" class="mode-note">配置：平台代收（总闸未开）</div>
+            <div v-if="rowModeView(row).unknown" class="mode-note">总闸未获取，请刷新</div>
+            <div class="mode-note">渠道：{{ row.payChannel || '未配置' }}</div>
           </template>
         </el-table-column>
 
@@ -88,10 +103,11 @@
         </el-table-column>
 
         <!-- 管理操作 -->
-        <el-table-column label="管理操作" width="260" fixed="right">
+        <el-table-column label="管理操作" width="320" fixed="right">
           <template #default="{ row }">
             <el-button size="small" type="primary" link @click="openFeeDialog(row)">配置服务费</el-button>
-            <el-button size="small" type="warning" link @click="openChannelDialog(row)">切换通道</el-button>
+            <el-button size="small" type="warning" link @click="openModeDialog(row)">收款模式</el-button>
+            <el-button size="small" type="info" link @click="openChannelDialog(row)">支付渠道</el-button>
             <el-button size="small" type="info" link @click="editCommission(row)">费率</el-button>
             <!-- O6：打烊/恢复仅营业(1)/打烊(2)可走旧开关；冻结(3)/注销(4)状态下该开关无合法动作 -->
             <el-button v-if="row.status === 1 || row.status === 2" size="small"
@@ -310,6 +326,62 @@
       <el-empty v-else description="暂无状态审计记录" />
     </el-drawer>
 
+    <!-- 7. M3 商家收款模式与切换审计 -->
+    <el-dialog v-model="modeDialogVisible" :title="`收款模式 - ${modeMerchant?.storeName || ''}`" width="640px">
+      <el-skeleton v-if="modeLoading" :rows="5" animated />
+      <template v-else-if="modeDetail">
+        <el-descriptions :column="2" border size="small">
+          <el-descriptions-item label="商家配置模式">{{ modeLabel(modeDetail.configuredMode) }}</el-descriptions-item>
+          <el-descriptions-item label="当前生效模式">{{ modeLabel(modeDetail.effectiveMode) }}</el-descriptions-item>
+          <el-descriptions-item label="平台总闸">
+            {{ modeDetail.globalEnabled ? '已开启' : '已关闭' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="环境应急">
+            {{ modeDetail.emergencyDisabled ? '强制关闭' : '未启用' }}
+          </el-descriptions-item>
+          <el-descriptions-item label="支付渠道">{{ modeDetail.payChannel || '未配置' }}</el-descriptions-item>
+          <el-descriptions-item label="进件绑定">{{ modeDetail.bindingStatus || '未进件' }}</el-descriptions-item>
+        </el-descriptions>
+        <el-alert v-if="!modeDetail.bindingReady" type="warning" :closable="false" show-icon
+          style="margin-top: 12px;" :title="`平台代收前置条件未满足：${modeDetail.blockReason || '渠道绑定未就绪'}`" />
+        <el-alert v-else type="success" :closable="false" show-icon style="margin-top: 12px;"
+          title="渠道绑定三要素已就绪，可切换平台代收。" />
+
+        <el-form :model="modeForm" label-width="100px" style="margin-top: 16px;">
+          <el-form-item label="切换为">
+            <el-radio-group v-model="modeForm.mode">
+              <el-radio-button label="MERCHANT_DIRECT">商家直收</el-radio-button>
+              <el-radio-button label="PLATFORM_COLLECT" :disabled="!modeDetail.bindingReady">
+                平台代收
+              </el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="切换原因">
+            <el-input v-model="modeForm.reason" type="textarea" :rows="2" maxlength="200" show-word-limit
+              placeholder="选填，写入切换审计；不得填写卡号、证件号或渠道密钥" />
+          </el-form-item>
+        </el-form>
+
+        <el-divider content-position="left">切换审计</el-divider>
+        <el-table v-if="modeAudits.length" :data="modeAudits" size="small" max-height="220">
+          <el-table-column prop="createdAt" label="时间" width="150" />
+          <el-table-column label="变更" min-width="150">
+            <template #default="{ row }">{{ modeLabel(row.fromMode) }} → {{ modeLabel(row.toMode) }}</template>
+          </el-table-column>
+          <el-table-column prop="reason" label="原因" min-width="120" />
+          <el-table-column prop="operatorId" label="操作人ID" width="90" />
+        </el-table>
+        <el-empty v-else description="暂无切换审计" :image-size="60" />
+      </template>
+      <template #footer>
+        <el-button @click="modeDialogVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="modeSaving"
+          :disabled="modeLoading || !modeDetail || modeForm.mode === modeDetail.configuredMode
+            || (modeForm.mode === 'PLATFORM_COLLECT' && !modeDetail.bindingReady)"
+          @click="submitMode">确认切换</el-button>
+      </template>
+    </el-dialog>
+
   </div>
 </template>
 
@@ -318,7 +390,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import request from '../../api/request'
 import { FEE_STATUS_OPTIONS, feeStatusView, serviceFeeForm, serviceFeePayload } from '../../utils/serviceFee.mjs'
-import { storeDisplay } from '../../utils/orderStatistics.mjs'
+import { storeDisplay, collectionModeView } from '../../utils/orderStatistics.mjs'
 import { createIdempotentSubmission } from '../../utils/idempotency.mjs'
 import { generateTemporaryPassword, isStrongPassword } from '../../utils/adminAccount.mjs'
 import { reviewerState, validateReviewer } from '../../utils/financeReview.mjs'
@@ -687,13 +759,156 @@ const handleSaveChannel = async () => {
   }
 }
 
+// ==================== M3 平台代收总闸与商家收款模式 ====================
+// collectionConfig 为 null 表示接口未返回；列表不得把 null 当成“总闸关闭”。
+const collectionConfig = ref(null)
+const gateSaving = ref(false)
+const modeDialogVisible = ref(false)
+const modeLoading = ref(false)
+const modeSaving = ref(false)
+const modeMerchant = ref(null)
+const modeDetail = ref(null)
+const modeAudits = ref([])
+const modeForm = ref({ mode: 'MERCHANT_DIRECT', reason: '' })
+
+const modeLabel = mode => {
+  if (mode === 'MERCHANT_DIRECT') return '商家直收'
+  if (mode === 'PLATFORM_COLLECT') return '平台代收'
+  return mode ? `未知模式：${mode}` : '未配置'
+}
+const rowModeView = row => collectionModeView(row?.collectionMode, collectionConfig.value)
+
+const loadCollectionConfig = async () => {
+  try {
+    const res = await request.get('/admin/settlement/platform-collection/config', { skipErrorToast: true })
+    collectionConfig.value = res.data || null
+  } catch (error) {
+    collectionConfig.value = null
+    ElMessage.warning(error.response?.data?.message || '平台代收总闸状态加载失败，请刷新后重试')
+  }
+}
+
+const toggleCollectionGate = async value => {
+  if (gateSaving.value) return
+  if (collectionConfig.value?.emergencyDisabled) {
+    ElMessage.warning('环境变量已强制关闭平台代收，请先移除应急配置再操作总闸')
+    return
+  }
+  gateSaving.value = true
+  try {
+    await request.put('/admin/settlement/platform-collection/config', { enabled: Boolean(value) })
+    ElMessage.success(value ? '平台代收总闸已开启，仅对新订单生效' : '平台代收总闸已关闭，新订单按商家直收')
+    await loadCollectionConfig()
+    await loadMerchants()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '总闸更新失败，请刷新后重试')
+    await loadCollectionConfig()
+  } finally {
+    gateSaving.value = false
+  }
+}
+
+const refreshModeData = async () => {
+  const [detailRes, auditRes] = await Promise.all([
+    request.get(`/admin/settlement/merchants/${modeMerchant.value.id}/collection-mode`),
+    request.get(`/admin/settlement/merchants/${modeMerchant.value.id}/collection-switch-audits`,
+      { params: { limit: 50 } })
+  ])
+  modeDetail.value = detailRes.data || null
+  modeAudits.value = Array.isArray(auditRes.data) ? auditRes.data : []
+  if (modeDetail.value) {
+    modeForm.value.mode = modeDetail.value.configuredMode
+    modeForm.value.reason = ''
+  }
+}
+
+const openModeDialog = async row => {
+  modeMerchant.value = row
+  modeDetail.value = null
+  modeAudits.value = []
+  modeForm.value = { mode: row?.collectionMode || 'MERCHANT_DIRECT', reason: '' }
+  modeDialogVisible.value = true
+  modeLoading.value = true
+  try {
+    await refreshModeData()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '收款模式详情加载失败，请稍后重试')
+    modeDialogVisible.value = false
+  } finally {
+    modeLoading.value = false
+  }
+}
+
+const submitMode = async () => {
+  if (modeSaving.value || !modeDetail.value) return
+  if (modeForm.value.mode === modeDetail.value.configuredMode) {
+    ElMessage.warning('目标模式与当前配置相同，无需切换')
+    return
+  }
+  modeSaving.value = true
+  try {
+    await request.put(`/admin/settlement/merchants/${modeMerchant.value.id}/collection-mode`, {
+      mode: modeForm.value.mode,
+      reason: modeForm.value.reason
+    })
+    ElMessage.success('收款模式已切换，仅对新订单生效')
+    await refreshModeData()
+    await loadCollectionConfig()
+    await loadMerchants()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.message || '收款模式切换失败，请刷新后重试')
+  } finally {
+    modeSaving.value = false
+  }
+}
+
 onMounted(() => {
   loadMerchants()
   loadReviewers()
+  loadCollectionConfig()
 })
 </script>
 
 <style scoped>
+.gate-card {
+  margin-bottom: 16px;
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+}
+
+.gate-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.gate-title {
+  font-weight: 700;
+  color: #92400e;
+}
+
+.gate-note {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #64748b;
+  max-width: 620px;
+}
+
+.gate-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.mode-note {
+  margin-top: 2px;
+  font-size: 10px;
+  color: #94a3b8;
+  line-height: 1.4;
+}
+
 .page-header {
   display: flex;
   justify-content: space-between;

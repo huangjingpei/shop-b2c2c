@@ -5,7 +5,7 @@
  */
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { amountText, statisticsView, listedProductCount, storeDisplay, paymentAccountView, settlementAccountView, sharingRecordLabel } from '../shop-admin-vue/src/utils/orderStatistics.mjs'
+import { amountText, statisticsView, listedProductCount, storeDisplay, paymentAccountView, settlementAccountView, collectionModeView, sharingRecordLabel } from '../shop-admin-vue/src/utils/orderStatistics.mjs'
 test('金额字符串保持大额分位，不转浮点', () => {
   assert.equal(amountText('9007199254740993.03'), '9007199254740993.03')
   assert.equal(amountText('0'), '0.00'); assert.equal(amountText('0.1'), '0.10')
@@ -44,6 +44,19 @@ test('M2：渠道进件区分通过、驳回、审核中与未提交，空对象
   assert.equal(paymentAccountView({}).label, '未提交渠道进件')
   assert.equal(paymentAccountView().label, '未提交渠道进件')
   assert.equal(paymentAccountView({ applyStatus: 'UNKNOWN_CHANNEL' }).type, 'info')
+})
+test('M3：收款模式按应急关闭/总闸/商家配置展示，不把未获取总闸默认为直收', () => {
+  const gateOn = { enabled: true, emergencyDisabled: false }
+  const gateOff = { enabled: false, emergencyDisabled: false }
+  assert.equal(collectionModeView('PLATFORM_COLLECT', gateOn).label, '平台代收')
+  assert.equal(collectionModeView('PLATFORM_COLLECT', gateOn).effective, 'PLATFORM_COLLECT')
+  assert.equal(collectionModeView('PLATFORM_COLLECT', gateOff).label, '商家直收')
+  assert.equal(collectionModeView('PLATFORM_COLLECT', gateOff).pending, true)
+  assert.equal(collectionModeView('MERCHANT_DIRECT', gateOff).pending, false)
+  assert.equal(collectionModeView('PLATFORM_COLLECT', { enabled: true, emergencyDisabled: true }).label, '商家直收')
+  assert.equal(collectionModeView('PLATFORM_COLLECT', null).unknown, true)
+  assert.equal(collectionModeView('', gateOn).unknown, true)
+  assert.equal(collectionModeView('WEIRD', gateOn).label, '模式未知')
 })
 test('M2：结算账户核验状态不猜测已通过，未知值原样提示', () => {
   assert.equal(settlementAccountView({ status: 'VERIFIED' }).type, 'success')

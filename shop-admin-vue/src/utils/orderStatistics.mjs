@@ -52,6 +52,33 @@ export function paymentAccountView(account) {
   return { label: `未知进件状态：${status}`, type: 'info' }
 }
 
+/**
+ * M3：按 M1 生效规则展示收款模式（环境应急关闭 > 数据库总闸 > 商家配置）。
+ * gate 必须是服务端返回的 {enabled, emergencyDisabled}；为 null 表示总闸状态未获取，
+ * 此时不得默认成商家直收。本函数只用于展示，下单仍以服务端解析与订单快照为准。
+ */
+export function collectionModeView(configuredMode, gate) {
+  const configured = configuredMode === 'PLATFORM_COLLECT' || configuredMode === 'MERCHANT_DIRECT'
+    ? configuredMode
+    : ''
+  if (!configured) {
+    return { configured: '', effective: '', label: '模式未知', type: 'info', pending: false, unknown: true }
+  }
+  if (!gate) {
+    return { configured, effective: '', label: '总闸状态未获取', type: 'info', pending: false, unknown: true }
+  }
+  const blocked = gate.emergencyDisabled === true || gate.enabled !== true
+  const effective = blocked ? 'MERCHANT_DIRECT' : configured
+  return {
+    configured,
+    effective,
+    label: effective === 'PLATFORM_COLLECT' ? '平台代收' : '商家直收',
+    type: effective === 'PLATFORM_COLLECT' ? 'warning' : 'success',
+    pending: configured === 'PLATFORM_COLLECT' && effective === 'MERCHANT_DIRECT',
+    unknown: false
+  }
+}
+
 /** M2：阶段一结算账户核验状态；未知值原样提示，不猜测为已通过。 */
 export function settlementAccountView(account) {
   const status = account?.status
