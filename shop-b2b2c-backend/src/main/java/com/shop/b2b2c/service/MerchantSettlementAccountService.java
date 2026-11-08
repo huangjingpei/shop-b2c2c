@@ -5,7 +5,10 @@
  * 1. 登记前必须存在已审核通过的入驻申请；户名与实名主体（subjectName）严格相等，不一致直接拒绝，不允许人工放行。
  * 2. 账号只存 CardCipherService 密文与 SHA-256 指纹，展示只用 accountNoMasked；接口不得返回密文或明文账号。
  * 3. 核验只由平台人工动作推进：PENDING -> VERIFIED/REJECTED；换默认账户时旧默认账户置 DISABLED 并记录 effectiveTo，历史不原地覆盖。
- * 4. 阶段一不生成 sub_mchid、不调用渠道进件；merchant_payment_account 的绑定字段留待 T40 与渠道真实结果。
+ * 4. 阶段一不生成 sub_mchid、不调用渠道进件。结算账户核验通过且成为默认账户时（问题 3 方案 A，Sprint 56），
+ *    同步 upsert merchant_payment_account 台账：channel 取店铺 pay_channel，settlement_account_id 引用已核验账户，
+ *    apply_status=AUDITING、binding_status=UNBOUND、sub_mchid 空串，全部按真实值，不伪造 PASSED/BOUND；
+ *    bindingStatus/subMchid/channelMerchantId 等渠道字段仍只允许真实渠道结果推进，本服务绝不写入。
  * 5. 行锁 + 状态校验防重复核验；真实并发行锁由人工在 MySQL 验证。
  * 6. O2 默认账户唯一：uk_settlement_default 生成列唯一索引兜底；登记/核验命中唯一冲突翻译为 409，
  *    事务回滚，不继续提交、不向客户端泄漏 SQL。
@@ -21,10 +24,14 @@ import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.common.ManagementGuards;
 import com.shop.b2b2c.common.PiiMasking;
 import com.shop.b2b2c.entity.MerchantOnboardingApplication;
+import com.shop.b2b2c.entity.MerchantPaymentAccount;
 import com.shop.b2b2c.entity.MerchantSettlementAccount;
 import com.shop.b2b2c.entity.MerchantSettlementAccountAudit;
+import com.shop.b2b2c.entity.MerchantStore;
+import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementAccountAuditMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementAccountMapper;
+import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import org.springframework.dao.DuplicateKeyException;
@@ -60,6 +67,8 @@ public class MerchantSettlementAccountService {
     private final MerchantSettlementAccountAuditMapper auditMapper;
     private final MerchantOnboardingService onboardingService;
     private final CardCipherService cipherService;
+    private final MerchantPaymentAccountMapper paymentAccountMapper;
+    private final MerchantStoreMapper storeMapper;
 
     @Data
     public static class RegisterForm {
@@ -241,6 +250,7 @@ public class MerchantSettlementAccountService {
                 writeAudit(old, "CHANGE_SWITCHED", operatorId,
                         "新账户#" + account.getId() + " 核验通过，默认收款账户切换，旧账户失效");
             }
+            syncPaymentAccountBinding(account);
             return account;
         }
 
@@ -260,7 +270,58 @@ public class MerchantSettlementAccountService {
             throw new BusinessException(409, "默认收款账户已被其他账户占用，请刷新后重试");
         }
         writeAudit(account, "VERIFY", operatorId, reason);
+        if (Boolean.TRUE.equals(account.getIsDefault())) {
+            // 仅默认账户同步渠道台账；非默认核验通过不影响 merchant_payment_account 的结算引用。
+            syncPaymentAccountBinding(account);
+        }
         return account;
+    }
+
+    /**
+     * 问题 3 方案 A（Sprint 56）：核验通过的默认结算账户同步到 merchant_payment_account 台账。
+     * 只写真实值：apply_status=AUDITING（渠道进件未提交）、binding_status=UNBOUND（渠道侧未绑定）、
+     * sub_mchid 空串（官方未分配），账号只同步脱敏值；已有台账行仅更新 settlement_account_id 引用，
+     * 渠道字段（subMchid/bindingStatus/channelMerchantId 等）保持原值，等待真实渠道结果推进。
+     */
+    private void syncPaymentAccountBinding(MerchantSettlementAccount account) {
+        MerchantStore store = storeMapper.findById(account.getMerchantId()).orElse(null);
+        if (store == null) {
+            return;
+        }
+        String channel = store.getPayChannel() == null || store.getPayChannel().isBlank()
+                ? "WECHAT" : store.getPayChannel().trim().toUpperCase();
+        MerchantPaymentAccount existing = paymentAccountMapper
+                .findByMerchantIdAndChannel(account.getMerchantId(), channel).orElse(null);
+        if (existing != null) {
+            if (!account.getId().equals(existing.getSettlementAccountId())) {
+                existing.setSettlementAccountId(account.getId());
+                paymentAccountMapper.updateById(existing);
+            }
+            return;
+        }
+        MerchantPaymentAccount created = new MerchantPaymentAccount();
+        created.setMerchantId(account.getMerchantId());
+        created.setChannel(channel);
+        // sub_mchid 为 NOT NULL 列：官方未分配前写空串，切换/下单校验按 isBlank 如实拒绝。
+        created.setSubMchid("");
+        created.setBankAccountName(account.getHolderName());
+        created.setBankAccountNumber(account.getAccountNoMasked() == null ? "" : account.getAccountNoMasked());
+        created.setBankName(account.getBankName() == null ? "" : account.getBankName());
+        created.setApplyStatus("AUDITING");
+        created.setBindingStatus("UNBOUND");
+        created.setSettlementAccountId(account.getId());
+        created.setCreatedAt(LocalDateTime.now());
+        try {
+            paymentAccountMapper.insert(created);
+        } catch (DuplicateKeyException race) {
+            // 并发核验同事务外另一请求先落台账：uk_merchant_channel 兜底，只补结算引用。
+            MerchantPaymentAccount winner = paymentAccountMapper
+                    .findByMerchantIdAndChannel(account.getMerchantId(), channel).orElse(null);
+            if (winner != null && !account.getId().equals(winner.getSettlementAccountId())) {
+                winner.setSettlementAccountId(account.getId());
+                paymentAccountMapper.updateById(winner);
+            }
+        }
     }
 
     @Transactional(rollbackFor = Exception.class)

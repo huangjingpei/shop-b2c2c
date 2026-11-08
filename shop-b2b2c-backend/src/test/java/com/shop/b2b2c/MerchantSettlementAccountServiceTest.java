@@ -1,30 +1,39 @@
 /*
  * 文件：MerchantSettlementAccountServiceTest.java
- * 用途：T39 收款账户登记、户名=实名主体硬校验、人工核验、默认账户切换与脱敏出参的契约用例。
+ * 用途：T39 收款账户登记、户名=实名主体硬校验、人工核验、默认账户切换与脱敏出参的契约用例；
+ *      Sprint 56（问题 3 方案 A）增加核验通过同步 merchant_payment_account 台账的用例。
  * 维护注意：
  *  1. 使用 Mockito 隔离，不启动 Spring、不连接数据库。
  *  2. 户名不一致必须拒绝且无写入副作用；若未来允许人工放行，本用例必须同步修改并说明业务依据。
- *  3. 账号只允许密文+脱敏值落库/出参，禁止明文。
- *  4. 真实 MySQL 唯一索引与并发行锁仍由用户手动验证。
+ *  3. 账号只允许密文+脱敏值落库/出参，禁止明文；merchant_payment_account 同步也只带脱敏账号。
+ *  4. 台账同步只写真实值（AUDITING/UNBOUND/sub_mchid 空串），已有行的渠道字段绝不回写；
+ *     若未来放开伪造 PASSED/BOUND，本用例必须失败。
+ *  5. 真实 MySQL 唯一索引与并发行锁仍由用户手动验证。
  */
 package com.shop.b2b2c;
 
 import com.shop.b2b2c.common.BusinessException;
 import com.shop.b2b2c.entity.MerchantOnboardingApplication;
+import com.shop.b2b2c.entity.MerchantPaymentAccount;
 import com.shop.b2b2c.entity.MerchantSettlementAccount;
 import com.shop.b2b2c.entity.MerchantSettlementAccountAudit;
+import com.shop.b2b2c.entity.MerchantStore;
+import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementAccountAuditMapper;
 import com.shop.b2b2c.mapper.MerchantSettlementAccountMapper;
+import com.shop.b2b2c.mapper.MerchantStoreMapper;
 import com.shop.b2b2c.service.CardCipherService;
 import com.shop.b2b2c.service.MerchantOnboardingService;
 import com.shop.b2b2c.service.MerchantSettlementAccountService;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -33,6 +42,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 class MerchantSettlementAccountServiceTest {
@@ -41,8 +51,10 @@ class MerchantSettlementAccountServiceTest {
     private final MerchantSettlementAccountAuditMapper auditMapper = mock(MerchantSettlementAccountAuditMapper.class);
     private final MerchantOnboardingService onboardingService = mock(MerchantOnboardingService.class);
     private final CardCipherService cipherService = new CardCipherService();
+    private final MerchantPaymentAccountMapper paymentAccountMapper = mock(MerchantPaymentAccountMapper.class);
+    private final MerchantStoreMapper storeMapper = mock(MerchantStoreMapper.class);
     private final MerchantSettlementAccountService service = new MerchantSettlementAccountService(
-            accountMapper, auditMapper, onboardingService, cipherService);
+            accountMapper, auditMapper, onboardingService, cipherService, paymentAccountMapper, storeMapper);
 
     @Test
     void registerRequiresApprovedOnboarding() {
@@ -291,6 +303,105 @@ class MerchantSettlementAccountServiceTest {
 
         assertEquals("VERIFIED", account.getStatus());
         verify(accountMapper, never()).updateById(any());
+    }
+
+    @Test
+    void verifyApprovedDefaultAccountCreatesPaymentAccountWithRealValues() {
+        // Sprint 56：核验通过且成为默认账户时创建 merchant_payment_account 台账，状态全部按真实值。
+        MerchantSettlementAccount account = pendingAccount(5L, 10L, true);
+        when(accountMapper.lockById(5L)).thenReturn(account);
+        MerchantStore store = new MerchantStore();
+        store.setId(10L);
+        store.setPayChannel("WECHAT");
+        when(storeMapper.findById(10L)).thenReturn(Optional.of(store));
+        when(paymentAccountMapper.findByMerchantIdAndChannel(10L, "WECHAT")).thenReturn(Optional.empty());
+
+        service.verify(5L, true, "人工核对一致", 7L);
+
+        org.mockito.ArgumentCaptor<MerchantPaymentAccount> captor =
+                org.mockito.ArgumentCaptor.forClass(MerchantPaymentAccount.class);
+        verify(paymentAccountMapper).insert(captor.capture());
+        MerchantPaymentAccount created = captor.getValue();
+        assertEquals(10L, created.getMerchantId());
+        assertEquals("WECHAT", created.getChannel());
+        assertEquals(5L, created.getSettlementAccountId());
+        // 不伪造渠道结果：进件仍审核中、渠道侧未绑定、官方未分配二级商户号。
+        assertEquals("AUDITING", created.getApplyStatus());
+        assertEquals("UNBOUND", created.getBindingStatus());
+        assertEquals("", created.getSubMchid());
+        assertNull(created.getChannelMerchantId());
+        // 账号只同步脱敏值，禁止明文。
+        assertEquals("****7890", created.getBankAccountNumber());
+        assertFalse(created.getBankAccountNumber().contains("6222021234567890"));
+        assertEquals("张三", created.getBankAccountName());
+    }
+
+    @Test
+    void existingPaymentAccountOnlyUpdatesSettlementReferenceAndKeepsChannelFields() {
+        // 已有台账行（含真实渠道字段）时只更新 settlement_account_id 引用，渠道字段原样保留。
+        MerchantSettlementAccount account = pendingAccount(5L, 10L, true);
+        when(accountMapper.lockById(5L)).thenReturn(account);
+        MerchantStore store = new MerchantStore();
+        store.setId(10L);
+        store.setPayChannel("WECHAT");
+        when(storeMapper.findById(10L)).thenReturn(Optional.of(store));
+        MerchantPaymentAccount existing = new MerchantPaymentAccount();
+        existing.setId(99L);
+        existing.setMerchantId(10L);
+        existing.setChannel("WECHAT");
+        existing.setSubMchid("MCH-REAL");
+        existing.setBindingStatus("BOUND");
+        existing.setApplyStatus("PASSED");
+        existing.setSettlementAccountId(30L);
+        when(paymentAccountMapper.findByMerchantIdAndChannel(10L, "WECHAT")).thenReturn(Optional.of(existing));
+
+        service.verify(5L, true, "人工核对一致", 7L);
+
+        assertEquals(5L, existing.getSettlementAccountId());
+        assertEquals("MCH-REAL", existing.getSubMchid());
+        assertEquals("BOUND", existing.getBindingStatus());
+        assertEquals("PASSED", existing.getApplyStatus());
+        verify(paymentAccountMapper, never()).insert(any());
+        verify(paymentAccountMapper).updateById(existing);
+    }
+
+    @Test
+    void nonDefaultVerifiedAccountDoesNotTouchPaymentAccount() {
+        // 核验通过但不是默认账户（已有其他默认）：不同步台账结算引用。
+        MerchantSettlementAccount account = pendingAccount(5L, 10L, false);
+        when(accountMapper.lockById(5L)).thenReturn(account);
+        when(accountMapper.findDefaultVerified(10L)).thenReturn(verifiedDefaultAccount(20L, 10L));
+
+        service.verify(5L, true, "人工核对一致", 7L);
+
+        assertFalse(account.getIsDefault());
+        verifyNoInteractions(paymentAccountMapper);
+    }
+
+    @Test
+    void changeAccountVerifiedSyncsNewSettlementReference() {
+        // O5 变更账户核验通过成为新默认：台账结算引用切换到新账户。
+        MerchantSettlementAccount change = pendingAccount(21L, 10L, false);
+        change.setReplacesAccountId(20L);
+        MerchantSettlementAccount oldDefault = verifiedDefaultAccount(20L, 10L);
+        when(accountMapper.lockById(21L)).thenReturn(change);
+        when(accountMapper.lockById(20L)).thenReturn(oldDefault);
+        MerchantStore store = new MerchantStore();
+        store.setId(10L);
+        store.setPayChannel("WECHAT");
+        when(storeMapper.findById(10L)).thenReturn(Optional.of(store));
+        MerchantPaymentAccount existing = new MerchantPaymentAccount();
+        existing.setId(99L);
+        existing.setMerchantId(10L);
+        existing.setChannel("WECHAT");
+        existing.setSettlementAccountId(20L);
+        when(paymentAccountMapper.findByMerchantIdAndChannel(10L, "WECHAT")).thenReturn(Optional.of(existing));
+
+        service.verify(21L, true, "人工核对一致", 7L);
+
+        assertEquals(21L, existing.getSettlementAccountId());
+        verify(paymentAccountMapper).updateById(existing);
+        verify(paymentAccountMapper, never()).insert(any());
     }
 
     private MerchantSettlementAccountService.RegisterForm registerForm(String holderName) {
