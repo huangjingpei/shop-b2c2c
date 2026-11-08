@@ -8,7 +8,7 @@
 - 日期：2026-11-08
 - 主台账：F08（P1，`部分修复（待人工验证）`）
 - 执行方：代码代理（实现、用例、静态审阅）
-- 验证状态：代理已执行后端全量测试与管理端生产构建；新增用例全部通过，2 项既有 poster charset 用例失败（与本次改动无关）；仍待人工验收
+- 验证状态：代理已执行后端全量测试与管理端生产构建；全量 1124 项、0 失败、1 项跳过，新增用例全部通过；仍待人工验收
 
 ## 1. 背景与缺口
 
@@ -113,15 +113,15 @@ npm --prefix shop-admin-vue run build
 
 本机执行结果（2026-11-08）：
 
-- `mvn -f shop-b2b2c-backend/pom.xml test`：1124 项、2 项失败。新增 8 项单元与 2 项 H2 用例均通过；失败仅为 `r26SlowPosterRenderingDoesNotBlockConcurrentPaymentOrReservationRelease` 与 `r26PosterIdempotencyDeduplicationAndZeroDbLockInDetail`，断言 `image/png` 实得 `image/png;charset=UTF-8`，两处代码未在本轮变更，判定为既有/环境差异，需人工确认。
+- `mvn -f shop-b2b2c-backend/pom.xml test`：最终 1124 项、0 失败、1 项跳过，BUILD SUCCESS；新增 8 项单元与 2 项 H2 用例均通过。
+- 首轮出现 2 项既有 poster 断言失败（`r26SlowPosterRenderingDoesNotBlockConcurrentPaymentOrReservationRelease`、`r26PosterIdempotencyDeduplicationAndZeroDbLockInDetail`）：断言严格匹配 `image/png`，而全局 `server.servlet.encoding.force=true` 使 MockMvc 返回 `image/png;charset=UTF-8`。已改为 `contentTypeCompatibleWith(MediaType.IMAGE_PNG)`，未改生产代码，定向复跑与全量复跑均通过。
 - `npm --prefix shop-admin-vue run build`：通过（21.68s，仅有 chunk 体积提示）。
 - 首次测试因新增集成用例少一个右括号编译失败，已补齐并重跑；该修复随后续提交入库。
 
 ## 5. 未验证边界
 
-- 后端全量仍有 2 项既有 poster 用例失败（非本次改动），未修复；前端仅完成生产构建，未做浏览器联调。
+- 前端仅完成生产构建，未做浏览器联调；弹窗交互、长说明换行、队列分页（页面当前只取默认前 50 条）未验证。
 - 真实 MySQL 8 上 `V22` 迁移、唯一键与 LEFT JOIN 分页未演练；H2 通过不代表 MySQL 等价。
-- 未做浏览器联调：弹窗交互、长说明换行、队列分页（页面当前只取默认前 50 条）。
 - 处置后不触发退款/核销、不支持撤销或追加备注；如需多轮备注需改表结构与唯一约束。
 - 迟到支付自动退款、SKIPPED 补关单（方案 B 已确认不做）、多实例跨实例抢占仍未实现。
 

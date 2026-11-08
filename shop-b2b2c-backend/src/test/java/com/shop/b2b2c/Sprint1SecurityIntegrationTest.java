@@ -25,6 +25,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.boot.test.mock.mockito.SpyBean;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -4388,7 +4389,9 @@ class Sprint1SecurityIntegrationTest {
         // 5. 落盘地址可直接读取为 PNG 字节，且带长缓存与 nosniff，不返回 JSON 包装
         mvc.perform(get(posterPath))
                 .andExpect(status().isOk())
-                .andExpect(content().contentType("image/png"))
+                // 全局 server.servlet.encoding.force=true 会让 MockMvc 在二进制响应上追加 ;charset=UTF-8，
+                // image/png 仍是兼容媒体类型，避免用严格 contentType 断言误报。
+                .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG))
                 .andExpect(header().string("X-Content-Type-Options", "nosniff"))
                 .andExpect(header().string("Cache-Control", org.hamcrest.Matchers.containsString("max-age")));
     }
@@ -4446,7 +4449,7 @@ class Sprint1SecurityIntegrationTest {
         // 5.1 落盘路径可直接读取为图片；非法文件名与不存在文件返回404，不回显路径
         mvc.perform(get(originalPoster))
                 .andExpect(status().isOk())
-                .andExpect(content().contentType("image/png"));
+                .andExpect(content().contentTypeCompatibleWith(MediaType.IMAGE_PNG));
         mvc.perform(get("/api/v1/peer-pay/poster/image/not-a-poster.png"))
                 .andExpect(status().isNotFound())
                 .andExpect(jsonPath("$.code").value(404));
