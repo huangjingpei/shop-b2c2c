@@ -3,7 +3,9 @@
  * 用途：阶段一真实支付统一入口：发起支付、渠道回调落账、主动查单对账、渠道关单 (T32)。
  * 维护注意：
  *  1. 只有验签通过的渠道回调或查单 SUCCESS 才进入 PaymentEventService；金额、币种、渠道商户号必须与订单所属商家匹配。
- *  2. 阶段一只允许 CollectionMode.MERCHANT_DIRECT；PLATFORM_COLLECT 明确拒绝，不做隐式降级。
+ *  2. 阶段一只允许 CollectionMode.MERCHANT_DIRECT；PLATFORM_COLLECT 走平台收银台骨架入口
+ *     （PlatformCashierChannelRegistry，Sprint 57）：凭据未配置 409“平台收银台未配置”、
+ *     已配置未联调 409“平台收银台已配置但未完成通道联调”，回调拒绝按商家直收渠道履约，不做隐式降级。
  *  3. 发起支付只读取商家已登记的渠道账户（merchant_payment_account），不在本类写入或伪造账户。
  *  4. 关单只关闭渠道侧交易，本地订单仍由 15 分钟截止任务关闭，避免提前改动订单生命周期语义。
  *  5. G34：queryChannelPayment 只按事件渠道查询渠道事实并核验商户，不触发本地履约；
@@ -44,6 +46,8 @@ public class PaymentGatewayService {
     private final PaymentEventService paymentEventService;
     private final PaymentCallbackAuditService paymentCallbackAuditService;
     private final PaymentCloseReceiptService paymentCloseReceiptService;
+    /** Sprint 57 平台收银台骨架入口：仅 PLATFORM_COLLECT 订单使用；未配置/未联调时细化 409。 */
+    private final PlatformCashierChannelRegistry platformCashierChannelRegistry;
 
     public PaymentChannelDTOs.PaymentAttemptView createPayment(PaymentChannelDTOs.CreatePaymentRequest request,
                                                                String clientIp) {
@@ -254,7 +258,23 @@ public class PaymentGatewayService {
     }
 
     private PaymentChannelDTOs.PaymentAttemptView createPayment(TradeOrder order, String payChannel, String clientIp) {
-        CollectionMode.requireStageOne(order.getCollectionMode());
+        String collectionMode = CollectionMode.requireKnown(order.getCollectionMode());
+        if (CollectionMode.PLATFORM_COLLECT.equals(collectionMode)) {
+            // Sprint 57 平台收银台骨架入口：凭据未配置/未完成联调时由 registry 抛 409 细化原因；
+            // 取得真实平台服务商凭据并完成联调后，由适配器实现返回支付参数（M6）。
+            PaymentChannelDTOs.PaymentAttemptView platformView = platformCashierChannelRegistry
+                    .require(payChannel)
+                    .createPayment(PaymentChannelDTOs.PaymentCreateCommand.builder()
+                            .orderSn(order.getOrderSn())
+                            .amount(order.getPayAmount())
+                            .subject("订单 " + order.getOrderSn())
+                            .build());
+            if (platformView == null) {
+                throw new BusinessException(502, "平台收银台未返回支付参数");
+            }
+            platformView.setCollectionMode(CollectionMode.PLATFORM_COLLECT);
+            return platformView;
+        }
         if (!"UNPAID".equals(order.getOrderStatus())) {
             throw new BusinessException(409, "订单当前状态不允许发起支付");
         }
@@ -338,7 +358,12 @@ public class PaymentGatewayService {
     private PaymentEventDTOs.IncomingPaymentEvent toIncoming(TradeOrder order,
                                                              PaymentChannelDTOs.ChannelCallback callback,
                                                              MerchantPaymentAccount account) {
-        CollectionMode.requireStageOne(order.getCollectionMode());
+        if (CollectionMode.PLATFORM_COLLECT.equals(CollectionMode.requireKnown(order.getCollectionMode()))) {
+            // 平台代收订单回调必须走平台收银台独立入口（payment.platform.notify-path）并按平台商户号验签；
+            // 收银台未配置/未联调前，拒绝商家直收回调入口为其履约，防止渠道归属错配。
+            throw new BusinessException(409, "平台代收订单支付回调须由平台收银台独立入口处理"
+                    + "（当前平台收银台未配置/未联调），拒绝按商家直收渠道履约");
+        }
         if (callback.getPayAmount() == null) {
             throw new BusinessException(400, "渠道未提供实收金额，拒绝落账");
         }

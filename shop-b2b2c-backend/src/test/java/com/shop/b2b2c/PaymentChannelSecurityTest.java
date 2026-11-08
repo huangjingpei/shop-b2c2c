@@ -24,11 +24,14 @@ import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
 import com.shop.b2b2c.service.PaymentEventService;
 import com.shop.b2b2c.service.payment.AlipayPaymentChannelAdapter;
+import com.shop.b2b2c.service.payment.MockPlatformCashierChannelAdapter;
 import com.shop.b2b2c.service.payment.PaymentChannelProperties;
 import com.shop.b2b2c.service.payment.PaymentChannelRegistry;
 import com.shop.b2b2c.service.payment.PaymentCallbackAuditService;
 import com.shop.b2b2c.service.payment.PaymentCloseReceiptService;
 import com.shop.b2b2c.service.payment.PaymentGatewayService;
+import com.shop.b2b2c.service.payment.PlatformCashierChannelRegistry;
+import com.shop.b2b2c.service.payment.PlatformCashierProperties;
 import com.shop.b2b2c.service.payment.WeChatPaymentChannelAdapter;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -68,6 +71,8 @@ class PaymentChannelSecurityTest {
     private static String publicPem;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    /** Sprint 57：网关构造器新增的平台收银台骨架依赖；默认 mock，平台代收用例单独换真实 registry。 */
+    private final PlatformCashierChannelRegistry platformCashiers = mock(PlatformCashierChannelRegistry.class);
 
     @BeforeAll
     static void generateKeys() throws Exception {
@@ -223,7 +228,7 @@ class PaymentChannelSecurityTest {
                         .currency("CNY").build());
 
         PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits,
-                mock(PaymentCloseReceiptService.class));
+                mock(PaymentCloseReceiptService.class), platformCashiers);
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> gateway.handleCallback("WECHAT", Map.of(), "{}", null));
         assertTrue(ex.getMessage().contains("不匹配"));
@@ -240,15 +245,52 @@ class PaymentChannelSecurityTest {
         PaymentEventService events = mock(PaymentEventService.class);
         PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
         when(orders.findByOrderSn("SN-GW")).thenReturn(Optional.of(order));
+        // Sprint 57：真实 registry + 空凭据配置 → 细化原因“平台收银台未配置”。
+        PlatformCashierChannelRegistry cashierRegistry = new PlatformCashierChannelRegistry(
+                List.of(new MockPlatformCashierChannelAdapter()), new PlatformCashierProperties());
 
         PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits,
-                mock(PaymentCloseReceiptService.class));
+                mock(PaymentCloseReceiptService.class), cashierRegistry);
         PaymentChannelDTOs.CreatePaymentRequest request = new PaymentChannelDTOs.CreatePaymentRequest(
                 "SN-GW", "PEER-TOKEN", "WECHAT");
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> gateway.createPayment(request, "127.0.0.1"));
-        assertTrue(ex.getMessage().contains("平台代收"));
+        assertTrue(ex.getMessage().contains("平台代收") || ex.getMessage().contains("平台收银台"));
+        assertTrue(ex.getMessage().contains("未配置"));
+        // 商家直收渠道适配器不得被触碰。
         verify(registry, never()).require(any());
+    }
+
+    @Test
+    void platformCashierRegistryDistinguishesNotConfiguredAndNotIntegrated() {
+        PlatformCashierProperties properties = new PlatformCashierProperties();
+        PlatformCashierChannelRegistry registry = new PlatformCashierChannelRegistry(
+                List.of(new MockPlatformCashierChannelAdapter()), properties);
+
+        // 凭据缺失 → “未配置”
+        BusinessException unconfigured = assertThrows(BusinessException.class, () -> registry.require("WECHAT"));
+        assertEquals(409, unconfigured.getCode());
+        assertTrue(unconfigured.getMessage().contains("平台收银台未配置"));
+
+        // 凭据配齐但开关未开 → “已配置但未完成通道联调”
+        properties.setSpMchid("SP-1");
+        properties.setSerialNo("SER-1");
+        properties.setApiV3Key("APIV3");
+        properties.setPrivateKey("PRIVATE");
+        properties.setPlatformPublicKey("PUBLIC");
+        BusinessException notIntegrated = assertThrows(BusinessException.class, () -> registry.require("WECHAT"));
+        assertEquals(409, notIntegrated.getCode());
+        assertTrue(notIntegrated.getMessage().contains("已配置但未完成通道联调"));
+
+        // 未接入渠道
+        BusinessException unsupported = assertThrows(BusinessException.class, () -> registry.require("ALIPAY"));
+        assertTrue(unsupported.getMessage().contains("未接入渠道"));
+
+        // 占位适配器即使被直接调用也必须拒绝，不得伪造成功。
+        MockPlatformCashierChannelAdapter adapter = new MockPlatformCashierChannelAdapter();
+        assertFalse(adapter.enabled());
+        assertThrows(BusinessException.class,
+                () -> adapter.createPayment(PaymentChannelDTOs.PaymentCreateCommand.builder().build()));
     }
 
     @Test
@@ -277,7 +319,7 @@ class PaymentChannelSecurityTest {
         when(events.processPaymentEvent(any())).thenReturn(processed);
 
         PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits,
-                mock(PaymentCloseReceiptService.class));
+                mock(PaymentCloseReceiptService.class), platformCashiers);
         PaymentEventDTOs.PaymentProcessingResult returned =
                 gateway.handleCallback("WECHAT", Map.of(), "raw-body-1", null);
 
@@ -310,7 +352,7 @@ class PaymentChannelSecurityTest {
                 .thenThrow(new BusinessException(401, "微信支付回调验签失败"));
 
         PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits,
-                mock(PaymentCloseReceiptService.class));
+                mock(PaymentCloseReceiptService.class), platformCashiers);
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> gateway.handleCallback("WECHAT", Map.of(), "tampered", null));
 
@@ -353,7 +395,7 @@ class PaymentChannelSecurityTest {
         doThrow(new RuntimeException("audit db down")).when(audits).record(any());
 
         PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits,
-                mock(PaymentCloseReceiptService.class));
+                mock(PaymentCloseReceiptService.class), platformCashiers);
         PaymentEventDTOs.PaymentProcessingResult returned =
                 gateway.handleCallback("WECHAT", Map.of(), "raw-body-1", null);
 
@@ -372,7 +414,7 @@ class PaymentChannelSecurityTest {
         PaymentCloseReceiptService receipts = mock(PaymentCloseReceiptService.class);
         when(accounts.findByMerchantIdAndChannel(1L, "WECHAT")).thenReturn(Optional.empty());
 
-        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers);
         assertFalse(gateway.closePaymentBestEffort(order));
         verify(receipts).record(order, "WECHAT", PaymentCloseReceiptService.RESULT_SKIPPED,
                 "渠道账户未登记或未审核通过");
@@ -395,7 +437,7 @@ class PaymentChannelSecurityTest {
         when(registry.require("WECHAT")).thenReturn(adapter);
         when(adapter.enabled()).thenReturn(true);
 
-        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers);
         assertTrue(gateway.closePaymentBestEffort(order));
         verify(adapter).closePayment(any());
         verify(receipts).record(order, "WECHAT", PaymentCloseReceiptService.RESULT_SUCCESS, null);
@@ -418,7 +460,7 @@ class PaymentChannelSecurityTest {
         when(adapter.enabled()).thenReturn(true);
         doThrow(new RuntimeException("channel timeout")).when(adapter).closePayment(any());
 
-        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers);
         assertFalse(gateway.closePaymentBestEffort(order));
         verify(receipts).record(eq(order), eq("WECHAT"), eq(PaymentCloseReceiptService.RESULT_FAILED),
                 contains("channel timeout"));
@@ -442,7 +484,7 @@ class PaymentChannelSecurityTest {
         doThrow(new RuntimeException("receipt db down"))
                 .when(receipts).record(any(), any(), any(), any());
 
-        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers);
         assertTrue(gateway.closePaymentBestEffort(order));
     }
 

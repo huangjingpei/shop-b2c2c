@@ -106,6 +106,17 @@ payment:
       private-key: ${ALIPAY_PRIVATE_KEY:}
       alipay-public-key: ${ALIPAY_PUBLIC_KEY:}
       gateway-url: ${ALIPAY_GATEWAY_URL:https://openapi.alipay.com/gateway.do}
+  # Sprint 57 平台收银台（平台代收支付发起，问题 1 方案 A）：凭据只来自环境变量，默认全部为空=未配置；
+  # 凭据缺失时平台代收订单发起支付 409“平台收银台未配置”；凭据配齐但未完成真实通道联调前
+  # enabled 必须保持 false（409“已配置但未完成通道联调”）；不得用本配置伪造联调通过。
+  platform:
+    enabled: ${PLATFORM_CASHIER_ENABLED:false}
+    sp-mchid: ${PLATFORM_CASHIER_SP_MCHID:}
+    serial-no: ${PLATFORM_CASHIER_SERIAL_NO:}
+    api-v3-key: ${PLATFORM_CASHIER_API_V3_KEY:}
+    private-key: ${PLATFORM_CASHIER_PRIVATE_KEY:}
+    platform-public-key: ${PLATFORM_CASHIER_PLATFORM_PUBLIC_KEY:}
+    notify-path: ${PLATFORM_CASHIER_NOTIFY_PATH:/api/v1/payment/callback/platform}
 
 # 平台前台访问地址 (代付短链与二维码海报基准地址)
 app:
