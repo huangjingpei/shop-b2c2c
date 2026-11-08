@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS `merchant_store` (
   `fee_status` VARCHAR(32) NOT NULL DEFAULT 'NORMAL' COMMENT '服务费配置标记: NORMAL, TRIAL, OVERDUE, EXEMPTED, ARREARS; 不代表自动扣费或停服',
   `payment_channel_type` VARCHAR(16) NOT NULL DEFAULT 'C' COMMENT '支付模式: B(商户自主直收), C(Mock沙箱), A(平台电商收付通); T32 起仅作迁移来源',
   `pay_channel` VARCHAR(32) NOT NULL DEFAULT 'WECHAT' COMMENT 'T32 新增：真实支付渠道 WECHAT/ALIPAY，与 A/B/C 收款模式解耦',
+  `collection_mode` VARCHAR(24) NOT NULL DEFAULT 'MERCHANT_DIRECT' COMMENT 'M1 收款模式：MERCHANT_DIRECT 商家直收 / PLATFORM_COLLECT 平台代收；只决定新订单快照，不改变在途订单',
   `custom_pay_qrcode` VARCHAR(512) NULL COMMENT '商户自主微信/支付宝收款码URL',
   `id_card_expiry` DATE NULL COMMENT '身份证有效期快照：审核通过时从入驻申请快照（O9），用于到期提醒/限制上新/逾期冻结',
   `license_expiry` DATE NULL COMMENT '营业执照有效期快照：审核通过时从入驻申请快照（O9），个人店可空',
@@ -106,6 +107,33 @@ CREATE TABLE IF NOT EXISTS `merchant_payment_account` (
   UNIQUE KEY `uk_merchant_channel` (`merchant_id`, `channel`),
   CONSTRAINT fk_payment_account_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商户二级收付通进件账户表';
+
+-- 2a. 平台代收全局总闸（M1）：只保留 id=1 单行；enabled 只控制“商家 PLATFORM_COLLECT 是否对新订单生效”，
+--     不批量修改商家配置，也不代表渠道已绑定；环境变量仅用于应急强制关闭。
+CREATE TABLE IF NOT EXISTS `platform_collection_config` (
+  `id` BIGINT UNSIGNED NOT NULL COMMENT '单行配置，固定为1',
+  `enabled` TINYINT(1) NOT NULL DEFAULT 0 COMMENT '平台代收全局总闸：0关闭(新订单按商家直收)/1允许按商家模式生效',
+  `version` BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '配置版本号，每次更新+1，用于并发与审计排查',
+  `updated_by` BIGINT UNSIGNED NULL COMMENT '最近操作平台账号ID；系统初始化可为空',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='平台代收全局总闸（单行配置）';
+INSERT IGNORE INTO `platform_collection_config` (`id`, `enabled`, `version`) VALUES (1, 0, 0);
+
+-- 2b. 商家收款模式切换审计（M1）：只追加；只记录模式变化，不记录订单快照与资金结果。
+CREATE TABLE IF NOT EXISTS `merchant_collection_switch_audit` (
+  `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  `merchant_id` BIGINT UNSIGNED NOT NULL COMMENT '所属店铺ID',
+  `from_mode` VARCHAR(24) NOT NULL COMMENT '切换前模式：MERCHANT_DIRECT/PLATFORM_COLLECT',
+  `to_mode` VARCHAR(24) NOT NULL COMMENT '切换后模式：MERCHANT_DIRECT/PLATFORM_COLLECT',
+  `reason` VARCHAR(256) NULL COMMENT '运营填写的切换原因，不含凭据/卡号/报文',
+  `operator_id` BIGINT UNSIGNED NULL COMMENT '操作人平台账号ID；系统任务可空',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `idx_collection_switch_merchant` (`merchant_id`, `created_at`),
+  CONSTRAINT fk_collection_switch_merchant FOREIGN KEY (`merchant_id`) REFERENCES `merchant_store` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='商家收款模式切换审计（只增不改）';
 
 -- 3. 系统后台用户表 (RBAC 商家隔离)
 CREATE TABLE IF NOT EXISTS `sys_user` (

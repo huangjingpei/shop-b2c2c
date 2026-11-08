@@ -44,6 +44,12 @@ public class MerchantStore {
     private String payChannel = "WECHAT"; // T32 新增：真实支付渠道 WECHAT/ALIPAY，与 A/B/C 一列双语义解耦
     private String customPayQrcode; // 商家自主微信/支付宝收款二维码图片URL
 
+    /**
+     * M1 收款模式：MERCHANT_DIRECT 商家直收 / PLATFORM_COLLECT 平台代收。
+     * 仅决定新订单快照，不改变在途订单；全局总闸关闭或渠道未绑定时不生效（以服务端解析结果为准）。
+     */
+    private String collectionMode = "MERCHANT_DIRECT";
+
     // ==================== O9 资质有效期快照 ====================
     /** 身份证有效期快照：审核通过时从入驻申请快照；为空表示未采集/长期，不参与提醒与冻结。 */
     private java.time.LocalDate idCardExpiry;

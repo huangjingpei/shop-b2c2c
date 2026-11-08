@@ -17,16 +17,25 @@ public final class CollectionMode {
     }
 
     /**
+     * 已知模式规范化：只接受两种已定义值，未知值一律 400，不自动降级。
+     * 用于运营切换、配置读取等需要同时识别两种模式的场景；支付渠道入口仍须调用 requireStageOne。
+     */
+    public static String requireKnown(String value) {
+        String normalized = value == null ? "" : value.trim().toUpperCase();
+        if (MERCHANT_DIRECT.equals(normalized) || PLATFORM_COLLECT.equals(normalized)) {
+            return normalized;
+        }
+        throw new BusinessException(400, "未知货款归集模式: " + value);
+    }
+
+    /**
      * 阶段一渠道入口只接受商家直收；平台代收需阶段二资质与分账模型，直接拒绝而不是回退。
      */
     public static String requireStageOne(String value) {
-        String normalized = value == null ? "" : value.trim().toUpperCase();
-        if (MERCHANT_DIRECT.equals(normalized)) {
-            return MERCHANT_DIRECT;
-        }
+        String normalized = requireKnown(value);
         if (PLATFORM_COLLECT.equals(normalized)) {
             throw new BusinessException(409, "阶段一未启用平台代收货款，请使用商家直收渠道");
         }
-        throw new BusinessException(400, "未知货款归集模式: " + value);
+        return MERCHANT_DIRECT;
     }
 }

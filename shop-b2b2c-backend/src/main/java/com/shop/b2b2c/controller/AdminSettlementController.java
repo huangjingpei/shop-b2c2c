@@ -10,17 +10,21 @@
  *  6. F10 SaaS 月费账单与交易抽佣/结算批次分离；缴费确认只接受线下 OFFLINE 凭证，不写 merchant_account 账本。
  *  7. 支付异常处置只记录人工核对结论，不改 payment_event 的 event_status/funds_received，也不改订单与退款账本；
  *     退款/补偿仍须走渠道或既有退款流程，处置接口不得被当作资金操作。
+ *  8. M1 收款模式接口仅 SUPERADMIN：总闸与单商家模式切换均写审计；切平台代收前强制校验渠道绑定三要素，
+ *     不满足返回 409；接口只影响新订单，不回写任何在途订单、退款或分账账本。
  */
 package com.shop.b2b2c.controller;
 
 import cn.dev33.satoken.stp.StpUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.shop.b2b2c.common.R;
+import com.shop.b2b2c.dto.MerchantCollectionModeDTOs;
 import com.shop.b2b2c.dto.PaymentExceptionDispositionRequest;
 import com.shop.b2b2c.dto.PaymentExceptionDispositionView;
 import com.shop.b2b2c.dto.SettlementDTOs;
 import com.shop.b2b2c.entity.MerchantAccount;
 import com.shop.b2b2c.entity.MerchantCollectionStatusAudit;
+import com.shop.b2b2c.entity.MerchantCollectionSwitchAudit;
 import com.shop.b2b2c.entity.MerchantRechargeOrder;
 import com.shop.b2b2c.entity.MerchantSettlementBatch;
 import com.shop.b2b2c.entity.MerchantSettlementItem;
@@ -32,6 +36,7 @@ import com.shop.b2b2c.entity.SysUser;
 import com.shop.b2b2c.mapper.SysUserMapper;
 import com.shop.b2b2c.service.FinanceApprovalGuard;
 import com.shop.b2b2c.service.MerchantAccountService;
+import com.shop.b2b2c.service.MerchantCollectionModeService;
 import com.shop.b2b2c.service.ReconciliationBatchService;
 import com.shop.b2b2c.service.ReconciliationService;
 import com.shop.b2b2c.service.SettlementService;
@@ -46,6 +51,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -74,6 +80,7 @@ public class AdminSettlementController {
     private final FinanceApprovalGuard approvalGuard;
     private final com.shop.b2b2c.mapper.PaymentEventMapper paymentEventMapper;
     private final PaymentExceptionDispositionService exceptionDispositionService;
+    private final MerchantCollectionModeService collectionModeService;
 
     @Operation(summary = "支付异常队列：迟到支付/重复付款/金额或商户不符等需人工补偿的事件")
     @GetMapping("/payment-exceptions")
@@ -393,6 +400,50 @@ public class AdminSettlementController {
         Map<String, Object> result = new java.util.LinkedHashMap<>();
         result.put("changed", saasFeeBillService.markOverdue(asOf));
         return R.ok(result);
+    }
+
+    @Operation(summary = "查询平台代收全局总闸（关闭时所有新订单按商家直收）")
+    @GetMapping("/platform-collection/config")
+    public R<MerchantCollectionModeDTOs.ConfigView> platformCollectionConfig() {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok(collectionModeService.configView());
+    }
+
+    @Operation(summary = "更新平台代收全局总闸（只改总闸，不批量改商家模式）")
+    @PutMapping("/platform-collection/config")
+    public R<MerchantCollectionModeDTOs.ConfigView> updatePlatformCollectionConfig(
+            @RequestBody(required = false) MerchantCollectionModeDTOs.ConfigUpdateRequest request) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok("平台代收总闸已更新", collectionModeService.updateConfig(
+                request == null ? null : request.getEnabled(), StpUtil.getLoginIdAsLong()));
+    }
+
+    @Operation(summary = "查询商家收款模式、生效模式与渠道绑定就绪情况")
+    @GetMapping("/merchants/{merchantId}/collection-mode")
+    public R<MerchantCollectionModeDTOs.MerchantModeView> merchantCollectionMode(
+            @PathVariable Long merchantId) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok(collectionModeService.merchantModeView(merchantId));
+    }
+
+    @Operation(summary = "切换商家收款模式（切平台代收前强制校验渠道绑定，写审计）")
+    @PutMapping("/merchants/{merchantId}/collection-mode")
+    public R<MerchantCollectionModeDTOs.MerchantModeView> switchMerchantCollectionMode(
+            @PathVariable Long merchantId,
+            @RequestBody(required = false) MerchantCollectionModeDTOs.SwitchRequest request) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok("收款模式已切换，仅对新订单生效", collectionModeService.switchMode(
+                merchantId, request == null ? null : request.getMode(),
+                request == null ? null : request.getReason(), StpUtil.getLoginIdAsLong()));
+    }
+
+    @Operation(summary = "查询商家收款模式切换审计")
+    @GetMapping("/merchants/{merchantId}/collection-switch-audits")
+    public R<List<MerchantCollectionSwitchAudit>> merchantCollectionSwitchAudits(
+            @PathVariable Long merchantId,
+            @RequestParam(defaultValue = "50") int limit) {
+        StpUtil.checkRole("SUPERADMIN");
+        return R.ok(collectionModeService.audits(merchantId, limit));
     }
 
     private ResponseEntity<byte[]> csvResponse(String filename, String csv) {

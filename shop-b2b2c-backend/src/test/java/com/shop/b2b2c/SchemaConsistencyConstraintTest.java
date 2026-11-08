@@ -276,7 +276,8 @@ class SchemaConsistencyConstraintTest {
                 "merchant_settlement_account", "merchant_settlement_account_audit",
                 "merchant_onboarding_application", "merchant_onboarding_audit",
                 "platform_collection_settlement", "split_detail", "split_reverse",
-                "reconciliation_batch_run", "reconciliation_difference_audit");
+                "reconciliation_batch_run", "reconciliation_difference_audit",
+                "platform_collection_config", "merchant_collection_switch_audit");
         financialTables.forEach(table -> assertAuditColumn(columns, table, "created_at"));
     }
 

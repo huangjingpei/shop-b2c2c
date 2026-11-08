@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS `merchant_store` (
   `fee_status` VARCHAR(32) NOT NULL DEFAULT 'NORMAL' COMMENT '服务费配置标记: NORMAL, TRIAL, OVERDUE, EXEMPTED, ARREARS; 不代表自动扣费或停服',
   `payment_channel_type` VARCHAR(16) NOT NULL DEFAULT 'C' COMMENT '支付模式: B(商户自主直收), C(Mock沙箱), A(平台电商收付通)',
   `pay_channel` VARCHAR(32) NOT NULL DEFAULT 'WECHAT' COMMENT 'T32 新增：真实支付渠道 WECHAT/ALIPAY',
+  `collection_mode` VARCHAR(24) NOT NULL DEFAULT 'MERCHANT_DIRECT' COMMENT 'M1 收款模式：MERCHANT_DIRECT/PLATFORM_COLLECT',
   `custom_pay_qrcode` VARCHAR(512) NULL COMMENT '商户自主微信/支付宝收款码URL',
   `id_card_expiry` DATE NULL COMMENT 'O9 身份证有效期快照（列与 MySQL schema.sql 同步）',
   `license_expiry` DATE NULL COMMENT 'O9 营业执照有效期快照（列与 MySQL schema.sql 同步）',
@@ -94,6 +95,30 @@ CREATE TABLE IF NOT EXISTS `merchant_payment_account` (
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
 );
+
+-- 2a. 平台代收全局总闸（M1，H2 夹具）：单行 id=1；默认行由用例显式写入，避免依赖夹具数据
+CREATE TABLE IF NOT EXISTS `platform_collection_config` (
+  `id` BIGINT NOT NULL,
+  `enabled` TINYINT(1) NOT NULL DEFAULT 0,
+  `version` BIGINT NOT NULL DEFAULT 0,
+  `updated_by` BIGINT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+);
+
+-- 2b. 商家收款模式切换审计（M1，H2 夹具）：只追加
+CREATE TABLE IF NOT EXISTS `merchant_collection_switch_audit` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `merchant_id` BIGINT NOT NULL,
+  `from_mode` VARCHAR(24) NOT NULL,
+  `to_mode` VARCHAR(24) NOT NULL,
+  `reason` VARCHAR(256) NULL,
+  `operator_id` BIGINT NULL,
+  `created_at` TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+);
+CREATE INDEX IF NOT EXISTS idx_collection_switch_merchant ON `merchant_collection_switch_audit` (`merchant_id`, `created_at`);
 
 -- 3. 系统后台用户表 (RBAC 商家隔离)
 CREATE TABLE IF NOT EXISTS `sys_user` (

@@ -119,4 +119,14 @@ public interface MerchantStoreMapper extends BaseMapper<MerchantStore> {
     int updateQualificationExpiries(@org.apache.ibatis.annotations.Param("id") Long id,
                                     @org.apache.ibatis.annotations.Param("idCardExpiry") java.time.LocalDate idCardExpiry,
                                     @org.apache.ibatis.annotations.Param("licenseExpiry") java.time.LocalDate licenseExpiry);
+
+    /**
+     * M1 收款模式切换 CAS：仅当前模式仍为 expected 时才更新，返回 0 表示已被并发修改，
+     * 调用方必须抛 409 且不得补写审计；本方法不负责校验平台代收前置条件。
+     */
+    @org.apache.ibatis.annotations.Update("UPDATE merchant_store SET collection_mode = #{newMode} "
+            + "WHERE id = #{id} AND collection_mode = #{expectedMode}")
+    int updateCollectionModeCas(@org.apache.ibatis.annotations.Param("id") Long id,
+                                @org.apache.ibatis.annotations.Param("expectedMode") String expectedMode,
+                                @org.apache.ibatis.annotations.Param("newMode") String newMode);
 }

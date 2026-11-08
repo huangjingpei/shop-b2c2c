@@ -78,6 +78,10 @@ sa-token:
 payment:
   mock: false # 公开 Mock 支付入口已移除；此配置不能开启模拟付款
   default-commission-rate: 3.00
+  # M1 平台代收应急总闸：只允许环境变量强制关闭（true 时所有新订单按商家直收），
+  # 常规运营开关在 platform_collection_config.enabled；不能把本变量当作开启平台代收的开关。
+  platform-collection:
+    emergency-disabled: ${PLATFORM_COLLECTION_EMERGENCY_DISABLED:false}
   # G34：支付事件补偿扫描。陈旧 PROCESSING 超过阈值后按渠道流水回查；明确未支付落 FULFILLMENT_FAILED 并告警，
   # 查询异常/答复不确定保留 PROCESSING 并按指数退避重试，超过上限转 MANUAL_REVIEW 人工队列。
   reconcile:
