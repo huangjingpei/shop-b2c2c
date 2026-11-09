@@ -64,6 +64,11 @@ class SettlementAccountPaymentSyncIntegrationTest {
 
     @BeforeEach
     void fixtures() {
+        // AuthLoginLimiter 走 Redis 原子脚本：内存环境无真实 Redis，mock 放行限流窗口（与 Sprint1SecurityIntegrationTest 一致）。
+        org.mockito.Mockito.when(redis.<Long>execute(org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.anyList(),
+                        org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(1L);
         for (String table : List.of("merchant_payment_account", "merchant_settlement_account_audit",
                 "merchant_settlement_account", "merchant_onboarding_audit", "merchant_onboarding_application",
                 "sys_user", "merchant_store")) {

@@ -242,13 +242,17 @@ class SchemaMigrationContractTest {
         assertTrue(sql.contains("INSERT IGNORE INTO `platform_collection_config`"),
                 "默认单行配置必须幂等写入，不能隐式开启平台代收");
         assertTrue(sql.contains("fk_collection_switch_merchant"), "切换审计必须保留店铺外键约束");
-        assertFalse(sql.contains("trade_order"), "M1 不得回写或改动历史订单快照");
 
-        assertFalse(Pattern.compile("(?im)^\\s*UPDATE\\b").matcher(sql).find(),
+        // 负向断言只看可执行语句：文件头注释允许说明“不回写 trade_order”，注释文字不是 DML。
+        String executable = sql.replaceAll("(?m)--[^\\n]*", "")
+                .replaceAll("(?s)/\\*.*?\\*/", "");
+        assertFalse(executable.contains("trade_order"), "M1 不得回写或改动历史订单快照");
+
+        assertFalse(Pattern.compile("(?im)^\\s*UPDATE\\b").matcher(executable).find(),
                 "迁移脚本不得回填历史订单或商家模式");
         assertFalse(Pattern.compile("(?im)^\\s*(DROP\\s+TABLE|TRUNCATE|DELETE|USE)\\b")
-                .matcher(sql).find(), "迁移脚本不得包含删表、清空、删数据或切库语句");
-        assertFalse(Pattern.compile("(?im)^\\s*DROP\\s+DATABASE\\b").matcher(sql).find());
+                .matcher(executable).find(), "迁移脚本不得包含删表、清空、删数据或切库语句");
+        assertFalse(Pattern.compile("(?im)^\\s*DROP\\s+DATABASE\\b").matcher(executable).find());
     }
 
     @Test

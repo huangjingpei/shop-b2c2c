@@ -13,7 +13,7 @@
 - 主台账：F02（支付渠道与分账）
 - 设计来源：[2026-11-08-商家收款双轨与微信电商收付通进件设计](2026-11-08-商家收款双轨与微信电商收付通进件设计.md)、[收款双轨 M1–M4A 问题与待决事项](2026-11-08-收款双轨M1-M4A问题与待决事项.md) 问题 2
 - 执行方：代码代理（实现、用例、静态审阅）
-- 验证状态：待人工验证（代理未执行 mvn）
+- 验证状态：代理已运行相关用例并通过（2026-11-09，`mvn -Dtest=MerchantCollectionModeServiceTest,MerchantCollectionModeIntegrationTest test` → 24 项，0 失败）；真实渠道联调与 MySQL 行为仍待人工验证
 
 ## 1. 背景与决策
 
@@ -60,7 +60,20 @@ mvn -f shop-b2b2c-backend/pom.xml test
 
 ## 6. 未验证项与已知问题
 
-1. **未执行验证**：代理未运行 `mvn`，所有结论为静态审阅结果。
+1. **验证范围**：已运行本 Sprint 相关用例与后端全量测试并通过；未覆盖真实渠道联调、真实 MySQL 结构与并发。
 2. **平台代收仍不可支付**：本 Sprint 只收紧切换入口；`PaymentGatewayService` 对 `PLATFORM_COLLECT` 订单仍拒绝发起支付，平台收银台配置与适配器由问题 1（Sprint 57）补齐骨架，真实联调属 M6。
 3. **已切商家不受追溯**：本规则只约束新切换；若此前已存在“资质关闭但已切平台代收”的商家数据，其下单仍按 M4-A 规则 409，需运营切回直收或开启资质。
 4. **管理端文案**：切换弹窗未就绪原因由后端 message 展示；如需更醒目的运营提示（如资质闸状态徽标），属 M3 页面增强，未在本轮范围。
+
+## 7. 运行验证时发现并修复的既有用例缺陷（非业务逻辑）
+
+此前 M1–M4-A 从未实际执行过 `mvn`，首次运行暴露出测试代码自身的缺陷，均只改测试，业务行为未变：
+
+| 缺陷 | 位置 | 修复 |
+| --- | --- | --- |
+| 8 处 `mvc.perform(...)` 链少一个闭合括号，无法编译 | `MerchantCollectionModeIntegrationTest` | 补齐 `)` |
+| `MerchantController` 构造调用缺 M2 新增的 `collectionModeService` 参数，共 8 处 | `MerchantStoreUpdateTest`、`ManagementSecurityTest`、`ServiceFeeConfigTest` | 插入 `mock(MerchantCollectionModeService.class)` |
+| 集成测试未 stub `AuthLoginLimiter` 的 Redis 脚本（mock 返回 null），登录 503 | `MerchantCollectionModeIntegrationTest`、`SettlementAccountPaymentSyncIntegrationTest` | `@BeforeEach` stub 返回 1L，与 `Sprint1SecurityIntegrationTest` 一致 |
+| `SchemaMigrationContractTest` 用全文 `contains("trade_order")` 断言，命中 V23 文件头注释，导致 M1 交付的用例必然失败 | `SchemaMigrationContractTest` | 负向断言先剥离 `--` 行注释与块注释，只检查可执行语句 |
+
+修复后后端全量 `1169` 项 0 失败、0 错误、1 跳过。

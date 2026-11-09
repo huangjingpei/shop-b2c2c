@@ -32,6 +32,7 @@ class ManagementSecurityTest {
         var feePolicy = mock(MerchantFeePolicyService.class);
         var controller = new MerchantController(store, account, user,
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy,
+                mock(com.shop.b2b2c.service.MerchantCollectionModeService.class),
                 new com.shop.b2b2c.service.MerchantStoreGuard(store),
                 mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
                 mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));
@@ -52,6 +53,7 @@ class ManagementSecurityTest {
             security.when(SecurityUtils::getCurrentUserId).thenReturn(3L);
             new MerchantController(store, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                     mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), feePolicy,
+                    mock(com.shop.b2b2c.service.MerchantCollectionModeService.class),
                     new com.shop.b2b2c.service.MerchantStoreGuard(store),
                     mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
                     mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class))
@@ -90,6 +92,7 @@ class ManagementSecurityTest {
         var stores = mock(MerchantStoreMapper.class);
         var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class),
+                mock(com.shop.b2b2c.service.MerchantCollectionModeService.class),
                 new com.shop.b2b2c.service.MerchantStoreGuard(stores),
                 mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
                 mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));
@@ -112,6 +115,7 @@ class ManagementSecurityTest {
         var users = mock(SysUserMapper.class);
         var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), users,
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class),
+                mock(com.shop.b2b2c.service.MerchantCollectionModeService.class),
                 new com.shop.b2b2c.service.MerchantStoreGuard(stores),
                 mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
                 mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));
@@ -152,6 +156,7 @@ class ManagementSecurityTest {
         when(stores.findById(5L)).thenReturn(java.util.Optional.of(provisioned));
         var controller = new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                 onboarding, mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class),
+                mock(com.shop.b2b2c.service.MerchantCollectionModeService.class),
                 new com.shop.b2b2c.service.MerchantStoreGuard(stores),
                 mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
                 mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));

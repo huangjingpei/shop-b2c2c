@@ -72,6 +72,11 @@ class MerchantCollectionModeIntegrationTest {
         // 资质硬闸默认开启；个别用例反射置 false 后由此恢复，避免用例间污染。
         org.springframework.test.util.ReflectionTestUtils.setField(
                 platformCollectionService, "platformCollectEnabled", true);
+        // AuthLoginLimiter 走 Redis 原子脚本：内存环境无真实 Redis，mock 放行限流窗口（与 Sprint1SecurityIntegrationTest 一致）。
+        org.mockito.Mockito.when(redis.<Long>execute(org.mockito.ArgumentMatchers.any(),
+                        org.mockito.ArgumentMatchers.anyList(),
+                        org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenReturn(1L);
         for (String table : List.of("merchant_collection_switch_audit", "merchant_payment_account",
                 "sys_user", "merchant_store")) {
             jdbc.update("DELETE FROM " + table);
@@ -97,7 +102,7 @@ class MerchantCollectionModeIntegrationTest {
         mvc.perform(put("/api/v1/admin/settlement/merchants/1/collection-mode")
                         .header("Authorization", "Bearer " + merchantToken)
                         .contentType("application/json")
-                        .content(json.writeValueAsString(Map.of("mode", "PLATFORM_COLLECT")))
+                        .content(json.writeValueAsString(Map.of("mode", "PLATFORM_COLLECT"))))
                 .andExpect(status().isForbidden());
     }
 
@@ -113,7 +118,7 @@ class MerchantCollectionModeIntegrationTest {
         mvc.perform(put("/api/v1/admin/settlement/merchants/1/collection-mode")
                         .header("Authorization", "Bearer " + token)
                         .contentType("application/json")
-                        .content(json.writeValueAsString(Map.of("mode", "PLATFORM_COLLECT", "reason", "试点")))
+                        .content(json.writeValueAsString(Map.of("mode", "PLATFORM_COLLECT", "reason", "试点"))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value(409))
                 .andExpect(jsonPath("$.message").value(org.hamcrest.Matchers.containsString("分账通道未启用")));
@@ -131,7 +136,7 @@ class MerchantCollectionModeIntegrationTest {
         mvc.perform(put("/api/v1/admin/settlement/merchants/1/collection-mode")
                         .header("Authorization", "Bearer " + token)
                         .contentType("application/json")
-                        .content(json.writeValueAsString(Map.of("mode", "PLATFORM_COLLECT", "reason", "试点")))
+                        .content(json.writeValueAsString(Map.of("mode", "PLATFORM_COLLECT", "reason", "试点"))))
                 .andExpect(status().isConflict())
                 .andExpect(jsonPath("$.code").value(409));
 
@@ -150,7 +155,7 @@ class MerchantCollectionModeIntegrationTest {
         mvc.perform(put("/api/v1/admin/settlement/merchants/1/collection-mode")
                         .header("Authorization", "Bearer " + token)
                         .contentType("application/json")
-                        .content(json.writeValueAsString(Map.of("mode", "PLATFORM_COLLECT", "reason", "首批试点")))
+                        .content(json.writeValueAsString(Map.of("mode", "PLATFORM_COLLECT", "reason", "首批试点"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.configuredMode").value("PLATFORM_COLLECT"))
                 .andExpect(jsonPath("$.data.effectiveMode").value("MERCHANT_DIRECT"))
@@ -162,7 +167,7 @@ class MerchantCollectionModeIntegrationTest {
         mvc.perform(put("/api/v1/admin/settlement/platform-collection/config")
                         .header("Authorization", "Bearer " + token)
                         .contentType("application/json")
-                        .content(json.writeValueAsString(Map.of("enabled", true)))
+                        .content(json.writeValueAsString(Map.of("enabled", true))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.enabled").value(true));
         mvc.perform(get("/api/v1/admin/settlement/merchants/1/collection-mode")
@@ -175,7 +180,7 @@ class MerchantCollectionModeIntegrationTest {
         mvc.perform(put("/api/v1/admin/settlement/merchants/1/collection-mode")
                         .header("Authorization", "Bearer " + token)
                         .contentType("application/json")
-                        .content(json.writeValueAsString(Map.of("mode", "MERCHANT_DIRECT", "reason", "回滚")))
+                        .content(json.writeValueAsString(Map.of("mode", "MERCHANT_DIRECT", "reason", "回滚"))))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.configuredMode").value("MERCHANT_DIRECT"));
         assertEquals(2, jdbc.queryForObject("SELECT COUNT(*) FROM merchant_collection_switch_audit", Integer.class));
@@ -197,14 +202,14 @@ class MerchantCollectionModeIntegrationTest {
         mvc.perform(put("/api/v1/admin/settlement/merchants/1/collection-mode")
                         .header("Authorization", "Bearer " + token)
                         .contentType("application/json")
-                        .content(json.writeValueAsString(Map.of("mode", "ALIPAY_DIRECT")))
+                        .content(json.writeValueAsString(Map.of("mode", "ALIPAY_DIRECT"))))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));
 
         mvc.perform(put("/api/v1/admin/settlement/platform-collection/config")
                         .header("Authorization", "Bearer " + token)
                         .contentType("application/json")
-                        .content("{}")
+                        .content("{}"))
                 .andExpect(status().isBadRequest())
                 .andExpect(jsonPath("$.code").value(400));
     }

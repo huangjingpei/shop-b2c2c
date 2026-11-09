@@ -25,6 +25,7 @@ class ServiceFeeConfigTest {
     private MerchantController controller(MerchantStoreMapper stores) {
         return new MerchantController(stores, mock(MerchantPaymentAccountMapper.class), mock(SysUserMapper.class),
                 mock(MerchantOnboardingService.class), mock(MerchantSettlementAccountService.class), mock(MerchantFeePolicyService.class),
+                mock(com.shop.b2b2c.service.MerchantCollectionModeService.class),
                 new com.shop.b2b2c.service.MerchantStoreGuard(stores),
                 mock(com.shop.b2b2c.service.MerchantStoreStatusService.class),
                 mock(com.shop.b2b2c.mapper.MerchantStoreStatusAuditMapper.class));
