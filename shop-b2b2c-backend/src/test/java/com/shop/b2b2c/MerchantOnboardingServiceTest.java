@@ -11,6 +11,7 @@
  *  5. 并发行锁、真实 MySQL 唯一性与三方实名核验仍由用户手动验证。
  *  6. G31 起审核未显式选复核人时原样传 null，由 FinanceApprovalGuard 区分严格模式 428 与宽松模式同人标记。
  *  7. dualService 固定双人复核开启（生产形态）：初审只推进阶段，终审必须换人；service 固定关闭（开发形态）。
+ *  8. 双人复核开启时，初审推进前必须存在第二位启用超管；数量不足时返回 409 且不能把单据推进到 SECONDARY。
  */
 package com.shop.b2b2c;
 
@@ -309,6 +310,8 @@ class MerchantOnboardingServiceTest {
     void dualApprovalPrimaryApproveOnlyAdvancesStageWithoutProvisioning() {
         MerchantOnboardingApplication application = submittedApplication(20L);
         when(applicationMapper.lockById(20L)).thenReturn(application);
+        // 双人复核开启：初审前必须存在第二位启用超管，否则 409。
+        when(userMapper.selectCount(any())).thenReturn(1L);
 
         MerchantOnboardingApplication result = dualService.approve(20L, provisioning(), "初审通过", 7L);
 
@@ -319,6 +322,24 @@ class MerchantOnboardingServiceTest {
         verify(storeMapper, never()).save(any());
         verify(userMapper, never()).save(any());
         verify(feePolicyService, never()).createInitialPolicy(any(), any(), any(), any(), any(), any());
+    }
+
+    @Test
+    void dualApprovalPrimaryApproveRejectsWhenNoSecondSuperAdmin() {
+        MerchantOnboardingApplication application = submittedApplication(25L);
+        when(applicationMapper.lockById(25L)).thenReturn(application);
+        // 只有当前审核人一名启用超管：必须拒绝，不能推进到 SECONDARY 把单据卡死。
+        when(userMapper.selectCount(any())).thenReturn(0L);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> dualService.approve(25L, provisioning(), "初审通过", 7L));
+
+        assertEquals(409, ex.getCode());
+        assertTrue(ex.getMessage().contains("第二位启用状态的超级管理员"));
+        assertEquals(MerchantOnboardingService.STATUS_SUBMITTED, application.getStatus());
+        assertNull(application.getReviewStage());
+        verify(applicationMapper, never()).updateById(any());
+        verify(storeMapper, never()).save(any());
     }
 
     @Test

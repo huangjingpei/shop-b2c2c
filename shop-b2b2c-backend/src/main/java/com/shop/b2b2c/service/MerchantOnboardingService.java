@@ -19,6 +19,7 @@
  *    显式传入的 storeCode/adminUsername/adminPassword 仍优先使用（超管应急开通保留该能力）。
  * 9. O1 初审/复审：shop.finance.dual-approval-required=true 时，首次 APPROVE 只推进到 review_stage=SECONDARY（不建店不建号），
  *    由不同超管再次 APPROVE 才终审通过；SECONDARY 阶段的 APPROVE/REJECT/SUPPLEMENT 必须换人，同人返回 403。
+ *    首次 APPROVE 前先校验除当前审核人外还有启用的 SUPERADMIN（没有则 409），避免单据卡在待复审无法推进。
  * 10. O1 原因码：REJECT 与 SUPPLEMENT_REQUIRED 必须携带 REJECT_CODES 字典内的 rejectCode；OTHER 时 reason 必填，其余原因码 reason 可选。
  * 11. 补件重提：仅 SUPPLEMENT_REQUIRED -> SUBMITTED 时 resubmit_count+1；要求补件会重置 review_stage/first_reviewer_id，重提后重新走初审。
  * 12. D3 逾期撤回：APPROVED 超 shop.onboarding.agreement-expire-days（默认30天）未开通、
@@ -362,7 +363,9 @@ public class MerchantOnboardingService {
         }
         String stage = currentReviewStage(application);
         if (approvalGuard.isDualApprovalRequired() && !REVIEW_STAGE_SECONDARY.equals(stage)) {
-            // 双人复核开启时的初审：只推进阶段，不建店不建号不建费率；开店参数由终审提交。
+            // 双人复核开启时的初审：先确认存在第二位启用超管，再推进阶段；否则单据会卡在待复审且第二次必然 403。
+            approvalGuard.requireOtherActiveSuperAdmin("入驻初审", reviewerId);
+            // 只推进阶段，不建店不建号不建费率；开店参数由终审提交。
             String fromStatus = application.getStatus();
             application.setStatus(STATUS_REVIEWING);
             application.setReviewStage(REVIEW_STAGE_SECONDARY);

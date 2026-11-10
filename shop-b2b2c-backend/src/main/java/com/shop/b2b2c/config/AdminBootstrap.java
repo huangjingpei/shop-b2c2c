@@ -6,6 +6,7 @@
  *   2. 口令不得为空或演示默认口令admin123，校验失败直接阻断启动；
  *   3. 只在启动阶段执行，不参与登录鉴权；创建后应立即由环境负责人轮换并移除环境变量；
  *   4. 密码散列只在内存中生成，不记录明文或散列到日志。
+ *   5. 必须早于 DualApprovalAccountValidator 执行，否则新库首次启动时会因为还没有超管而被误判。
  */
 package com.shop.b2b2c.config;
 
@@ -16,12 +17,15 @@ import com.shop.b2b2c.mapper.SysUserMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 
 import java.util.Locale;
 import java.util.Set;
 
 @Component
+@Order(Ordered.LOWEST_PRECEDENCE - 1)
 public class AdminBootstrap implements ApplicationRunner {
 
     static final Set<String> DEMO_DEFAULT_PASSWORDS = Set.of("admin123");

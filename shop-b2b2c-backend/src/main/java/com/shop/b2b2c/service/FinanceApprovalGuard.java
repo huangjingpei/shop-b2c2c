@@ -8,6 +8,8 @@
  *  4. 调用方必须通过 resolveReviewer 取得实际落库的复核人：未传时按操作人处理（仅开关关闭时允许）。
  *  5. 不同人的复核人必须在服务端校验：启用状态 + SUPERADMIN；禁用、非超管、不存在一律 403，不能只信任前端候选列表。
  *  6. 不得在业务层自建第二套“单管理员”判断；所有财务复核都必须经过本类。
+ *  7. 双人复核开启后，任何“先推进中间态、再由第二人确认”的流程都必须先调用 requireOtherActiveSuperAdmin：
+ *     否则只有一名超管时单据会先卡进待复核中间态，第二次确认必然 403，流程永久无法完成。
  */
 package com.shop.b2b2c.service;
 
@@ -74,6 +76,32 @@ public class FinanceApprovalGuard {
             throw new BusinessException(403, action + "：操作人与复核人不能为同一人（已开启双人复核）");
         }
         return MODE_SAME_OPERATOR;
+    }
+
+    /**
+     * 双人复核开启时校验除当前操作人外至少还有一名启用状态的 SUPERADMIN，没有则 409。
+     * 用于“先推进到待复核、再由第二人终审”的流程（入驻初审）在推进前预检，避免单超管部署下单据卡死。
+     * 开关关闭时直接放行，不额外查库。
+     *
+     * @param action     业务动作，用于提示信息
+     * @param operatorId 当前操作人；双人复核开启时不得为空
+     */
+    public void requireOtherActiveSuperAdmin(String action, Long operatorId) {
+        if (!dualApprovalRequired) {
+            return;
+        }
+        if (operatorId == null) {
+            throw new BusinessException(403, action + "：必须记录操作人");
+        }
+        Long count = userMapper.selectCount(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SysUser>()
+                .eq(SysUser::getRoleCode, "SUPERADMIN")
+                .eq(SysUser::getIsActive, true)
+                .ne(SysUser::getId, operatorId));
+        if (count == null || count < 1) {
+            throw new BusinessException(409, action
+                    + "：已开启双人复核，但系统中没有第二位启用状态的超级管理员，操作已拒绝；"
+                    + "请先创建第二位 SUPERADMIN 账号后再继续");
+        }
     }
 
     /**

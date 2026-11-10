@@ -6,6 +6,7 @@
  *  2. 资质校验必须位于 resolveReviewer，服务层所有财务动作共用；不要为单个入口另写校验。
  *  3. 同人复核与缺复核人的开关口径仍由 verify 覆盖；本用例聚焦“不同人复核”的账号资质，
  *     并回归 G36 宽松模式缺复核人仍落 SAME_OPERATOR。
+ *  4. 双人复核开启时，需要“第二位启用超管”的中间态流程必须先做数量预检；数量不足必须 409 而非放行。
  */
 package com.shop.b2b2c;
 
@@ -15,9 +16,11 @@ import com.shop.b2b2c.mapper.SysUserMapper;
 import com.shop.b2b2c.service.FinanceApprovalGuard;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -107,5 +110,24 @@ class FinanceApprovalGuardTest {
                 () -> strict.verify("调价", 7L, 7L));
 
         assertEquals(403, ex.getCode());
+    }
+
+    @Test
+    void strictModeRequiresAnotherActiveSuperAdminBeforeAdvancing() {
+        when(userMapper.selectCount(any())).thenReturn(1L);
+        assertDoesNotThrow(() -> strict.requireOtherActiveSuperAdmin("入驻初审", 7L));
+
+        when(userMapper.selectCount(any())).thenReturn(0L);
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> strict.requireOtherActiveSuperAdmin("入驻初审", 7L));
+        assertEquals(409, ex.getCode());
+        assertTrue(ex.getMessage().contains("没有第二位启用状态的超级管理员"));
+    }
+
+    @Test
+    void looseModeDoesNotLookupAnotherSuperAdmin() {
+        loose.requireOtherActiveSuperAdmin("入驻初审", 7L);
+
+        verify(userMapper, never()).selectCount(any());
     }
 }
