@@ -1,10 +1,12 @@
 /*
  * 文件：RefundServiceTest.java
- * 用途：T33 退款/重复付款补偿契约用例：超退拒绝、幂等复用、服务费比例冲正、渠道失败释放、PROCESSING 不置退款、重复付款不占订单额度。
+ * 用途：T33 退款/重复付款补偿契约用例：超退拒绝、幂等复用、服务费比例冲正、渠道失败释放、PROCESSING 不置退款、重复付款不占订单额度；
+ *      M4-B 平台代收退款编排：模式路由守卫、先退分后退款顺序、退分失败中止、重复付款补偿跳过退分、平台查单路由。
  * 维护注意：
  *  1. 全部使用 Mockito 隔离，不启动 Spring、不连接数据库、不调用真实渠道。
  *  2. 只验证服务层状态机与金额口径；真实 MySQL 事务、并发行锁与渠道联调仍需用户手动执行。
  *  3. 修改退款上限、费用冲正公式或状态迁移条件时必须同步更新本用例。
+ *  4. RefundService 构造器参数与字段声明顺序一致；新增编排依赖必须同步补 mock。
  */
 package com.shop.b2b2c;
 
@@ -14,6 +16,7 @@ import com.shop.b2b2c.dto.PaymentChannelDTOs;
 import com.shop.b2b2c.dto.RefundDTOs;
 import com.shop.b2b2c.entity.MerchantPaymentAccount;
 import com.shop.b2b2c.entity.PaymentEvent;
+import com.shop.b2b2c.entity.SplitDetail;
 import com.shop.b2b2c.entity.TradeOrder;
 import com.shop.b2b2c.entity.TradeOrderItem;
 import com.shop.b2b2c.entity.TradeRefund;
@@ -21,14 +24,19 @@ import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.PaymentEventMapper;
 import com.shop.b2b2c.mapper.ProductSkuMapper;
 import com.shop.b2b2c.mapper.ProductVirtualCardMapper;
+import com.shop.b2b2c.mapper.SplitDetailMapper;
 import com.shop.b2b2c.mapper.TradeOrderItemMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
 import com.shop.b2b2c.mapper.TradeRefundMapper;
+import com.shop.b2b2c.service.PlatformCollectionService;
 import com.shop.b2b2c.service.payment.PaymentChannelAdapter;
 import com.shop.b2b2c.service.payment.PaymentChannelRegistry;
+import com.shop.b2b2c.service.payment.PlatformCashierChannelAdapter;
+import com.shop.b2b2c.service.payment.PlatformCashierChannelRegistry;
 import com.shop.b2b2c.service.payment.RefundService;
 import com.shop.b2b2c.service.payment.RefundTransactionService;
 import org.junit.jupiter.api.Test;
+import org.mockito.InOrder;
 
 import java.math.BigDecimal;
 import java.util.List;
@@ -40,7 +48,9 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -59,10 +69,20 @@ class RefundServiceTest {
     private final ProductVirtualCardMapper cardMapper = mock(ProductVirtualCardMapper.class);
     private final com.shop.b2b2c.service.MerchantAccountService accountService =
             mock(com.shop.b2b2c.service.MerchantAccountService.class);
+    // M4-B：平台代收退款编排依赖，默认 mock；平台代收用例单独装配桩。
+    private final PlatformCashierChannelRegistry platformCashiers = mock(PlatformCashierChannelRegistry.class);
+    private final PlatformCollectionService platformCollectionService = mock(PlatformCollectionService.class);
+    private final SplitDetailMapper splitDetailMapper = mock(SplitDetailMapper.class);
 
     private RefundTransactionService transactionService() {
         return new RefundTransactionService(orderMapper, itemMapper, refundMapper, skuMapper, eventMapper,
                 cardMapper, accountService);
+    }
+
+    private RefundService refundService(TradeRefundMapper refunds, MerchantPaymentAccountMapper accounts,
+                                        PaymentChannelRegistry registry, RefundTransactionService tx) {
+        return new RefundService(refunds, orderMapper, eventMapper, accounts, registry, tx,
+                platformCashiers, platformCollectionService, splitDetailMapper);
     }
 
     @Test
@@ -268,7 +288,7 @@ class RefundServiceTest {
         PaymentChannelRegistry registry = mock(PaymentChannelRegistry.class);
         MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
         RefundTransactionService tx = mock(RefundTransactionService.class);
-        RefundService service = new RefundService(refundMapper, orderMapper, eventMapper, accounts, registry, tx);
+        RefundService service = refundService(refundMapper, accounts, registry, tx);
         when(tx.prepareOrderRefund(eq(MERCHANT_ID), eq("SN-R1"), any(), any(), eq(KEY), anyLong()))
                 .thenReturn(refund);
         when(registry.require("WECHAT")).thenReturn(adapter);
@@ -295,7 +315,7 @@ class RefundServiceTest {
         PaymentChannelRegistry registry = mock(PaymentChannelRegistry.class);
         MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
         RefundTransactionService tx = mock(RefundTransactionService.class);
-        RefundService service = new RefundService(refundMapper, orderMapper, eventMapper, accounts, registry, tx);
+        RefundService service = refundService(refundMapper, accounts, registry, tx);
         when(tx.prepareOrderRefund(eq(MERCHANT_ID), eq("SN-R1"), any(), any(), eq(KEY), anyLong()))
                 .thenReturn(refund);
         when(registry.require("WECHAT")).thenReturn(adapter);
@@ -313,13 +333,173 @@ class RefundServiceTest {
 
     @Test
     void invalidIdempotencyKeyIsRejectedBeforePrepare() {
-        RefundService service = new RefundService(refundMapper, orderMapper, eventMapper,
-                mock(MerchantPaymentAccountMapper.class), mock(PaymentChannelRegistry.class),
-                mock(RefundTransactionService.class));
+        RefundService service = refundService(refundMapper, mock(MerchantPaymentAccountMapper.class),
+                mock(PaymentChannelRegistry.class), mock(RefundTransactionService.class));
 
         BusinessException ex = assertThrows(BusinessException.class, () -> service.applyOrderRefund(
                 MERCHANT_ID, "SN-R1", request("1.00", "bad key"), "short", 5L));
         assertTrue(ex.getMessage().contains("Idempotency-Key"));
+    }
+
+    // ---------- M4-B 平台代收退款编排（先退分后退款） ----------
+
+    @Test
+    void platformCollectRefundRoutesToPlatformCashierAndNeverTouchesMerchantChannel() {
+        TradeRefund refund = platformOrderRefund(12L);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        PaymentChannelRegistry merchantRegistry = mock(PaymentChannelRegistry.class);
+        RefundTransactionService tx = mock(RefundTransactionService.class);
+        RefundService service = refundService(refundMapper, accounts, merchantRegistry, tx);
+        when(tx.prepareOrderRefund(eq(MERCHANT_ID), eq("SN-R1"), any(), any(), eq(KEY), anyLong()))
+                .thenReturn(refund);
+        when(platformCashiers.requireForRefund("WECHAT")).thenThrow(new BusinessException(409,
+                "平台收银台未配置：缺少平台服务商商户号/证书/APIv3 密钥（payment.platform.* 环境变量），"
+                        + "平台代收订单暂不能退款（先退分后退款）"));
+
+        BusinessException ex = assertThrows(BusinessException.class, () -> service.applyOrderRefund(
+                MERCHANT_ID, "SN-R1", request("100.00", "平台代收退"), KEY, 5L));
+
+        assertTrue(ex.getMessage().contains("平台收银台未配置"));
+        assertTrue(ex.getMessage().contains("退款"));
+        verify(tx).finalizeFailure(eq(12L), any());
+        // 绝不回退商家直收：不触碰直收注册表、不读取商家直收账户、不查分账明细。
+        verify(merchantRegistry, never()).require(any());
+        verify(accounts, never()).findByMerchantIdAndChannel(anyLong(), any());
+        verify(splitDetailMapper, never()).findByOrderId(anyLong());
+    }
+
+    @Test
+    void platformCollectRefundReturnsSplitBeforeRefunding() {
+        TradeRefund refund = platformOrderRefund(13L);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        PaymentChannelRegistry merchantRegistry = mock(PaymentChannelRegistry.class);
+        RefundTransactionService tx = mock(RefundTransactionService.class);
+        PlatformCashierChannelAdapter adapter = mock(PlatformCashierChannelAdapter.class);
+        RefundService service = refundService(refundMapper, accounts, merchantRegistry, tx);
+        when(tx.prepareOrderRefund(eq(MERCHANT_ID), eq("SN-R1"), any(), any(), eq(KEY), anyLong()))
+                .thenReturn(refund);
+        when(platformCashiers.requireForRefund("WECHAT")).thenReturn(adapter);
+        when(orderMapper.findByOrderSn("SN-R1")).thenReturn(Optional.of(paidOrder()));
+        SplitDetail split = new SplitDetail();
+        split.setId(51L);
+        split.setPaymentAccountId(61L);
+        split.setPlatformTradeNo("PT-1");
+        when(splitDetailMapper.findByOrderId(11L)).thenReturn(List.of(split));
+        MerchantPaymentAccount receiver = new MerchantPaymentAccount();
+        receiver.setId(61L);
+        receiver.setSubMchid("SUB-MCH-1");
+        when(accounts.selectById(61L)).thenReturn(receiver);
+        when(adapter.returnSplit(any())).thenReturn(PaymentChannelDTOs.SplitReturnResult.builder()
+                .channel("WECHAT").refundNo(refund.getRefundNo()).channelReturnNo("PSR-1")
+                .status("SUCCESS").amount(new BigDecimal("97.00")).build());
+        when(adapter.refundPayment(any())).thenReturn(PaymentChannelDTOs.RefundResult.builder()
+                .channel("WECHAT").refundNo(refund.getRefundNo()).channelRefundNo("PRF-1")
+                .status("SUCCESS").refundAmount(new BigDecimal("100.00")).build());
+
+        RefundDTOs.RefundView view = service.applyOrderRefund(MERCHANT_ID, "SN-R1",
+                request("100.00", "平台代收全退"), KEY, 5L);
+
+        assertEquals("SUCCESS", view.getStatus());
+        // 先退分后退款：调用顺序必须 returnSplit 在前、refundPayment 在后。
+        InOrder order = inOrder(adapter);
+        order.verify(adapter).returnSplit(argThat(cmd ->
+                new BigDecimal("97.00").compareTo(cmd.getAmount()) == 0
+                        && "SUB-MCH-1".equals(cmd.getReceiverChannelId())
+                        && "PT-1".equals(cmd.getPlatformTradeNo())
+                        && refund.getRefundNo().equals(cmd.getRefundNo())));
+        order.verify(adapter).refundPayment(any());
+        // 退分额 = 退款额 100 − 服务费冲正 3 = 97（金额守恒），本地账本在渠道退分成功后登记。
+        verify(platformCollectionService).recordSplitReverse(51L, 13L, refund.getRefundNo(),
+                new BigDecimal("97.00"), 5L);
+        verify(tx).finalizeSuccess(13L, "PRF-1");
+        verify(merchantRegistry, never()).require(any());
+    }
+
+    @Test
+    void platformCollectRefundStopsWhenSplitReturnNotSuccessful() {
+        TradeRefund refund = platformOrderRefund(14L);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        RefundTransactionService tx = mock(RefundTransactionService.class);
+        PlatformCashierChannelAdapter adapter = mock(PlatformCashierChannelAdapter.class);
+        RefundService service = refundService(refundMapper, accounts, mock(PaymentChannelRegistry.class), tx);
+        when(tx.prepareOrderRefund(eq(MERCHANT_ID), eq("SN-R1"), any(), any(), eq(KEY), anyLong()))
+                .thenReturn(refund);
+        when(platformCashiers.requireForRefund("WECHAT")).thenReturn(adapter);
+        SplitDetail split = new SplitDetail();
+        split.setId(52L);
+        split.setPaymentAccountId(62L);
+        split.setPlatformTradeNo("PT-2");
+        when(splitDetailMapper.findByOrderId(11L)).thenReturn(List.of(split));
+        MerchantPaymentAccount receiver = new MerchantPaymentAccount();
+        receiver.setId(62L);
+        receiver.setSubMchid("SUB-MCH-2");
+        when(accounts.selectById(62L)).thenReturn(receiver);
+        when(adapter.returnSplit(any())).thenReturn(PaymentChannelDTOs.SplitReturnResult.builder()
+                .channel("WECHAT").refundNo(refund.getRefundNo()).status("PROCESSING")
+                .amount(new BigDecimal("97.00")).build());
+
+        BusinessException ex = assertThrows(BusinessException.class, () -> service.applyOrderRefund(
+                MERCHANT_ID, "SN-R1", request("100.00", "退分未完成"), KEY, 5L));
+
+        assertTrue(ex.getMessage().contains("退分未完成"));
+        // 退分未确认：不得发起渠道退款、不得登记本地退分账本；退款记录落 FAILED 释放预占。
+        verify(adapter, never()).refundPayment(any());
+        verify(platformCollectionService, never()).recordSplitReverse(anyLong(), anyLong(), any(), any(), any());
+        verify(tx).finalizeFailure(eq(14L), any());
+    }
+
+    @Test
+    void platformCollectDuplicateCompensationSkipsSplitReturn() {
+        TradeRefund refund = platformOrderRefund(15L);
+        refund.setSource(RefundTransactionService.SOURCE_DUPLICATE_PAYMENT);
+        refund.setFeeRefundAmount(new BigDecimal("0.00"));
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        RefundTransactionService tx = mock(RefundTransactionService.class);
+        PlatformCashierChannelAdapter adapter = mock(PlatformCashierChannelAdapter.class);
+        RefundService service = refundService(refundMapper, accounts, mock(PaymentChannelRegistry.class), tx);
+        when(tx.prepareDuplicateCompensation(eq(MERCHANT_ID), eq(21L), eq(KEY), anyLong())).thenReturn(refund);
+        when(platformCashiers.requireForRefund("WECHAT")).thenReturn(adapter);
+        when(adapter.refundPayment(any())).thenReturn(PaymentChannelDTOs.RefundResult.builder()
+                .channel("WECHAT").refundNo(refund.getRefundNo()).channelRefundNo("PRF-2")
+                .status("SUCCESS").refundAmount(new BigDecimal("100.00")).build());
+
+        RefundDTOs.RefundView view = service.compensateDuplicatePayment(MERCHANT_ID, 21L, KEY, 5L);
+
+        assertEquals("SUCCESS", view.getStatus());
+        // 重复付款资金未分账：不退分、不查分账明细，直接平台收银台退款。
+        verify(adapter, never()).returnSplit(any());
+        verify(splitDetailMapper, never()).findByOrderId(anyLong());
+        verify(tx).finalizeSuccess(15L, "PRF-2");
+    }
+
+    @Test
+    void syncRefundRoutesPlatformCollectToPlatformCashier() {
+        TradeRefund refund = platformOrderRefund(16L);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        PaymentChannelRegistry merchantRegistry = mock(PaymentChannelRegistry.class);
+        RefundTransactionService tx = mock(RefundTransactionService.class);
+        PlatformCashierChannelAdapter adapter = mock(PlatformCashierChannelAdapter.class);
+        RefundService service = refundService(refundMapper, accounts, merchantRegistry, tx);
+        when(refundMapper.findByRefundNo(refund.getRefundNo())).thenReturn(Optional.of(refund));
+        when(orderMapper.findByOrderSn("SN-R1")).thenReturn(Optional.of(paidOrder()));
+        when(platformCashiers.requireForRefund("WECHAT")).thenReturn(adapter);
+        when(adapter.queryRefund(any())).thenReturn(PaymentChannelDTOs.RefundResult.builder()
+                .channel("WECHAT").refundNo(refund.getRefundNo()).channelRefundNo("PRF-9")
+                .status("SUCCESS").refundAmount(new BigDecimal("100.00")).build());
+
+        service.syncRefund(MERCHANT_ID, refund.getRefundNo());
+
+        verify(tx).finalizeSuccess(16L, "PRF-9");
+        verify(merchantRegistry, never()).require(any());
+        verify(accounts, never()).findByMerchantIdAndChannel(anyLong(), any());
+    }
+
+    /** M4-B 平台代收退款夹具：PROCESSING、source=ORDER、请求操作人 5L；金额 100、服务费冲正 3 → 退分 97。 */
+    private TradeRefund platformOrderRefund(Long id) {
+        TradeRefund refund = orderRefund(id);
+        refund.setCollectionMode(CollectionMode.PLATFORM_COLLECT);
+        refund.setRequestedBy(5L);
+        return refund;
     }
 
     private TradeOrder paidOrder() {

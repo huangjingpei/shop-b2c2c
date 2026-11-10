@@ -1,6 +1,7 @@
 /*
  * 文件：PaymentChannelSecurityTest.java
- * 用途：T32 真实支付渠道安全契约用例：微信/支付宝回调验签与解密、金额/商户拒绝、模拟渠道拒绝、阶段一归集模式约束。
+ * 用途：T32 真实支付渠道安全契约用例：微信/支付宝回调验签与解密、金额/商户拒绝、模拟渠道拒绝、
+ *      归集模式已知值约束（M4-B 起 requireStageOne 删除，只认 requireKnown）、平台收银台骨架拒绝细化（含 M4-B 退款入口）。
  * 维护注意：
  *  1. 用例在进程内生成 RSA 密钥并自签回调报文，不连接微信/支付宝，不读取生产凭据，不写数据库。
  *  2. 只验证适配器与网关入口的安全边界；真实渠道联调仍需用户在具备商户号/证书的环境执行。
@@ -197,11 +198,13 @@ class PaymentChannelSecurityTest {
     }
 
     @Test
-    void stageOneRejectsPlatformCollectAndLegacyChannelCodes() {
-        assertThrows(BusinessException.class,
-                () -> CollectionMode.requireStageOne(CollectionMode.PLATFORM_COLLECT));
+    void collectionModeKnownCheckAcceptsBothModesAndRejectsUnknown() {
+        // M4-B：requireStageOne 已删除，模式合法性只认 requireKnown；路由由支付/退款入口按值分流。
         assertEquals(CollectionMode.MERCHANT_DIRECT,
-                CollectionMode.requireStageOne(CollectionMode.MERCHANT_DIRECT));
+                CollectionMode.requireKnown(CollectionMode.MERCHANT_DIRECT));
+        assertEquals(CollectionMode.PLATFORM_COLLECT,
+                CollectionMode.requireKnown("platform_collect"));
+        assertThrows(BusinessException.class, () -> CollectionMode.requireKnown("C"));
         assertThrows(BusinessException.class, () -> PayChannel.normalize("C"));
         assertThrows(BusinessException.class, () -> PayChannel.normalize("MOCK"));
     }
@@ -271,6 +274,12 @@ class PaymentChannelSecurityTest {
         BusinessException unconfigured = assertThrows(BusinessException.class, () -> registry.require("WECHAT"));
         assertEquals(409, unconfigured.getCode());
         assertTrue(unconfigured.getMessage().contains("平台收银台未配置"));
+        // M4-B：退款入口同一检查链，文案细化到退款语义
+        BusinessException refundUnconfigured = assertThrows(BusinessException.class,
+                () -> registry.requireForRefund("WECHAT"));
+        assertEquals(409, refundUnconfigured.getCode());
+        assertTrue(refundUnconfigured.getMessage().contains("平台收银台未配置"));
+        assertTrue(refundUnconfigured.getMessage().contains("退款"));
 
         // 凭据配齐但开关未开 → “已配置但未完成通道联调”
         properties.setSpMchid("SP-1");
@@ -281,16 +290,31 @@ class PaymentChannelSecurityTest {
         BusinessException notIntegrated = assertThrows(BusinessException.class, () -> registry.require("WECHAT"));
         assertEquals(409, notIntegrated.getCode());
         assertTrue(notIntegrated.getMessage().contains("已配置但未完成通道联调"));
+        BusinessException refundNotIntegrated = assertThrows(BusinessException.class,
+                () -> registry.requireForRefund("WECHAT"));
+        assertEquals(409, refundNotIntegrated.getCode());
+        assertTrue(refundNotIntegrated.getMessage().contains("已配置但未完成通道联调"));
+        assertTrue(refundNotIntegrated.getMessage().contains("退款"));
 
         // 未接入渠道
         BusinessException unsupported = assertThrows(BusinessException.class, () -> registry.require("ALIPAY"));
         assertTrue(unsupported.getMessage().contains("未接入渠道"));
+        assertThrows(BusinessException.class, () -> registry.requireForRefund("ALIPAY"));
 
         // 占位适配器即使被直接调用也必须拒绝，不得伪造成功。
         MockPlatformCashierChannelAdapter adapter = new MockPlatformCashierChannelAdapter();
         assertFalse(adapter.enabled());
         assertThrows(BusinessException.class,
                 () -> adapter.createPayment(PaymentChannelDTOs.PaymentCreateCommand.builder().build()));
+        // M4-B：退款/退款查单/退分/退分查单同为 501 占位拒绝
+        assertThrows(BusinessException.class,
+                () -> adapter.refundPayment(PaymentChannelDTOs.RefundCommand.builder().build()));
+        assertThrows(BusinessException.class,
+                () -> adapter.queryRefund(PaymentChannelDTOs.RefundCommand.builder().build()));
+        assertThrows(BusinessException.class,
+                () -> adapter.returnSplit(PaymentChannelDTOs.SplitReturnCommand.builder().build()));
+        assertThrows(BusinessException.class,
+                () -> adapter.querySplitReturn(PaymentChannelDTOs.SplitReturnCommand.builder().build()));
     }
 
     @Test

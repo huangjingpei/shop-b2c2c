@@ -12,6 +12,8 @@
  *     且不恢复 SKU 库存；卡密可能已交付，恢复库存会造成“库存数大于可用卡密数”。
  *  8. 成功迁移必须同时写不可变的 success_at（Asia/Shanghai 墙上时间），供 T+1 与结算冲正切日；
  *     updated_at 会被后续同步改写，不能作为切日依据。
+ *  9. M4-B：本层只校验 collectionMode 为已知模式；平台代收退款的渠道路由与“先退分后退款”编排在
+ *     RefundService 渠道调用层守卫（平台收银台未配置/未联调 409，绝不回退商家直收渠道）。
  */
 package com.shop.b2b2c.service.payment;
 
@@ -80,7 +82,8 @@ public class RefundTransactionService {
         if (order == null) {
             throw new BusinessException(409, "订单状态已变化，请刷新后重试");
         }
-        CollectionMode.requireStageOne(order.getCollectionMode());
+        // M4-B：只校验已知模式；PLATFORM_COLLECT 的渠道路由与先退分后退款编排由 RefundService 守卫。
+        CollectionMode.requireKnown(order.getCollectionMode());
         if (!REFUNDABLE_ORDER_STATUS.contains(order.getOrderStatus())) {
             throw new BusinessException(409, "订单当前状态不允许退款: " + order.getOrderStatus());
         }
