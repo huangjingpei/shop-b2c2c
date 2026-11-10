@@ -112,11 +112,14 @@ payment:
   platform:
     enabled: ${PLATFORM_CASHIER_ENABLED:false}
     sp-mchid: ${PLATFORM_CASHIER_SP_MCHID:}
+    sp-appid: ${PLATFORM_CASHIER_SP_APPID:}
     serial-no: ${PLATFORM_CASHIER_SERIAL_NO:}
     api-v3-key: ${PLATFORM_CASHIER_API_V3_KEY:}
     private-key: ${PLATFORM_CASHIER_PRIVATE_KEY:}
     platform-public-key: ${PLATFORM_CASHIER_PLATFORM_PUBLIC_KEY:}
     notify-path: ${PLATFORM_CASHIER_NOTIFY_PATH:/api/v1/payment/callback/platform}
+    notify-base-url: ${PLATFORM_CASHIER_NOTIFY_BASE_URL:}
+    api-base: ${PLATFORM_CASHIER_API_BASE:https://api.mch.weixin.qq.com}
 
 # 平台前台访问地址 (代付短链与二维码海报基准地址)
 app:

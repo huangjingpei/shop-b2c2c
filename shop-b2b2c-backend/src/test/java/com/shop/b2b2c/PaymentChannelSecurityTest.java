@@ -25,15 +25,17 @@ import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
 import com.shop.b2b2c.service.PaymentEventService;
 import com.shop.b2b2c.service.payment.AlipayPaymentChannelAdapter;
-import com.shop.b2b2c.service.payment.MockPlatformCashierChannelAdapter;
 import com.shop.b2b2c.service.payment.PaymentChannelProperties;
 import com.shop.b2b2c.service.payment.PaymentChannelRegistry;
 import com.shop.b2b2c.service.payment.PaymentCallbackAuditService;
 import com.shop.b2b2c.service.payment.PaymentCloseReceiptService;
 import com.shop.b2b2c.service.payment.PaymentGatewayService;
+import com.shop.b2b2c.service.payment.PlatformCashierChannelAdapter;
 import com.shop.b2b2c.service.payment.PlatformCashierChannelRegistry;
 import com.shop.b2b2c.service.payment.PlatformCashierProperties;
 import com.shop.b2b2c.service.payment.WeChatPaymentChannelAdapter;
+import com.shop.b2b2c.service.payment.WeChatPlatformCashierChannelAdapter;
+import com.shop.b2b2c.service.PlatformCollectionService;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -74,6 +76,8 @@ class PaymentChannelSecurityTest {
     private final ObjectMapper objectMapper = new ObjectMapper();
     /** Sprint 57：网关构造器新增的平台收银台骨架依赖；默认 mock，平台代收用例单独换真实 registry。 */
     private final PlatformCashierChannelRegistry platformCashiers = mock(PlatformCashierChannelRegistry.class);
+    /** Sprint 59：平台代收回调履约成功后的结算台账依赖（D3 只建台账不分账）。 */
+    private final PlatformCollectionService platformCollections = mock(PlatformCollectionService.class);
 
     @BeforeAll
     static void generateKeys() throws Exception {
@@ -231,7 +235,7 @@ class PaymentChannelSecurityTest {
                         .currency("CNY").build());
 
         PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits,
-                mock(PaymentCloseReceiptService.class), platformCashiers);
+                mock(PaymentCloseReceiptService.class), platformCashiers, platformCollections);
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> gateway.handleCallback("WECHAT", Map.of(), "{}", null));
         assertTrue(ex.getMessage().contains("不匹配"));
@@ -248,12 +252,13 @@ class PaymentChannelSecurityTest {
         PaymentEventService events = mock(PaymentEventService.class);
         PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
         when(orders.findByOrderSn("SN-GW")).thenReturn(Optional.of(order));
-        // Sprint 57：真实 registry + 空凭据配置 → 细化原因“平台收银台未配置”。
+        // Sprint 57/59：真实 registry + 真实适配器（空凭据配置）→ 细化原因“平台收银台未配置”。
+        PlatformCashierProperties emptyProperties = new PlatformCashierProperties();
         PlatformCashierChannelRegistry cashierRegistry = new PlatformCashierChannelRegistry(
-                List.of(new MockPlatformCashierChannelAdapter()), new PlatformCashierProperties());
+                List.of(new WeChatPlatformCashierChannelAdapter(emptyProperties, objectMapper)), emptyProperties);
 
         PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits,
-                mock(PaymentCloseReceiptService.class), cashierRegistry);
+                mock(PaymentCloseReceiptService.class), cashierRegistry, platformCollections);
         PaymentChannelDTOs.CreatePaymentRequest request = new PaymentChannelDTOs.CreatePaymentRequest(
                 "SN-GW", "PEER-TOKEN", "WECHAT");
         BusinessException ex = assertThrows(BusinessException.class,
@@ -268,7 +273,7 @@ class PaymentChannelSecurityTest {
     void platformCashierRegistryDistinguishesNotConfiguredAndNotIntegrated() {
         PlatformCashierProperties properties = new PlatformCashierProperties();
         PlatformCashierChannelRegistry registry = new PlatformCashierChannelRegistry(
-                List.of(new MockPlatformCashierChannelAdapter()), properties);
+                List.of(new WeChatPlatformCashierChannelAdapter(properties, objectMapper)), properties);
 
         // 凭据缺失 → “未配置”
         BusinessException unconfigured = assertThrows(BusinessException.class, () -> registry.require("WECHAT"));
@@ -281,8 +286,9 @@ class PaymentChannelSecurityTest {
         assertTrue(refundUnconfigured.getMessage().contains("平台收银台未配置"));
         assertTrue(refundUnconfigured.getMessage().contains("退款"));
 
-        // 凭据配齐但开关未开 → “已配置但未完成通道联调”
+        // 凭据配齐但开关未开 → “已配置但未完成通道联调”（Sprint 59 起凭据含服务商 AppID）
         properties.setSpMchid("SP-1");
+        properties.setSpAppid("SP-APP-1");
         properties.setSerialNo("SER-1");
         properties.setApiV3Key("APIV3");
         properties.setPrivateKey("PRIVATE");
@@ -301,12 +307,15 @@ class PaymentChannelSecurityTest {
         assertTrue(unsupported.getMessage().contains("未接入渠道"));
         assertThrows(BusinessException.class, () -> registry.requireForRefund("ALIPAY"));
 
-        // 占位适配器即使被直接调用也必须拒绝，不得伪造成功。
-        MockPlatformCashierChannelAdapter adapter = new MockPlatformCashierChannelAdapter();
+        // Sprint 59：真实适配器未启用时被直接调用也必须 503 拒绝，不得伪造成功（回调验签除外，便于联调排查）。
+        PlatformCashierChannelAdapter adapter = new WeChatPlatformCashierChannelAdapter(properties, objectMapper);
         assertFalse(adapter.enabled());
         assertThrows(BusinessException.class,
                 () -> adapter.createPayment(PaymentChannelDTOs.PaymentCreateCommand.builder().build()));
-        // M4-B：退款/退款查单/退分/退分查单同为 501 占位拒绝
+        assertThrows(BusinessException.class,
+                () -> adapter.queryPayment(PaymentChannelDTOs.PaymentCreateCommand.builder().build()));
+        assertThrows(BusinessException.class,
+                () -> adapter.closePayment(PaymentChannelDTOs.PaymentCreateCommand.builder().build()));
         assertThrows(BusinessException.class,
                 () -> adapter.refundPayment(PaymentChannelDTOs.RefundCommand.builder().build()));
         assertThrows(BusinessException.class,
@@ -315,6 +324,185 @@ class PaymentChannelSecurityTest {
                 () -> adapter.returnSplit(PaymentChannelDTOs.SplitReturnCommand.builder().build()));
         assertThrows(BusinessException.class,
                 () -> adapter.querySplitReturn(PaymentChannelDTOs.SplitReturnCommand.builder().build()));
+
+        // 凭据配齐且联调开关打开 → registry 放行真实适配器（联调完成态，仅供凭据到位后的环境）。
+        properties.setEnabled(true);
+        assertEquals("WECHAT", adapter.channel());
+        assertNotNull(registry.require("WECHAT"));
+        assertNotNull(registry.requireForRefund("WECHAT"));
+    }
+
+    // ---------- Sprint 59：平台代收回调履约入口（M6 联调准备，验签/解密由适配器单测覆盖） ----------
+
+    @Test
+    void platformCallbackFulfillsAndGeneratesSettlementLedger() {
+        TradeOrderMapper orders = mock(TradeOrderMapper.class);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
+        TradeOrder order = unpaidOrder();
+        order.setCollectionMode(CollectionMode.PLATFORM_COLLECT);
+        order.setPayChannel("WECHAT");
+        when(orders.findByOrderSn("SN-1")).thenReturn(Optional.of(order));
+        MerchantPaymentAccount receiver = new MerchantPaymentAccount();
+        receiver.setSubMchid("SUB-MCH-9");
+        when(accounts.findEffectiveBound(eq(order.getMerchantId()), eq("WECHAT"), any(LocalDateTime.class)))
+                .thenReturn(receiver);
+        PlatformCashierChannelAdapter adapter = mock(PlatformCashierChannelAdapter.class);
+        PlatformCashierChannelRegistry registry = mock(PlatformCashierChannelRegistry.class);
+        when(registry.require("WECHAT")).thenReturn(adapter);
+        when(adapter.parseCallback(any(), eq("RAW"), isNull())).thenReturn(
+                PaymentChannelDTOs.ChannelCallback.builder()
+                        .channel("WECHAT").payTradeNo("PTX-1").orderSn("SN-1")
+                        .channelMerchantId("SUB-MCH-9").payAmount(new BigDecimal("88.00"))
+                        .currency("CNY").payerId("SP-OPEN-1").rawPayload("RAW").build());
+        PaymentEventService events = mock(PaymentEventService.class);
+        when(events.processPaymentEvent(any())).thenReturn(
+                PaymentEventDTOs.PaymentProcessingResult.builder()
+                        .success(true).eventId(77L).eventStatus("SUCCESS").build());
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts,
+                mock(PaymentChannelRegistry.class), events, audits,
+                mock(PaymentCloseReceiptService.class), registry, platformCollections);
+
+        PaymentEventDTOs.PaymentProcessingResult result = gateway.handlePlatformCallback("WECHAT", Map.of(), "RAW");
+
+        assertTrue(result.isSuccess());
+        ArgumentCaptor<PaymentEventDTOs.IncomingPaymentEvent> eventCaptor =
+                ArgumentCaptor.forClass(PaymentEventDTOs.IncomingPaymentEvent.class);
+        verify(events).processPaymentEvent(eventCaptor.capture());
+        assertEquals("WECHAT", eventCaptor.getValue().getChannel());
+        assertEquals("SUB-MCH-9", eventCaptor.getValue().getChannelMerchantId());
+        assertEquals(new BigDecimal("88.00"), eventCaptor.getValue().getPayAmount());
+        // D3：支付成功只生成结算台账，不在此处发起分账。
+        verify(platformCollections).prepareSettlement(order, 77L, "PTX-1", new BigDecimal("88.00"));
+        ArgumentCaptor<PaymentCallbackAudit> auditCaptor = ArgumentCaptor.forClass(PaymentCallbackAudit.class);
+        verify(audits).record(auditCaptor.capture());
+        assertEquals(PaymentCallbackAuditService.OUTCOME_ACCEPTED, auditCaptor.getValue().getOutcome());
+    }
+
+    @Test
+    void platformCallbackRejectsMerchantDirectOrder() {
+        TradeOrderMapper orders = mock(TradeOrderMapper.class);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
+        TradeOrder order = unpaidOrder(); // collectionMode 默认 MERCHANT_DIRECT
+        when(orders.findByOrderSn("SN-1")).thenReturn(Optional.of(order));
+        PlatformCashierChannelAdapter adapter = mock(PlatformCashierChannelAdapter.class);
+        PlatformCashierChannelRegistry registry = mock(PlatformCashierChannelRegistry.class);
+        when(registry.require("WECHAT")).thenReturn(adapter);
+        when(adapter.parseCallback(any(), any(), isNull())).thenReturn(
+                PaymentChannelDTOs.ChannelCallback.builder()
+                        .channel("WECHAT").payTradeNo("PTX-2").orderSn("SN-1")
+                        .channelMerchantId("SUB-MCH-9").payAmount(new BigDecimal("88.00"))
+                        .currency("CNY").rawPayload("RAW").build());
+        PaymentEventService events = mock(PaymentEventService.class);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts,
+                mock(PaymentChannelRegistry.class), events, audits,
+                mock(PaymentCloseReceiptService.class), registry, platformCollections);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> gateway.handlePlatformCallback("WECHAT", Map.of(), "RAW"));
+        assertEquals(409, ex.getCode());
+        assertTrue(ex.getMessage().contains("非平台代收订单"));
+        verify(events, never()).processPaymentEvent(any());
+        verify(platformCollections, never()).prepareSettlement(any(), any(), any(), any());
+        ArgumentCaptor<PaymentCallbackAudit> auditCaptor = ArgumentCaptor.forClass(PaymentCallbackAudit.class);
+        verify(audits).record(auditCaptor.capture());
+        assertEquals(PaymentCallbackAuditService.OUTCOME_REJECTED, auditCaptor.getValue().getOutcome());
+    }
+
+    @Test
+    void platformCallbackRejectsSubMchidMismatch() {
+        TradeOrderMapper orders = mock(TradeOrderMapper.class);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
+        TradeOrder order = unpaidOrder();
+        order.setCollectionMode(CollectionMode.PLATFORM_COLLECT);
+        when(orders.findByOrderSn("SN-1")).thenReturn(Optional.of(order));
+        MerchantPaymentAccount receiver = new MerchantPaymentAccount();
+        receiver.setSubMchid("SUB-MCH-9");
+        when(accounts.findEffectiveBound(eq(order.getMerchantId()), eq("WECHAT"), any(LocalDateTime.class)))
+                .thenReturn(receiver);
+        PlatformCashierChannelAdapter adapter = mock(PlatformCashierChannelAdapter.class);
+        PlatformCashierChannelRegistry registry = mock(PlatformCashierChannelRegistry.class);
+        when(registry.require("WECHAT")).thenReturn(adapter);
+        when(adapter.parseCallback(any(), any(), isNull())).thenReturn(
+                PaymentChannelDTOs.ChannelCallback.builder()
+                        .channel("WECHAT").payTradeNo("PTX-3").orderSn("SN-1")
+                        .channelMerchantId("SUB-MCH-OTHER").payAmount(new BigDecimal("88.00"))
+                        .currency("CNY").rawPayload("RAW").build());
+        PaymentEventService events = mock(PaymentEventService.class);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts,
+                mock(PaymentChannelRegistry.class), events, audits,
+                mock(PaymentCloseReceiptService.class), registry, platformCollections);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> gateway.handlePlatformCallback("WECHAT", Map.of(), "RAW"));
+        assertEquals(401, ex.getCode());
+        assertTrue(ex.getMessage().contains("分账接收方不匹配"));
+        verify(events, never()).processPaymentEvent(any());
+    }
+
+    @Test
+    void platformCallbackAcksWhenSettlementLedgerFails() {
+        // 台账生成失败不阻断到账 ACK：支付已履约，审计留痕，由 M5 对账兜底。
+        TradeOrderMapper orders = mock(TradeOrderMapper.class);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
+        TradeOrder order = unpaidOrder();
+        order.setCollectionMode(CollectionMode.PLATFORM_COLLECT);
+        when(orders.findByOrderSn("SN-1")).thenReturn(Optional.of(order));
+        MerchantPaymentAccount receiver = new MerchantPaymentAccount();
+        receiver.setSubMchid("SUB-MCH-9");
+        when(accounts.findEffectiveBound(eq(order.getMerchantId()), eq("WECHAT"), any(LocalDateTime.class)))
+                .thenReturn(receiver);
+        PlatformCashierChannelAdapter adapter = mock(PlatformCashierChannelAdapter.class);
+        PlatformCashierChannelRegistry registry = mock(PlatformCashierChannelRegistry.class);
+        when(registry.require("WECHAT")).thenReturn(adapter);
+        when(adapter.parseCallback(any(), any(), isNull())).thenReturn(
+                PaymentChannelDTOs.ChannelCallback.builder()
+                        .channel("WECHAT").payTradeNo("PTX-4").orderSn("SN-1")
+                        .channelMerchantId("SUB-MCH-9").payAmount(new BigDecimal("88.00"))
+                        .currency("CNY").rawPayload("RAW").build());
+        PaymentEventService events = mock(PaymentEventService.class);
+        when(events.processPaymentEvent(any())).thenReturn(
+                PaymentEventDTOs.PaymentProcessingResult.builder()
+                        .success(true).eventId(78L).eventStatus("SUCCESS").build());
+        PlatformCollectionService collections = mock(PlatformCollectionService.class);
+        doThrow(new BusinessException(409, "平台代收功能未启用"))
+                .when(collections).prepareSettlement(any(), any(), any(), any());
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts,
+                mock(PaymentChannelRegistry.class), events, audits,
+                mock(PaymentCloseReceiptService.class), registry, collections);
+
+        PaymentEventDTOs.PaymentProcessingResult result = gateway.handlePlatformCallback("WECHAT", Map.of(), "RAW");
+
+        assertTrue(result.isSuccess());
+        ArgumentCaptor<PaymentCallbackAudit> auditCaptor = ArgumentCaptor.forClass(PaymentCallbackAudit.class);
+        verify(audits).record(auditCaptor.capture());
+        assertEquals(PaymentCallbackAuditService.OUTCOME_ACCEPTED, auditCaptor.getValue().getOutcome());
+        assertTrue(auditCaptor.getValue().getReason() != null
+                && auditCaptor.getValue().getReason().contains("结算台账生成失败"));
+    }
+
+    @Test
+    void platformCallbackRejectsWhenCashierNotReady() {
+        // 收银台未配置/未联调 → registry 409，渠道稍后重试；履约与台账均不发生。
+        TradeOrderMapper orders = mock(TradeOrderMapper.class);
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        PaymentCallbackAuditService audits = mock(PaymentCallbackAuditService.class);
+        PlatformCashierChannelRegistry registry = mock(PlatformCashierChannelRegistry.class);
+        when(registry.require("WECHAT"))
+                .thenThrow(new BusinessException(409, "平台收银台未配置：缺少平台服务商商户号/AppID/证书/APIv3 密钥"));
+        PaymentEventService events = mock(PaymentEventService.class);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts,
+                mock(PaymentChannelRegistry.class), events, audits,
+                mock(PaymentCloseReceiptService.class), registry, platformCollections);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> gateway.handlePlatformCallback("WECHAT", Map.of(), "RAW"));
+        assertEquals(409, ex.getCode());
+        verify(events, never()).processPaymentEvent(any());
+        verify(platformCollections, never()).prepareSettlement(any(), any(), any(), any());
     }
 
     @Test
@@ -343,7 +531,7 @@ class PaymentChannelSecurityTest {
         when(events.processPaymentEvent(any())).thenReturn(processed);
 
         PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits,
-                mock(PaymentCloseReceiptService.class), platformCashiers);
+                mock(PaymentCloseReceiptService.class), platformCashiers, platformCollections);
         PaymentEventDTOs.PaymentProcessingResult returned =
                 gateway.handleCallback("WECHAT", Map.of(), "raw-body-1", null);
 
@@ -376,7 +564,7 @@ class PaymentChannelSecurityTest {
                 .thenThrow(new BusinessException(401, "微信支付回调验签失败"));
 
         PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits,
-                mock(PaymentCloseReceiptService.class), platformCashiers);
+                mock(PaymentCloseReceiptService.class), platformCashiers, platformCollections);
         BusinessException ex = assertThrows(BusinessException.class,
                 () -> gateway.handleCallback("WECHAT", Map.of(), "tampered", null));
 
@@ -419,7 +607,7 @@ class PaymentChannelSecurityTest {
         doThrow(new RuntimeException("audit db down")).when(audits).record(any());
 
         PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits,
-                mock(PaymentCloseReceiptService.class), platformCashiers);
+                mock(PaymentCloseReceiptService.class), platformCashiers, platformCollections);
         PaymentEventDTOs.PaymentProcessingResult returned =
                 gateway.handleCallback("WECHAT", Map.of(), "raw-body-1", null);
 
@@ -438,7 +626,7 @@ class PaymentChannelSecurityTest {
         PaymentCloseReceiptService receipts = mock(PaymentCloseReceiptService.class);
         when(accounts.findByMerchantIdAndChannel(1L, "WECHAT")).thenReturn(Optional.empty());
 
-        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers, platformCollections);
         assertFalse(gateway.closePaymentBestEffort(order));
         verify(receipts).record(order, "WECHAT", PaymentCloseReceiptService.RESULT_SKIPPED,
                 "渠道账户未登记或未审核通过");
@@ -461,7 +649,7 @@ class PaymentChannelSecurityTest {
         when(registry.require("WECHAT")).thenReturn(adapter);
         when(adapter.enabled()).thenReturn(true);
 
-        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers, platformCollections);
         assertTrue(gateway.closePaymentBestEffort(order));
         verify(adapter).closePayment(any());
         verify(receipts).record(order, "WECHAT", PaymentCloseReceiptService.RESULT_SUCCESS, null);
@@ -484,7 +672,7 @@ class PaymentChannelSecurityTest {
         when(adapter.enabled()).thenReturn(true);
         doThrow(new RuntimeException("channel timeout")).when(adapter).closePayment(any());
 
-        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers, platformCollections);
         assertFalse(gateway.closePaymentBestEffort(order));
         verify(receipts).record(eq(order), eq("WECHAT"), eq(PaymentCloseReceiptService.RESULT_FAILED),
                 contains("channel timeout"));
@@ -508,7 +696,7 @@ class PaymentChannelSecurityTest {
         doThrow(new RuntimeException("receipt db down"))
                 .when(receipts).record(any(), any(), any(), any());
 
-        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers);
+        PaymentGatewayService gateway = new PaymentGatewayService(orders, accounts, registry, events, audits, receipts, platformCashiers, platformCollections);
         assertTrue(gateway.closePaymentBestEffort(order));
     }
 

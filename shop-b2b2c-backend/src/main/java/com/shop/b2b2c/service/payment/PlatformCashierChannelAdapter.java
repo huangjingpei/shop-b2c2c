@@ -5,14 +5,17 @@
  *      M4-B 起补平台代收退款契约：refundPayment/queryRefund（平台服务商商户号原路退回买家）与
  *      returnSplit/querySplitReturn（分账回退=先退分后退款的“退分”渠道指令）。
  * 维护注意：
- *  1. 只有取得平台服务商资质、配齐凭据并完成通道联调后才允许实现真实调用；
- *     当前唯一实现为占位适配器，enabled() 必须为 false。
+ *  1. 只有取得平台服务商资质、配齐凭据并完成通道联调后才允许打开 payment.platform.enabled；
+ *     Sprint 59 起唯一实现为真实微信电商收付通适配器（WeChatPlatformCashierChannelAdapter），
+ *     enabled()=properties.isEnabled()；Sprint 57/58 的占位 mock 已删除。
  *  2. 适配器只返回渠道事实，不写本地账本、不改订单/退款状态；本地状态由支付事件/退款事务服务推进。
  *  3. 未启用或凭据缺失时必须明确拒绝，不得返回伪造成功；金额换算与验签只在适配器内部完成。
  *  4. 平台代收资金必须直接进入持牌机构分账链路，适配器不得把货款落入平台自有资金账户。
- *  5. 退款资金由平台服务商商户号原路退回：适配器按 payment.platform.sp-mchid 自取发起商户号，
- *     不得使用 RefundCommand.merchantChannelId 传入的商家直收账户。
- *  6. returnSplit 必须先于 refundPayment 调用（设计 D4 先退分后退款）；退分以 refundNo 为渠道幂等键。
+ *  5. 退款资金由平台服务商商户号原路退回：发起商户号按 payment.platform.sp-mchid 自取；
+ *     RefundCommand.merchantChannelId 承载分账接收方二级商户号 sub_mchid（电商收付通报文必填），
+ *     不得填入商家直收账户。
+ *  6. returnSplit 必须先于 refundPayment 调用（设计 D4 先退分后退款）；退分以 refundNo 为渠道幂等键，
+ *     分账发起约定以 orderSn 为商户分账单号 out_order_no，退分凭此关联。
  */
 package com.shop.b2b2c.service.payment;
 

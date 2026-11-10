@@ -6,6 +6,10 @@
  *  2. 阶段一只允许 CollectionMode.MERCHANT_DIRECT；PLATFORM_COLLECT 走平台收银台骨架入口
  *     （PlatformCashierChannelRegistry，Sprint 57）：凭据未配置 409“平台收银台未配置”、
  *     已配置未联调 409“平台收银台已配置但未完成通道联调”，回调拒绝按商家直收渠道履约，不做隐式降级。
+ *     Sprint 59 新增平台代收回调独立入口 handlePlatformCallback（对应 payment.platform.notify-path）：
+ *     平台服务商凭据验签解密 → 校验订单 PLATFORM_COLLECT 快照 → 二级商户号与商家有效分账接收方比对 →
+ *     PaymentEventService 幂等履约 → 生成平台代收结算台账（设计 D3：只生成台账，不在支付成功时分账）；
+ *     台账生成失败不阻断到账 ACK，记审计与 ERROR 日志，由 M5 对账按“事件 SUCCESS 且无台账”兜底。
  *  3. 发起支付只读取商家已登记的渠道账户（merchant_payment_account），不在本类写入或伪造账户。
  *  4. 关单只关闭渠道侧交易，本地订单仍由 15 分钟截止任务关闭，避免提前改动订单生命周期语义。
  *  5. G34：queryChannelPayment 只按事件渠道查询渠道事实并核验商户，不触发本地履约；
@@ -28,6 +32,7 @@ import com.shop.b2b2c.entity.TradeOrder;
 import com.shop.b2b2c.mapper.MerchantPaymentAccountMapper;
 import com.shop.b2b2c.mapper.TradeOrderMapper;
 import com.shop.b2b2c.service.PaymentEventService;
+import com.shop.b2b2c.service.PlatformCollectionService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -48,6 +53,8 @@ public class PaymentGatewayService {
     private final PaymentCloseReceiptService paymentCloseReceiptService;
     /** Sprint 57 平台收银台骨架入口：仅 PLATFORM_COLLECT 订单使用；未配置/未联调时细化 409。 */
     private final PlatformCashierChannelRegistry platformCashierChannelRegistry;
+    /** Sprint 59：平台代收回调履约成功后的结算台账生成（D3 只建台账不分账）；字段序即构造器序。 */
+    private final PlatformCollectionService platformCollectionService;
 
     public PaymentChannelDTOs.PaymentAttemptView createPayment(PaymentChannelDTOs.CreatePaymentRequest request,
                                                                String clientIp) {
@@ -96,6 +103,96 @@ public class PaymentGatewayService {
         } finally {
             persistCallbackAudit(audit, startedAt);
         }
+    }
+
+    /**
+     * Sprint 59 M6 平台代收支付回调独立入口（payment.platform.notify-path）：
+     * 平台服务商凭据验签解密 → 订单须为 PLATFORM_COLLECT 快照 → 回调二级商户号须等于商家当前有效分账接收方 →
+     * PaymentEventService 幂等履约；履约成功后生成平台代收结算台账（D3：只建台账，不在支付成功时分账）。
+     * 与商家直收回调同一审计口径；台账生成失败不阻断到账 ACK（支付已履约），记审计 reason 与 ERROR 日志，
+     * 由 M5 对账按“支付事件 SUCCESS 且无台账”兜底补建。收银台未配置/未联调时 409，渠道稍后重试。
+     */
+    public PaymentEventDTOs.PaymentProcessingResult handlePlatformCallback(String channel,
+                                                                           Map<String, String> headers,
+                                                                           String rawBody) {
+        long startedAt = System.nanoTime();
+        String normalized = PayChannel.normalize(channel);
+        PaymentCallbackAudit audit = new PaymentCallbackAudit();
+        audit.setChannel(normalized);
+        audit.setPayloadSha256(PaymentCallbackAuditService.fingerprint(rawBody, null));
+        try {
+            PlatformCashierChannelAdapter adapter = platformCashierChannelRegistry.require(normalized);
+            PaymentChannelDTOs.ChannelCallback callback = adapter.parseCallback(headers, rawBody, null);
+            audit.setOrderSn(callback.getOrderSn());
+            audit.setPayTradeNo(callback.getPayTradeNo());
+            audit.setChannelMerchantId(callback.getChannelMerchantId());
+            TradeOrder order = tradeOrderMapper.findByOrderSn(callback.getOrderSn())
+                    .orElseThrow(() -> new BusinessException(404, "支付回调对应的订单不存在"));
+            if (!CollectionMode.PLATFORM_COLLECT.equals(CollectionMode.requireKnown(order.getCollectionMode()))) {
+                throw new BusinessException(409, "非平台代收订单，拒绝经平台收银台回调履约");
+            }
+            MerchantPaymentAccount receiver = requireBoundReceiver(order, normalized);
+            if (!receiver.getSubMchid().equals(callback.getChannelMerchantId())) {
+                throw new BusinessException(401, "渠道二级商户号与订单商家分账接收方不匹配");
+            }
+            if (callback.getPayAmount() == null) {
+                throw new BusinessException(400, "渠道未提供实收金额，拒绝落账");
+            }
+            if (!"CNY".equalsIgnoreCase(callback.getCurrency())) {
+                throw new BusinessException(409, "阶段一仅接受人民币到账");
+            }
+            PaymentEventDTOs.PaymentProcessingResult result = paymentEventService.processPaymentEvent(
+                    PaymentEventDTOs.IncomingPaymentEvent.builder()
+                            .channel(normalized)
+                            .payTradeNo(callback.getPayTradeNo())
+                            .orderSn(order.getOrderSn())
+                            .merchantId(order.getMerchantId())
+                            .channelMerchantId(receiver.getSubMchid())
+                            .payAmount(callback.getPayAmount())
+                            .currency("CNY")
+                            .payerId(callback.getPayerId())
+                            .rawPayload(callback.getRawPayload())
+                            .build());
+            if (result != null && result.isSuccess() && "SUCCESS".equals(result.getEventStatus())) {
+                prepareSettlementBestEffort(order, result, callback, audit);
+            }
+            audit.setOutcome(PaymentCallbackAuditService.OUTCOME_ACCEPTED);
+            audit.setProcessingResult(result == null ? null : result.getEventStatus());
+            return result;
+        } catch (BusinessException e) {
+            audit.setOutcome(PaymentCallbackAuditService.OUTCOME_REJECTED);
+            audit.setReason(e.getMessage());
+            throw e;
+        } catch (RuntimeException e) {
+            audit.setOutcome(PaymentCallbackAuditService.OUTCOME_ERROR);
+            audit.setReason(e.getMessage());
+            throw e;
+        } finally {
+            persistCallbackAudit(audit, startedAt);
+        }
+    }
+
+    /** 平台代收结算台账生成尽力而为：失败不阻断到账 ACK，审计留痕，由 M5 对账兜底补建。 */
+    private void prepareSettlementBestEffort(TradeOrder order, PaymentEventDTOs.PaymentProcessingResult result,
+                                             PaymentChannelDTOs.ChannelCallback callback, PaymentCallbackAudit audit) {
+        try {
+            platformCollectionService.prepareSettlement(order, result.getEventId(),
+                    callback.getPayTradeNo(), callback.getPayAmount());
+        } catch (RuntimeException settlementError) {
+            log.error("平台代收结算台账生成失败，支付已履约，待对账兜底 orderSn={} payTradeNo={}",
+                    order.getOrderSn(), callback.getPayTradeNo(), settlementError);
+            audit.setReason("结算台账生成失败: " + settlementError.getMessage());
+        }
+    }
+
+    /** 平台代收收款归属：商家当前有效分账接收方（merchant_payment_account BOUND 且生效）。 */
+    private MerchantPaymentAccount requireBoundReceiver(TradeOrder order, String channel) {
+        MerchantPaymentAccount receiver = merchantPaymentAccountMapper
+                .findEffectiveBound(order.getMerchantId(), channel, LocalDateTime.now());
+        if (receiver == null || receiver.getSubMchid() == null || receiver.getSubMchid().isBlank()) {
+            throw new BusinessException(409, "商家未绑定有效的" + channel + "分账接收方，拒绝平台代收链路");
+        }
+        return receiver;
     }
 
     /**
@@ -259,22 +356,8 @@ public class PaymentGatewayService {
 
     private PaymentChannelDTOs.PaymentAttemptView createPayment(TradeOrder order, String payChannel, String clientIp) {
         String collectionMode = CollectionMode.requireKnown(order.getCollectionMode());
-        if (CollectionMode.PLATFORM_COLLECT.equals(collectionMode)) {
-            // Sprint 57 平台收银台骨架入口：凭据未配置/未完成联调时由 registry 抛 409 细化原因；
-            // 取得真实平台服务商凭据并完成联调后，由适配器实现返回支付参数（M6）。
-            PaymentChannelDTOs.PaymentAttemptView platformView = platformCashierChannelRegistry
-                    .require(payChannel)
-                    .createPayment(PaymentChannelDTOs.PaymentCreateCommand.builder()
-                            .orderSn(order.getOrderSn())
-                            .amount(order.getPayAmount())
-                            .subject("订单 " + order.getOrderSn())
-                            .build());
-            if (platformView == null) {
-                throw new BusinessException(502, "平台收银台未返回支付参数");
-            }
-            platformView.setCollectionMode(CollectionMode.PLATFORM_COLLECT);
-            return platformView;
-        }
+        // Sprint 59：状态与支付截止校验提升到模式分流之前，平台代收与商家直收同一口径；
+        // 未支付订单允许切换支付渠道（CAS 防并发）。
         if (!"UNPAID".equals(order.getOrderStatus())) {
             throw new BusinessException(409, "订单当前状态不允许发起支付");
         }
@@ -292,6 +375,24 @@ public class PaymentGatewayService {
                 throw new BusinessException(409, "订单状态已变化，无法切换支付渠道");
             }
             order.setPayChannel(channel);
+        }
+        if (CollectionMode.PLATFORM_COLLECT.equals(collectionMode)) {
+            // Sprint 57/59 平台收银台入口：凭据未配置/未完成联调时由 registry 抛 409 细化原因；
+            // 二级商户号取商家当前有效分账接收方（merchant_payment_account BOUND），不读商家直收账户。
+            PlatformCashierChannelAdapter platformAdapter = platformCashierChannelRegistry.require(channel);
+            MerchantPaymentAccount receiver = requireBoundReceiver(order, channel);
+            PaymentChannelDTOs.PaymentAttemptView platformView = platformAdapter.createPayment(
+                    PaymentChannelDTOs.PaymentCreateCommand.builder()
+                            .orderSn(order.getOrderSn())
+                            .amount(order.getPayAmount())
+                            .subject("订单 " + order.getOrderSn())
+                            .merchantChannelId(receiver.getSubMchid())
+                            .build());
+            if (platformView == null) {
+                throw new BusinessException(502, "平台收银台未返回支付参数");
+            }
+            platformView.setCollectionMode(CollectionMode.PLATFORM_COLLECT);
+            return platformView;
         }
         MerchantPaymentAccount account = requireAccount(order, channel);
         PaymentChannelDTOs.PaymentAttemptView view = paymentChannelRegistry.require(channel)

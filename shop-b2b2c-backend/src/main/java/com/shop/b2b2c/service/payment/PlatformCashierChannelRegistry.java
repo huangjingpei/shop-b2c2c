@@ -4,7 +4,8 @@
  *      并在入口给出“未接入 / 未配置 / 已配置未联调”的细化拒绝原因。
  *      M4-B：新增 requireForRefund 退款入口，同一检查链、文案细化到退款语义（先退分后退款）。
  * 维护注意：
- *  1. 只注册真实渠道（当前仅 WECHAT 占位）；不存在 MOCK 落账路径，enabled()=false 时直接拒绝。
+ *  1. 只注册真实渠道适配器（当前 WECHAT=WeChatPlatformCashierChannelAdapter，Sprint 59）；
+ *     同一渠道只允许一个实现，不存在 MOCK 落账路径，enabled()=false 时直接拒绝。
  *  2. 细化文案语义：凭据缺失=“平台收银台未配置”；凭据配齐但开关未开=“已配置未完成通道联调”；
  *     两者都必须 409 拒绝，不得回退商家直收或伪造成功。
  *  3. 不得按请求传入的渠道名动态反射或实例化适配器；真实联调完成前 payment.platform.enabled 保持 false。
@@ -53,7 +54,7 @@ public class PlatformCashierChannelRegistry {
             throw new BusinessException(409, "平台收银台未接入渠道: " + normalized);
         }
         if (!properties.configured()) {
-            throw new BusinessException(409, "平台收银台未配置：缺少平台服务商商户号/证书/APIv3 密钥"
+            throw new BusinessException(409, "平台收银台未配置：缺少平台服务商商户号/AppID/证书/APIv3 密钥"
                     + "（payment.platform.* 环境变量），平台代收订单暂不能" + action);
         }
         if (!properties.isEnabled() || !adapter.enabled()) {

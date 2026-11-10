@@ -36,6 +36,7 @@ import com.shop.b2b2c.service.payment.PlatformCashierChannelRegistry;
 import com.shop.b2b2c.service.payment.RefundService;
 import com.shop.b2b2c.service.payment.RefundTransactionService;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.mockito.InOrder;
 
 import java.math.BigDecimal;
@@ -408,6 +409,11 @@ class RefundServiceTest {
                         && "PT-1".equals(cmd.getPlatformTradeNo())
                         && refund.getRefundNo().equals(cmd.getRefundNo())));
         order.verify(adapter).refundPayment(any());
+        // Sprint 59：渠道退款报文 merchantChannelId 承载分账接收方二级商户号（与退分同源）。
+        ArgumentCaptor<PaymentChannelDTOs.RefundCommand> refundCaptor =
+                ArgumentCaptor.forClass(PaymentChannelDTOs.RefundCommand.class);
+        verify(adapter).refundPayment(refundCaptor.capture());
+        assertEquals("SUB-MCH-1", refundCaptor.getValue().getMerchantChannelId());
         // 退分额 = 退款额 100 − 服务费冲正 3 = 97（金额守恒），本地账本在渠道退分成功后登记。
         verify(platformCollectionService).recordSplitReverse(51L, 13L, refund.getRefundNo(),
                 new BigDecimal("97.00"), 5L);
@@ -462,6 +468,10 @@ class RefundServiceTest {
         when(adapter.refundPayment(any())).thenReturn(PaymentChannelDTOs.RefundResult.builder()
                 .channel("WECHAT").refundNo(refund.getRefundNo()).channelRefundNo("PRF-2")
                 .status("SUCCESS").refundAmount(new BigDecimal("100.00")).build());
+        // Sprint 59：重复付款补偿无分账台账，二级商户号取商家当前有效分账接收方。
+        MerchantPaymentAccount boundReceiver = new MerchantPaymentAccount();
+        boundReceiver.setSubMchid("SUB-MCH-DUP");
+        when(accounts.findEffectiveBound(eq(MERCHANT_ID), eq("WECHAT"), any())).thenReturn(boundReceiver);
 
         RefundDTOs.RefundView view = service.compensateDuplicatePayment(MERCHANT_ID, 21L, KEY, 5L);
 
@@ -469,7 +479,34 @@ class RefundServiceTest {
         // 重复付款资金未分账：不退分、不查分账明细，直接平台收银台退款。
         verify(adapter, never()).returnSplit(any());
         verify(splitDetailMapper, never()).findByOrderId(anyLong());
+        ArgumentCaptor<PaymentChannelDTOs.RefundCommand> refundCaptor =
+                ArgumentCaptor.forClass(PaymentChannelDTOs.RefundCommand.class);
+        verify(adapter).refundPayment(refundCaptor.capture());
+        assertEquals("SUB-MCH-DUP", refundCaptor.getValue().getMerchantChannelId());
         verify(tx).finalizeSuccess(15L, "PRF-2");
+    }
+
+    @Test
+    void platformCollectRefundRejectsWhenReceiverUnbound() {
+        // Sprint 59：分账接收方解绑/无渠道商户号时，平台代收退款明确 409，不回退商家直收。
+        TradeRefund refund = platformOrderRefund(17L);
+        refund.setSource(RefundTransactionService.SOURCE_DUPLICATE_PAYMENT);
+        refund.setFeeRefundAmount(new BigDecimal("0.00"));
+        MerchantPaymentAccountMapper accounts = mock(MerchantPaymentAccountMapper.class);
+        RefundTransactionService tx = mock(RefundTransactionService.class);
+        PlatformCashierChannelAdapter adapter = mock(PlatformCashierChannelAdapter.class);
+        RefundService service = refundService(refundMapper, accounts, mock(PaymentChannelRegistry.class), tx);
+        when(tx.prepareDuplicateCompensation(eq(MERCHANT_ID), eq(22L), eq(KEY), anyLong())).thenReturn(refund);
+        when(platformCashiers.requireForRefund("WECHAT")).thenReturn(adapter);
+        when(accounts.findEffectiveBound(eq(MERCHANT_ID), eq("WECHAT"), any())).thenReturn(null);
+
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> service.compensateDuplicatePayment(MERCHANT_ID, 22L, KEY, 5L));
+
+        assertEquals(409, ex.getCode());
+        assertTrue(ex.getMessage().contains("分账接收方"));
+        verify(adapter, never()).refundPayment(any());
+        verify(tx).finalizeFailure(eq(17L), any());
     }
 
     @Test
@@ -486,12 +523,20 @@ class RefundServiceTest {
         when(adapter.queryRefund(any())).thenReturn(PaymentChannelDTOs.RefundResult.builder()
                 .channel("WECHAT").refundNo(refund.getRefundNo()).channelRefundNo("PRF-9")
                 .status("SUCCESS").refundAmount(new BigDecimal("100.00")).build());
+        // Sprint 59：平台查单报文需二级商户号 sub_mchid，取商家当前有效分账接收方。
+        MerchantPaymentAccount receiver = new MerchantPaymentAccount();
+        receiver.setSubMchid("SUB-MCH-SYNC");
+        when(accounts.findEffectiveBound(eq(MERCHANT_ID), eq("WECHAT"), any())).thenReturn(receiver);
 
         service.syncRefund(MERCHANT_ID, refund.getRefundNo());
 
         verify(tx).finalizeSuccess(16L, "PRF-9");
         verify(merchantRegistry, never()).require(any());
         verify(accounts, never()).findByMerchantIdAndChannel(anyLong(), any());
+        ArgumentCaptor<PaymentChannelDTOs.RefundCommand> queryCaptor =
+                ArgumentCaptor.forClass(PaymentChannelDTOs.RefundCommand.class);
+        verify(adapter).queryRefund(queryCaptor.capture());
+        assertEquals("SUB-MCH-SYNC", queryCaptor.getValue().getMerchantChannelId());
     }
 
     /** M4-B 平台代收退款夹具：PROCESSING、source=ORDER、请求操作人 5L；金额 100、服务费冲正 3 → 退分 97。 */

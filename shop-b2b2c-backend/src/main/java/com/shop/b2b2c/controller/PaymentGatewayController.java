@@ -6,6 +6,8 @@
  *  2. 回调失败按渠道协议返回失败，触发渠道重试；成功才返回渠道要求的 ACK，禁止把内部异常细节原样回显。
  *  3. 买家发起支付需订单访问凭证并走限流；商家查单/关单仅店长或超管，且必须校验订单归属。
  *  4. 回调路径与 notify-base-url 拼接规则固定，改动需同步 PaymentChannelProperties。
+ *  5. Sprint 59：/callback/platform 为平台代收（微信电商收付通）专属入口，路径与 payment.platform.notify-path
+ *     保持一致；安全性由平台服务商凭据验签保证，收银台未配置/未联调时按渠道协议返回失败触发重试。
  */
 package com.shop.b2b2c.controller;
 
@@ -65,6 +67,26 @@ public class PaymentGatewayController {
             return ResponseEntity.ok(ack);
         } catch (BusinessException e) {
             log.warn("微信支付回调处理失败: {}", e.getMessage());
+            ack.put("code", "FAIL");
+            ack.put("message", e.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ack);
+        }
+    }
+
+    @Operation(summary = "微信电商收付通平台代收异步通知（Sprint 59 M6 联调入口）")
+    @PostMapping("/callback/platform")
+    public ResponseEntity<Map<String, Object>> platformCallback(
+            @RequestHeader Map<String, String> headers,
+            @RequestBody(required = false) String body) {
+        // 平台收银台当前仅注册 WECHAT 渠道；路径固定对应 payment.platform.notify-path。
+        Map<String, Object> ack = new LinkedHashMap<>();
+        try {
+            paymentGatewayService.handlePlatformCallback("WECHAT", headers, body);
+            ack.put("code", "SUCCESS");
+            ack.put("message", "成功");
+            return ResponseEntity.ok(ack);
+        } catch (BusinessException e) {
+            log.warn("平台代收回调处理失败: {}", e.getMessage());
             ack.put("code", "FAIL");
             ack.put("message", e.getMessage());
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(ack);

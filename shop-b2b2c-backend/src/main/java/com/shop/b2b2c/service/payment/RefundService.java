@@ -34,6 +34,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.math.BigDecimal;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -96,7 +97,7 @@ public class RefundService {
         PaymentChannelDTOs.RefundResult result;
         if (CollectionMode.PLATFORM_COLLECT.equals(refund.getCollectionMode())) {
             result = platformCashierChannelRegistry.requireForRefund(refund.getChannel())
-                    .queryRefund(platformRefundCommandOf(refund, total));
+                    .queryRefund(platformRefundCommandOf(refund, total, requirePlatformReceiverSubMchid(refund)));
         } else {
             result = paymentChannelRegistry.require(refund.getChannel())
                     .queryRefund(commandOf(refund, total));
@@ -159,6 +160,8 @@ public class RefundService {
      * 2) source=ORDER 且退分额（退款额−服务费冲正）> 0 时先调用渠道退分，非 SUCCESS 一律中止退款发起；
      * 3) 渠道退分 SUCCESS 后登记本地 split_reverse 账本（幂等：split_detail_id+refund_id 唯一）；
      * 4) 最后由平台收银台发起原路退款；重复付款补偿资金未分账，跳过退分直接退款。
+     * Sprint 59：渠道退款报文的二级商户号 sub_mchid 由退款命令 merchantChannelId 承载——source=ORDER 取
+     * 分账台账接收方（与退分一致），其余取商家当前有效分账接收方；发起商户号仍由适配器按 sp-mchid 自取。
      * 任何异常都先 finalizeFailure 释放预占再向上抛出；渠道退分以 refundNo 幂等，重试不会二次退分。
      */
     private TradeRefund executePlatformCollectRefund(TradeRefund refund) {
@@ -166,10 +169,14 @@ public class RefundService {
         try {
             PlatformCashierChannelAdapter adapter =
                     platformCashierChannelRegistry.requireForRefund(refund.getChannel());
+            String subMchid = null;
             if (RefundTransactionService.SOURCE_ORDER.equals(refund.getSource())) {
-                returnSplitBeforeRefund(adapter, refund);
+                subMchid = returnSplitBeforeRefund(adapter, refund);
             }
-            result = adapter.refundPayment(platformRefundCommandOf(refund, resolveOriginalPayAmount(refund)));
+            if (subMchid == null) {
+                subMchid = requirePlatformReceiverSubMchid(refund);
+            }
+            result = adapter.refundPayment(platformRefundCommandOf(refund, resolveOriginalPayAmount(refund), subMchid));
         } catch (BusinessException business) {
             refundTransactionService.finalizeFailure(refund.getId(), business.getMessage());
             throw business;
@@ -180,13 +187,16 @@ public class RefundService {
         return applyChannelResult(refund, result);
     }
 
-    /** 先退分：退分额 = 退款额 − 服务费冲正（平台留成退回部分）；≤0 时无商家分账可退，直接跳过。 */
-    private void returnSplitBeforeRefund(PlatformCashierChannelAdapter adapter, TradeRefund refund) {
+    /**
+     * 先退分：退分额 = 退款额 − 服务费冲正（平台留成退回部分）；≤0 时无商家分账可退，直接跳过（返回 null）。
+     * 退分成功后返回分账接收方二级商户号，供渠道退款报文 sub_mchid 使用（与退分同源）。
+     */
+    private String returnSplitBeforeRefund(PlatformCashierChannelAdapter adapter, TradeRefund refund) {
         BigDecimal feeRefund = refund.getFeeRefundAmount() == null
                 ? BigDecimal.ZERO : refund.getFeeRefundAmount();
         BigDecimal reverseAmount = refund.getRefundAmount().subtract(feeRefund);
         if (reverseAmount.signum() <= 0) {
-            return;
+            return null;
         }
         List<SplitDetail> splits = splitDetailMapper.findByOrderId(refund.getOrderId());
         if (splits == null || splits.isEmpty()) {
@@ -219,6 +229,17 @@ public class RefundService {
         // 渠道退分成功后登记本地退分账本；本地账本按 split_detail_id+refund_id 幂等。
         platformCollectionService.recordSplitReverse(split.getId(), refund.getId(), refund.getRefundNo(),
                 reverseAmount, refund.getRequestedBy());
+        return receiver.getSubMchid().trim();
+    }
+
+    /** Sprint 59：平台代收退款报文 sub_mchid 兜底解析——商家当前有效分账接收方（BOUND 且生效）。 */
+    private String requirePlatformReceiverSubMchid(TradeRefund refund) {
+        MerchantPaymentAccount receiver = merchantPaymentAccountMapper.findEffectiveBound(
+                refund.getMerchantId(), PayChannel.normalize(refund.getChannel()), LocalDateTime.now());
+        if (receiver == null || receiver.getSubMchid() == null || receiver.getSubMchid().isBlank()) {
+            throw new BusinessException(409, "商家未绑定有效的分账接收方，无法办理平台代收退款");
+        }
+        return receiver.getSubMchid().trim();
     }
 
     /** 渠道结果共用落迁：SUCCESS 确认、FAILED 释放、PROCESSING 保持预占待查单确认。 */
@@ -245,14 +266,18 @@ public class RefundService {
     }
 
     /**
-     * M4-B 平台代收退款命令：merchantChannelId 留空，由平台收银台适配器按 payment.platform.sp-mchid 自取；
-     * 平台代收链路不得读取商家直收账户（requireAccount）。
+     * M4-B 平台代收退款命令：发起商户号由平台收银台适配器按 payment.platform.sp-mchid 自取，
+     * 平台代收链路不得读取商家直收账户（requireAccount）；
+     * Sprint 59 起 merchantChannelId 承载电商收付通报文必填的二级商户号 sub_mchid（分账接收方），
+     * 由编排层从分账台账/有效绑定解析，语义与商家直收账户无关。
      */
-    private PaymentChannelDTOs.RefundCommand platformRefundCommandOf(TradeRefund refund, BigDecimal total) {
+    private PaymentChannelDTOs.RefundCommand platformRefundCommandOf(TradeRefund refund, BigDecimal total,
+                                                                     String subMchid) {
         return PaymentChannelDTOs.RefundCommand.builder()
                 .orderSn(refund.getOrderSn())
                 .refundNo(refund.getRefundNo())
                 .channelTradeNo(refund.getChannelTradeNo())
+                .merchantChannelId(subMchid)
                 .payAmount(total)
                 .refundAmount(refund.getRefundAmount())
                 .reason(refund.getReason())
