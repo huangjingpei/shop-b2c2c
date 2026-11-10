@@ -4,14 +4,16 @@
      供用户人工验证与后续 M5/M6 决策参考。
 维护注意：
   1. 本文件记录 M4-B 实际代码范围与验证边界；问题解决后须回写设计文档与主台账 F02/F03。
-  2. 所有“已实现”均为代理静态实现与用例编写结果；代理未运行 mvn，任何验证结论都须标注“待人工验证”。
+  2. 2026-11-10 用户授权代理执行 mvn：定向 48 项与全量 1174 项均通过（0 失败，1 跳过）；
+     真实 MySQL 行锁与微信渠道联调仍未验证，不得把 H2/单测通过当成生产可用。
   3. 平台收银台渠道适配器仍为占位 mock（enabled=false，全方法 501）；真实微信电商收付通联调属 M6，
      不得把本骨架当成“平台代收退款已可用”。
 -->
 # Sprint 58：平台代收退款（先退分后退款）骨架与拒绝细化（M4-B）
 
 - 日期：2026-11-10
-- 执行方：代码代理（实现、用例、静态审阅）
+- 执行方：代码代理（实现、用例、静态审阅）；mvn 编译与测试经用户授权由代理执行
+- 验证状态：H2/单测已实测通过（定向 48 项 + 全量 1174 项，0 失败，1 跳过）；真实 MySQL 与渠道联调待验证
 - 关联台账：F02/F03；设计： [收款双轨设计](2026-11-08-商家收款双轨与微信电商收付通进件设计.md) D4（退款顺序：先退分、后退款，金额守恒、同一退款幂等）；路线图见 [M1–M4A 问题与待决事项](2026-11-08-收款双轨M1-M4A问题与待决事项.md) 第 5 节
 
 ## 1. 范围与不做事项
@@ -56,23 +58,23 @@
 - 平台代收退款在当前生产配置下必然在第一行 `requireForRefund` 409（凭据未配置），失败原因写入退款记录并释放预占——与直收“账户缺失 409→FAILED”同一语义，不留永久 PROCESSING 预占。
 - 未来凭据/联调就绪后（M6），同一编排方法自然走通：退分→账本→退款；退款 PROCESSING 仍由 `syncRefund` 向平台收银台查单确认。
 
-## 5. 验证命令与预期（待人工验证，代理未运行）
+## 5. 验证命令与结果（2026-11-10 用户授权代理执行）
 
 ```bash
 mvn -f shop-b2b2c-backend/pom.xml "-Dtest=RefundServiceTest,PaymentChannelSecurityTest,PlatformCollectionServiceTest" test
 mvn -f shop-b2b2c-backend/pom.xml test
 ```
 
-预期重点：
+实测结果：
 
-- `platformCollectRefundRoutesToPlatformCashierAndNeverTouchesMerchantChannel`：409 文案含“平台收银台未配置/退款”，直收注册表与直收账户零调用；
-- `platformCollectRefundReturnsSplitBeforeRefunding`：returnSplit 先于 refundPayment，退分额 97=100−3，账本登记参数正确；
-- `platformCollectRefundStopsWhenSplitReturnNotSuccessful`：退分 PROCESSING 时退款不落渠道、账本不登记、记录 FAILED；
-- 既有直收退款/审批/重复补偿用例全部保持绿色（RefundRequestServiceTest、ComplaintServiceTest、TradeRefundIntegrationTest 等）。
+- 定向：48 项全部通过（RefundServiceTest 21 / PaymentChannelSecurityTest 18 / PlatformCollectionServiceTest 9），0 失败 0 跳过。
+- 全量：1174 项，0 失败 0 错误，1 跳过，BUILD SUCCESS（较基线 1169 多出 5 项即本 Sprint 新增 M4-B 编排用例）。
+- `platformCollectRefundReturnsSplitBeforeRefunding` 已验证 returnSplit 先于 refundPayment、退分额 97=100−3、账本登记参数正确；
+  `platformCollectRefundStopsWhenSplitReturnNotSuccessful` 已验证退分 PROCESSING 时退款不落渠道、账本不登记、记录 FAILED；
+  `platformCollectRefundRoutesToPlatformCashierAndNeverTouchesMerchantChannel` 已验证 409 细化且直收注册表/账户零调用。
 
 ## 6. 未验证项与风险
 
-1. 代理未运行 mvn；以上结论为静态实现，编译与用例执行由用户手动运行。
-2. H2 单测不替代真实 MySQL 行锁与微信渠道联调；真实退分/退款属 M6。
-3. 平台代收订单当前无法支付成功（M4-A 支付入口 409），生产环境尚不存在可退的平台代收支付单；本骨架的资金路径只经 Mockito 用例验证。
-4. 退分 PROCESSING 的重试/人工队列未实现（D5 属 M5）；当前按“FAILED 后可重试、渠道幂等键防二次退分”处理。
+1. H2 单测不替代真实 MySQL 行锁与微信渠道联调；真实退分/退款属 M6。
+2. 平台代收订单当前无法支付成功（M4-A 支付入口 409），生产环境尚不存在可退的平台代收支付单；本骨架的资金路径只经单测验证。
+3. 退分 PROCESSING 的重试/人工队列未实现（D5 属 M5）；当前按“FAILED 后可重试、渠道幂等键防二次退分”处理。
