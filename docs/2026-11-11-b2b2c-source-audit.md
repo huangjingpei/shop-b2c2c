@@ -17,6 +17,7 @@
 - [F01–F20 功能边界与交付要求](#feature-details)
 - [财务、对账和支付执行清单](#specialist-details)
 - [全景统计、开发清单与代码架构交叉审校](#landscape-cross-review)
+- [本地异议复核与开发依赖修订](#local-review-findings)
 
 ## 1. 本轮新增证据与优先开发项
 
@@ -28,7 +29,7 @@
 | [AUD-04](#task-aud-04) · P1 · 新证据，F02/F14、R06/R07 | [`PublicOnboardingController.create`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/PublicOnboardingController.java#L65) 创建草稿未接交易或独立入驻频控；`clientIp` 直接取 XFF 首段，[`MerchantOnboardingGuideController.clientIp`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/MerchantOnboardingGuideController.java#L124) 同类；协议证据与已存在的 [`ClientIpResolver.resolve`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ClientIpResolver.java#L53) 信任模型不一致。附件 [`OnboardingAttachmentService.store`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/OnboardingAttachmentService.java#L62) 有逐文件上限、类型判断和随机路径；应用/主体/来源累计预算、存储保留期及共享存储恢复仍缺可见闭环。 | 复用可信代理解析，按来源、申请、主体设置创建和上传预算；先做孤儿清理、私有存储与恢复演练，规模需要时再换对象存储。测伪造 XFF、多文件耗尽、跨申请附件、失败回收和多实例读取。 |
 | [AUD-05](#task-aud-05) · P0 生产门槛 · 持续风险，D21/R01/R05、G09/G12/G43 | `application-prod.yml` 与 [`AdminBootstrap`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/AdminBootstrap.java#L29) 已做生产/演示隔离，`demo-seed.sql` 已从结构 SQL 分离；[`CardCipherService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L22) 构造仍支持空配置回退且只有固定密文版本；跟踪的云 `env.sh` 需独立按键核验和轮换，Git 无法证明历史凭据失效。 | 优先生产 fail-closed，模板与实际注入分开；先识别旧密钥，再双读单写、批次迁移、轮换和恢复。测试缺配置拒绝、旧新密文可读、错误密钥失败、发卡和补发不泄露。 |
 | [AUD-06](#task-aud-06) · P0 发布门槛 · 延续，D31/D37/R15、G38–G41 | [`SchemaMigrationRunner.run`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/SchemaMigrationRunner.java#L53) 在 ApplicationRunner 执行、按版本查后执行并记账；[`ReadinessService.check`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ReadinessService.java#L51) 只探 DB/Redis，未共享迁移完成状态。多实例可能同时尝试迁移；MySQL DDL 隐式提交，失败不能假设全版本回滚。实际目录为 V1–V23，旧清单的 V1–V19 不再是完整边界。 | 单迁移者、就绪与迁移结果绑定，迁移期间不收流量；迁移版本和校验和、失败续跑/前滚、备份恢复写进发布手册。隔离 MySQL 演练双实例、重复启动、DDL 中途失败和旧库排序规则。 |
-| [AUD-07](#task-aud-07) · P1 · 文档偏差与待验证，D10/D20、R10/R11/R12 | [`PeerPayServiceImpl.getPeerPayDetail`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PeerPayServiceImpl.java#L299) 未见旧文所述整行写回；`expireIfNecessary` 由预占和 job 调用，[`ReservationExpiryJob`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/ReservationExpiryJob.java#L35) 有分页游标和普通未付单扫描。[`BuyerOrderQueryService.lookup`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/BuyerOrderQueryService.java#L19) 已校验独立 token，[`OrderQueryLimiter.check`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/OrderQueryLimiter.java#L23) 规范化单号，Redis 异常返回 503。旧清单 B13/B14 不宜直接按原修法开工；预占入口的独立回滚问题见 AUD-10。 | 改为读路径无写回和过期竞争验证；验证 Redis 故障返回 503；当前每订单桶在凭证验证前扣减，评估已知单号被频繁请求时合法买家被连带限流，并验证来源/订单预算与合法凭证，避免重新设计领取凭证。 |
+| [AUD-07](#task-aud-07) · P1 · 文档偏差与待验证，D10/D20、R10/R11/R12 | [`PeerPayServiceImpl.getPeerPayDetail`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PeerPayServiceImpl.java#L299) 未见旧文所述整行写回；`expireIfNecessary` 由预占和 job 调用，[`ReservationExpiryJob`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/ReservationExpiryJob.java#L35) 有分页游标和普通未付单扫描。[`BuyerOrderQueryService.lookup`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/BuyerOrderQueryService.java#L19) 已校验独立 token，[`OrderQueryLimiter.check`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/OrderQueryLimiter.java#L23) 规范化单号，Redis 异常返回 503。旧清单 B21/B12 对应的旧描述不宜直接按原修法开工；预占入口的独立回滚问题见 AUD-10。 | 改为读路径无写回和过期竞争验证；验证 Redis 故障返回 503；当前每订单桶在凭证验证前扣减，评估已知单号被频繁请求时合法买家被连带限流，并验证来源/订单预算与合法凭证，避免重新设计领取凭证。 |
 | [AUD-08](#task-aud-08) · P1 · 规模和账务残项，F09、G21/G45/G46 | [`ReconciliationService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ReconciliationService.java#L68) 已区分 PARTIAL、渠道缺流水、业务日及非成功事件；[`AdminSettlementController.paymentExceptions`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/AdminSettlementController.java#L87) 用 offset；对账支付事件按商户/时间扫描，`schema.sql` 的索引应以实际过滤和排序验证，不能依据 H2 小数据判断。 | 先定义到账业务日/导入完整水位和差异关闭依据，再按 MySQL EXPLAIN 与样本量优化；文件重放不复制差异，延迟/零流水/相邻业务日/部分导入不能静默结案。 |
 | [AUD-09](#task-aud-09) · P0 上线前 · Sprint 59 渠道契约不符，F03/F05 | [`WeChatPlatformCashierChannelAdapter.createPayment`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/WeChatPlatformCashierChannelAdapter.java#L95) 未提交分账标识；当前 Native 路径和服务商字段组合也需与目标产品逐项核对。其 `returnSplit` 将同一 `receiverChannelId` 传给 `sub_mchid` 和 `return_mchid`，并以订单号代分账单号。按[微信回退接口](https://pay.wechatpay.cn/doc/v3/partner/4012477737)，二级出资方和原分账接收方是不同业务字段，回退应引用原分账单；平台抽佣时二者通常是不同主体。 | 在尝试快照保存渠道产品；先按目标 Native 产品契约确定路径、字段和分账标识，在真实分账回执保存原分账单号与出资/接收方。用不同商户号、同订单多次分账、部分回退及重复回退做请求契约用例；签约前保持开关关闭。 |
 | [AUD-10](#task-aud-10) · P1 · 历史问题仍存在，D10/F08、并发专项 P2-1 | [`PeerPayServiceImpl.preLockInventory`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PeerPayServiceImpl.java#L412) 在同一回滚事务中先执行 [`expireIfNecessary`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PeerPayServiceImpl.java#L526)（释放、关单、注册提交后动作），随后对已经 CLOSED 的订单抛异常；这条路径的释放和关闭随事务回滚。定时任务可兜底，但过期请求不会主动完成释放，不能用 D10 的详情读路径改造覆盖此问题。 | 预占事务遇过期仅拒绝，由独立事务完成过期（或提交明确失败结果后由控制器映射错误）；复用定时服务，不套相同订单锁的嵌套事务。验证过期订单释放一次、合法预占不受影响及支付竞争不覆盖已付款状态。 |
@@ -255,11 +256,11 @@
 | --- | --- |
 | A1/A2/A3/A4（M6/进件/分账/退款） | [`WeChatPlatformCashierChannelAdapter`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/WeChatPlatformCashierChannelAdapter.java#L57)、[`MerchantPayoutVerificationService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantPayoutVerificationService.java#L39)、[`PlatformCollectionService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/PlatformCollectionService.java#L45)、[`RefundService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/RefundService.java#L43)：准备与渠道验收分离；账户未开通前平台总闸关闭。 |
 | A5/A6/A7/A8（支付状态、渠道验证、关单错误、直收确认） | [`PaymentEventServiceImpl`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PaymentEventServiceImpl.java#L46)、[`PaymentGatewayService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentGatewayService.java#L46)、[`PaymentCloseRetryService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentCloseRetryService.java#L26)：可先实现尝试、回执与补偿；实际响应码、合法验签和到账归 A 类。 |
-| B1/B2/B11 | [`AdminBootstrap`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/AdminBootstrap.java#L29)、[`CardCipherService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L22)、[`CardAssetService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java#L20)；AUD-05 与 F12。 |
-| B3/B4/B5/B17 | [`SchemaMigrationRunner`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/SchemaMigrationRunner.java#L33)、[`DualApprovalAccountValidator`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/DualApprovalAccountValidator.java#L32)、[`ReservationExpiryJob`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/ReservationExpiryJob.java#L35)、`schema.sql`；AUD-06、R14；第二超管存在校验不能替代 AUD-01。 |
-| B6/B7/B8/B9 | [`SaasFeeBillService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/SaasFeeBillService.java#L43)、[`ReconciliationService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ReconciliationService.java#L68)、[`ManagementGuards`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/common/ManagementGuards.java#L11)、[`MerchantNotificationService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantNotificationService.java#L29)；F10/F09/F13/F15。 |
-| B10/B12/B13/B14 | [`OrderReceiptService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/OrderReceiptService.java#L25)、[`ProductEditingService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ProductEditingService.java#L30)、[`PeerPayServiceImpl`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PeerPayServiceImpl.java#L35)、[`BuyerOrderQueryService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/BuyerOrderQueryService.java#L14)；F07、D13 与 AUD-07。 |
-| B15/B16 | 两云 `04-deploy.sh`、Nginx 模板、[`MerchantOnboardingService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantOnboardingService.java#L67)；发布演练与角色/费率/税率决策分离。 |
+| B1/B2/B19 | [`AdminBootstrap`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/AdminBootstrap.java#L29)、[`CardCipherService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L22)、[`CardAssetService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardAssetService.java#L20)；AUD-05 与 F12。 |
+| B4/B5/B6/D31a | [`SchemaMigrationRunner`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/SchemaMigrationRunner.java#L33)、[`DualApprovalAccountValidator`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/DualApprovalAccountValidator.java#L32)、[`ReservationExpiryJob`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/ReservationExpiryJob.java#L35)、`schema.sql`；AUD-06、R14；第二超管存在校验不能替代 AUD-01。 |
+| B14/B15/B16/B17 | [`SaasFeeBillService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/SaasFeeBillService.java#L43)、[`ReconciliationService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ReconciliationService.java#L68)、[`ManagementGuards`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/common/ManagementGuards.java#L11)、[`MerchantNotificationService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantNotificationService.java#L29)；F10/F09/F13/F15。 |
+| B18/B20/B21/B12 | [`OrderReceiptService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/OrderReceiptService.java#L25)、[`ProductEditingService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ProductEditingService.java#L30)、[`PeerPayServiceImpl`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PeerPayServiceImpl.java#L35)、[`BuyerOrderQueryService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/BuyerOrderQueryService.java#L14)；F07、D13 与 AUD-07。 |
+| B22/B23 | 两云 `04-deploy.sh`、Nginx 模板、[`MerchantOnboardingService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantOnboardingService.java#L67)；发布演练与角色/费率/税率决策分离。 |
 | M-R3/M-R4/M-R5、S50/S52/S53/S54/S55/S56 | [`MerchantCollectionModeService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantCollectionModeService.java#L37)、[`MerchantPayoutVerificationService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantPayoutVerificationService.java#L39)、[`FinanceApprovalGuard`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/FinanceApprovalGuard.java#L25)、管理端收款页；总闸、账户状态和审核角色分开，浏览器与渠道环境均未验。 |
 | S40/S41/S43/S44/S45/S46 | D32/D33/D35/D37/D38/D39 原条目对应 schema、枚举、Nginx、探针、海报存储和 CI；版本、部署、磁盘故障与 CI 证据分别验证。 |
 | S47/S48/S49 | [`PaymentCallbackAuditService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentCallbackAuditService.java#L29)、[`PaymentCloseRetryService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentCloseRetryService.java#L26)、[`PaymentExceptionDispositionService`](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentExceptionDispositionService.java#L31)；验签字段、真实错误分类、人工处置与资金退款独立。 |
@@ -1047,7 +1048,7 @@
 | 4 财务对账 | AUD-08.1 先于 AUD-08.2；按 F09 确认平台收付账单来源 | 账单完整性和业务日可核，执行计划与功能验收分别留证。 |
 | 5 渠道联调及业务扩展 | 商户、渠道产品权限和公网通知具备后开展支付验收；F17–F20 按业务确认开工 | 对平台订单全链验证到账、分账、回退、退款与账单守恒；扩展功能按各自工单验收。 |
 
-### 支付阻塞清单 A1–A8 与非支付清单 B1–B17 的交付出口
+### 支付阻塞清单 A1–A9 与可先开发清单 B1–B23 的交付出口
 
 | 条目 | 当前状态、影响与可交付工作 |
 | --- | --- |
@@ -1059,23 +1060,30 @@
 | A6 | 金额及币种规则已有，真实通知样本缺失。假适配器可先验证合法和错值，签约后核真实报文。 |
 | A7 | 关单回执及退避已有，错误码分类待接。区分终态、已支付、可重试与不支持，测试每类去向。 |
 | A8 | 独立直收确认待定。F04 明确自动查单或人工核账，并确认凭证和权限。 |
+| A9 | 退分字段角色已由微信官方契约核实。按 AUD-09 从原分账回执取得原接收方，真实账户验证资金守恒。 |
 | B1 | 生产凭据部分收口，历史轮换与缺密钥风险归 AUD-05.1。 |
 | B2 | 卡密单密钥和兼容读取仍在，按 AUD-05.2 验旧新密文、异常与恢复。 |
-| B3 | 迁移与恢复脚本有基础，按 AUD-06 演练重跑、排序规则和中断恢复。 |
-| B4 | 启动会检查第二位超管，尚需生产配置演练；审批证据缺口归 AUD-01。 |
-| B5 | 本地锁、CAS 与事件恢复已有，真实 MySQL 竞争及两实例关单归 AUD-03、D04/D05。 |
-| B6 | SaaS 已有出账，审批和欠费恢复按 F10，账期与试用口径需确认。 |
-| B7 | 本地 T+1 已有，按 AUD-08 修支付时点、退款缺时间与导入水位。 |
-| B8 | 商户角色已有，按 F13 扩员工管理、撤权和审计。 |
-| B9 | 站内 outbox 已有，按 F15 交付外发的重试与回执。 |
-| B10 | 地址与收货已有，改址/配送按 F07/F16 统一快照。 |
-| B11 | 卡密资产功能已有，异常流程与历史清点随 F12/AUD-05。 |
-| B12 | 校验分散，按 D13 列各入口字段矩阵并收口。 |
-| B13 | 旧详情读写缺陷已有改造，实际残项为 AUD-10 的事务回滚。 |
-| B14 | 独立查单凭证和 Redis 失败关闭已实现，剩余问题按 AUD-07 复现。 |
-| B15 | 两云脚本、网关和探针已存在，按 D34/D35/D37 做实地演练。 |
-| B16 | 有本地审核，审核角色、费率和税率仍按 G16–G18 由业务定。 |
-| B17 | CHECK 是否强制需核对实库版本和样本，归 D32/AUD-06。 |
+| B3 | 现有复核人选择只证明账号有效。AUD-01 用第二位登录主体批准同一申请，覆盖四条财务写入口。 |
+| B4 | 迁移与恢复脚本有基础，按 AUD-06 演练重跑、排序规则和中断恢复。 |
+| B5 | 启动会检查第二位超管，尚需生产配置演练；审批证据缺口归 AUD-01。 |
+| B6 | 本地锁、CAS 与事件恢复已有，真实 MySQL 竞争及两实例关单归 AUD-03、D04/D05。 |
+| B7 | 过期预占释放随异常回滚。AUD-10 用 H2 事务回归固定缺陷，再用 MySQL 验支付和关单竞争。 |
+| B8 | AUD-02.1 保存原账户和尝试身份。B9/B10 消费快照，AUD-02.2 负责恢复已到账但缺失的结算。 |
+| B9 | AUD-03 按原尝试查单、关单和认领持久化任务。需要 B8 先定义身份与快照。 |
+| B10 | AUD-09 先按官方字段编写契约用例，完整退分依赖 B8 和原分账回执。 |
+| B11 | AUD-08 统一可信发生时点与导入完整水位，和 B15 共用对账实现。 |
+| B12 | 独立查单凭证和 Redis 失败关闭已有。AUD-07 调整共享配额，覆盖攻击来源和合法买家。 |
+| B13 | AUD-04 复用可信 IP 解析并增加入驻和上传预算。附件生命周期按存储和保留策略验收。 |
+| B14 | SaaS 已有出账，审批和欠费恢复按 F10，账期与试用口径需确认。 |
+| B15 | 本地 T+1 已有，按 AUD-08 修支付时点、退款缺时间与导入水位。 |
+| B16 | 商户角色已有，按 F13 扩员工管理、撤权和审计。 |
+| B17 | 站内 outbox 已有，按 F15 交付外发的重试与回执。 |
+| B18 | 地址与收货已有，改址/配送按 F07/F16 统一快照。 |
+| B19 | 卡密资产功能已有，异常流程与历史清点随 F12/AUD-05。 |
+| B20 | 校验分散，按 D13 列各入口字段矩阵并收口。 |
+| B21 | 旧详情整行写回描述过时，与 B7 共用 AUD-10 任务，保留详情只读回归。 |
+| B22 | 两云脚本、网关和探针已存在，按 D34/D35/D37 做实地演练。 |
+| B23 | 有本地审核，审核角色、费率和税率仍按 G16–G18 由业务定。 |
 
 <a id="landscape-cross-review"></a>
 
@@ -1110,25 +1118,25 @@
 
 <a id="close-attempt-review"></a>
 
-### 11.3 关单回执的任务身份与次数限制（B5、S48-1、S48-3、S59-3）
+### 11.3 关单回执的任务身份与次数限制（B6、S48-1、S48-3、S59-3）
 
 **当前状态。** 回执写入用 `INSERT ... SELECT MAX(attempt_no)+1`，基线对 `(order_sn, channel, attempt_no)` 建普通索引。候选 SQL 按订单与渠道判断最后一条失败，但只返回 `order_sn`。任务随后重新取订单并用订单当前 `payChannel` 关单。即使串行，历史微信尝试失败、订单现值为支付宝时也可能处理错渠道。跨实例可能同时领到同一候选，普通索引不提供唯一约束，真实 MySQL 下的序号与锁等待仍需复现。见 [回执 SQL](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/PaymentCloseReceiptMapper.java#L25)、[重试服务](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentCloseRetryService.java#L37)、[基线表](../shop-b2b2c-backend/src/main/resources/db/schema.sql#L1309)。
 
 **实施任务。** 归入 [AUD-03](#task-aud-03)，候选保留不可变尝试 ID 或至少原订单与渠道复合身份。数据库以任务唯一键和带版本的认领状态分配执行权，按认领编号或稳定的尝试序号记回执；历史重复行先盘点。新增 Redis 锁可用于减轻竞争，其失效不能破坏数据库认领。补 S48-1 的 V21 存量升级验证，以及一单两渠道、双实例同步取候选、认领后崩溃、晚到响应及达到上限的真实 MySQL 用例。验收读原渠道回执与旧单最终状态，排除执行错渠道、重复消耗重试次数和丢失回执。
 
-### 11.4 首装双超管、迁移就绪与探针（B3/B4/B15/B17、S50-1/2、S47-1、G37）
+### 11.4 首装双超管、迁移就绪与探针（B4/B5/B22/D31a、S50-1/2、S47-1、G37）
 
 **当前状态。** 两云新环境写入 `FINANCE_DUAL_APPROVAL_REQUIRED=true`。 `AdminBootstrap` 只在没有超管时创建首位账号，随后 `DualApprovalAccountValidator` 要求至少两位启用超管。因此空库只执行常规首位引导会启动失败，重复替换 `BOOTSTRAP_ADMIN_*` 也不能创建第二位。校验按角色和启用状态计数，源码基线中未见与这两个列匹配的组合索引，是否有优化价值以实库规模和 `EXPLAIN` 定。两云正式和引导 Nginx 模板均有 `/healthz` 与 `/readyz`，G37 剩余项为 503 透传和实际流量切换。见 [首位超管引导](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/AdminBootstrap.java#L46)、[启动校验](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/DualApprovalAccountValidator.java#L53)、[阿里云探针](../deploy/aliyun/server/nginx-gmall.conf#L82)、[腾讯云探针](../deploy/tencent/server/nginx-shop.conf#L125)。
 
-**实施任务。** B4 增加可审计的第二位超管首装与灾后恢复操作路径，预发布先验证 0、1、2 位启用账号及禁用第二位的行为，再纳入生产手册。审批真实性仍归 [AUD-01](#task-aud-01)。B3 依 [AUD-06](#task-aud-06) 分别验新库 schema、代表性旧库升至当前 V23，覆盖 V20 回调审计表与索引、V21 回执、V22 异常处置、V23 双轨，再验证重复执行和中断恢复。老库排序规则核对外键两端的实际列定义，隔离演练前滚与还原。B15 从 Nginx 请求就绪端点，验证迁移期/失败期 503 不被 SPA 或重定向掩盖，Redis ACL 和写保护故障按真实服务演练。B17 单独记录 MySQL 版本和 CHECK 执行证据，应用 CAS 仍承担正常交易的并发保护。
+**实施任务。** B5 增加可审计的第二位超管首装与灾后恢复操作路径，预发布先验证 0、1、2 位启用账号及禁用第二位的行为，再纳入生产手册。审批真实性仍归 [AUD-01](#task-aud-01)。B4 依 [AUD-06](#task-aud-06) 分别验新库 schema、代表性旧库升至当前 V23，覆盖 V20 回调审计表与索引、V21 回执、V22 异常处置、V23 双轨，再验证重复执行和中断恢复。老库排序规则核对外键两端的实际列定义，隔离演练前滚与还原。B22 从 Nginx 请求就绪端点，验证迁移期/失败期 503 不被 SPA 或重定向掩盖，Redis ACL 和写保护故障按真实服务演练。D31a 单独记录 MySQL 版本和 CHECK 执行证据，应用 CAS 仍承担正常交易的并发保护。
 
 ### 11.5 清单中需要调整的状态与实施范围
 
 | 来源 | 当前代码与架构判断 | 给开发者的任务或验收 |
 | --- | --- | --- |
-| B12/D13 商品、费率与模式校验 | 创建商品已经调用 `TradeGuards.requireMoney`、`requireInitialStock` 并校验规格 JSON。费率服务有 `validateRate`，模式切换有 `CollectionMode.requireKnown`。缺 Bean Validation 与业务值可入库是两个判断。见 [商品创建](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/ProductController.java#L209)、[费率规则](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantFeePolicyService.java#L253)。 | 按 [D13](#task-d13) 用请求样本核对创建、编辑、进件与费率入口，确定真实漏检后共用领域规则。优先测缺字段、类型错误、价格精度、负库存、批次含无效 SKU 后整批回滚。 |
-| B13/D10、B14/D20、P2 D23/D24 | 审计已经核对详情只读、过期任务、独立查单凭证、限流规范化、Redis 503，以及 CORS 白名单和通用异常拦截。旧描述适合作为复现用例来源。 | B13 改为 [AUD-10](#task-aud-10) 的预占事务出口，B14 改为 [AUD-07](#task-aud-07) 的共享配额。D23/D24 查实际路由授权、可信代理和残余单参异常，避免重复建同类拦截器。 |
-| B6/F10、B16/T39 | 月费代码当前用次月 10 日到期，TRIAL 免收；这两条和入驻审核角色、初始费率、税率均涉及业务政策。见 [账期](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/SaasFeeBillService.java#L100)、[免收判断](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/SaasFeeBillService.java#L231)。 | 先回归重复出账、缴费确认和欠费恢复审计。配置变更按生效期作用于后续账单，旧账保留快照。产品确定试用、到期、恢复及角色规则后再调整默认。 |
+| B20/D13 商品、费率与模式校验 | 创建商品已经调用 `TradeGuards.requireMoney`、`requireInitialStock` 并校验规格 JSON。费率服务有 `validateRate`，模式切换有 `CollectionMode.requireKnown`。缺 Bean Validation 与业务值可入库是两个判断。见 [商品创建](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/ProductController.java#L209)、[费率规则](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantFeePolicyService.java#L253)。 | 按 [D13](#task-d13) 用请求样本核对创建、编辑、进件与费率入口，确定真实漏检后共用领域规则。优先测缺字段、类型错误、价格精度、负库存、批次含无效 SKU 后整批回滚。 |
+| B21/D10、B12/D20、P2 D23/D24 | 审计已经核对详情只读、过期任务、独立查单凭证、限流规范化、Redis 503，以及 CORS 白名单和通用异常拦截。旧描述适合作为复现用例来源。 | B21 改为 [AUD-10](#task-aud-10) 的预占事务出口，B12 改为 [AUD-07](#task-aud-07) 的共享配额。D23/D24 查实际路由授权、可信代理和残余单参异常，避免重复建同类拦截器。 |
+| B14/F10、B23/T39 | 月费代码当前用次月 10 日到期，TRIAL 免收；这两条和入驻审核角色、初始费率、税率均涉及业务政策。见 [账期](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/SaasFeeBillService.java#L100)、[免收判断](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/SaasFeeBillService.java#L231)。 | 先回归重复出账、缴费确认和欠费恢复审计。配置变更按生效期作用于后续账单，旧账保留快照。产品确定试用、到期、恢复及角色规则后再调整默认。 |
 | G44、G47、FB-F17–19 | `PaymentEventRecorder.recordEventStatus` 用 `updateById`，成功时传入 null 也可能留下旧错误原因。 `markFulfillmentFailed` 的 CASE 只保留既有 1，当前为 0 而入参未知时 SQL 可写回 NULL，实际调用是否可达还要跟踪。见 [事件写入](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/PaymentEventRecorder.java#L38)、[失败迁移](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/PaymentEventMapper.java#L111)。 | 给 Mapper 显式定义清空错误、保持旧证据及接收新证据的写法，按前置状态更新。先定 0、1、未知的语义和来源，避免把未知都当成未收款。测失败后成功、晚到旧状态、并发充值和同时间费率冲突，归 D06/F09/AUD-01。 |
 | B-P2 前端联调批，S49-1/3、M2/M3 | 管理端 Finance 已展示支付异常并可提交处置，列表加载直接调默认接口，未传分页参数。总闸和商家切换页面也已存在。见 [支付异常列表](../shop-admin-vue/src/views/admin/Finance.vue#L98)、[查询请求](../shop-admin-vue/src/views/admin/Finance.vue#L286)、[收款模式表单](../shop-admin-vue/src/views/admin/Merchants.vue#L829)。 | 优先补筛选、翻页、完整处置状态和角色验证。用大于接口默认页的数据确认页面不会把当前页条数标成总数。前端手验窄屏、长拒绝原因、过期会话、状态刷新，附截图和真实请求。 |
 | F14 广告与导流 | 付款成功页已加载 banner 并将 `targetUrl` 绑定到链接，后端已有公开读取端点。继续做配置后台时，入口应约束链接和字段；尚无本次发现的恶意配置写入路径证据。见 [页面链接](../shop-storefront-vue/src/views/PeerPayCashier.vue#L132)、[公开广告接口](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/PeerPayController.java#L94)。 | 配置写入时限制角色、URL 协议与目标范围，公开端使用展示字段投影。点击与开店转化各有事件，按来源去重，拒绝无效链接且保留合法导航。归 [F14](#task-f14)。 |
@@ -1136,6 +1144,40 @@
 
 ### 11.6 开工顺序与验收门槛
 
-- **首批非支付。** 按开发清单 B1/B2/B11 处理凭据、卡密密钥及异常处置。D13、AUD-10、AUD-07 和 D24 可按接口独立提交。AUD-01 与 AUD-04 归原 F14/F10/F13 安全范围，AUD-06 与 B3/B4/B15/B17 一起补生产首装和隔离库演练。
+- **首批非支付。** 按开发清单 B1/B2/B19 处理凭据、卡密密钥及异常处置。D13、AUD-10、AUD-07 和 D24 可按接口独立提交。AUD-01 与 AUD-04 归原 F14/F10/F13 安全范围，AUD-06 与 B4/B5/B22/D31a 一起补生产首装和隔离库演练。
 - **支付本地前置。** AUD-02.1 的支付尝试先于 AUD-03 查单/关单与回执认领、AUD-09 分账与回退身份、§11.2 开关矩阵。A5 状态迁移、迟到支付处理、A7 回执分类和假渠道用例可在现有环境开发。真实自动退款需明确何种晚到事件可以自动执行，并核对原实收与可退金额。
-- **真实渠道验收。** A1–A8 的真实步骤保留账户、产品权限、回调公网、证书及相应代码前置。保留原 P4 的支付宝平台代收延后、SKIPPED 不自动补关、旧单不回填收款模式、员工敏感信息边界。退款回退用可验证的原分账成功凭证，账单验收用渠道资金记录。生产发布按用户手动验证约定执行。
+- **真实渠道验收。** A1–A9 的真实步骤保留账户、产品权限、回调公网、证书及相应代码前置。保留原 P4 的支付宝平台代收延后、SKIPPED 不自动补关、旧单不回填收款模式、员工敏感信息边界。退款回退用可验证的原分账成功凭证，账单验收用渠道资金记录。生产发布按用户手动验证约定执行。
+
+<a id="local-review-findings"></a>
+
+## 12. 本地异议复核与开发依赖修订
+
+本轮复核了工作区两份文档的本地修订，包括全景 §12 的异议 11–20、分级表和 Phase 重排，以及开发清单新增的 A9、B3、B7–B13 等条目。§10–11 的 A/B 引用已按修订稿对齐。下表使用三种独立判断：**源码结论、可开工条件、验收门槛**。本轮逐条检查 AUD-01–10 的实现入口、关联 SQL/配置、现有测试及相关渠道契约。编号、分级统计、重复项和阶段归属只用于文档一致性，不作实现或验收证据。
+
+| 关联任务 | 本轮源码或契约结论 | 开工顺序与验收 |
+| --- | --- | --- |
+| [AUD-01](#task-aud-01) · B3 | 结算、充值、月费及费率操作仍可将请求指定的复核人记为批准者。不同 ID 和账号有效性不证明由该人发起确认。入驻分阶段审批另按动作核对，G30/G31/G36 分别是单人开发例外、候选人入口与生产配置约束。见 [身份比较](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/FinanceApprovalGuard.java#L55)、[复核人资质](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/FinanceApprovalGuard.java#L112)。 | P0 安全批。第二位超管用自己的已登录身份批准持久化申请，服务端绑定对象、版本和金额。两会话和事务回滚测试可先做，生产第二位超管就绪单列 B5。 |
+| [AUD-02](#task-aud-02) · B8/A5 | 发起与回调都查当前 BOUND，历史付款尝试缺原账户快照。另有独立的结算任务缺口，回调成功后结算尽力写入。见 [绑定查询](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentGatewayService.java#L189)、[结算补写入口](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentGatewayService.java#L176)。 | 无渠道账户即可先做尝试表、幂等契约和假回调。尝试身份先于 B9，结算任务的失败恢复单独验。MySQL 验唯一键和并发，平台开放前验真实换绑和旧回调。 |
+| [AUD-03](#task-aud-03) · B9/A7 | 主动查单、关单及补偿仍以直收或订单当前渠道为输入。回执候选丢原渠道，首次任务也可能在提交后、记录前丢失。见 [查单](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentGatewayService.java#L212)、[候选 SQL](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/PaymentCloseReceiptMapper.java#L35)。 | B8 定义原尝试身份后实施查单/关单路由。错误类别、假适配器和本地状态可先做。MySQL 验任务抢占、序号和回收，渠道账户到位后验证真实错误码、关单与退款。 |
+| [AUD-04](#task-aud-04) · B13 | 公开入驻协议 IP 直接取 XFF 首段，附件已有单文件限制，应用层累计预算和清理待补。代码证明解析入口不一致，实际伪造能否穿过代理取决于真实部署。见 [协议 IP](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/PublicOnboardingController.java#L197)、[附件存储](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/OnboardingAttachmentService.java#L62)。 | 独立开工。代理头和附件配额单测可先做，真实代理透传、并发额度、私有存储及过期清理由环境验。 |
+| [AUD-05](#task-aud-05) · B1/B2/B19 | 源码可确认密钥缺失时回退，以及旧明文兼容。生产历史凭据是否仍有效、旧密文使用哪把钥匙，需要运维和备份证据。见 [密钥选择](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L31)、[旧格式读路径](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/CardCipherService.java#L99)。 | 生产 P0 门槛。代码可先拒绝弱默认并准备双读单写，密钥退役需盘点、轮换和恢复验读。主台账 D21 的历史文字按当前种子分离状态解释。 |
+| [AUD-06](#task-aud-06) · B4/B5/B6 | 迁移执行与依赖探针没有共享完成状态，存量版本目录已到 V23。首装检查第二位超管与迁移就绪是两个独立门槛。见 [迁移执行](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/SchemaMigrationRunner.java#L53)、[就绪检查](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ReadinessService.java#L51)。 | 生产发布 P0 门槛。门禁代码及单测可先做，旧库 V20–V23、并发迁移、排序规则、真实恢复和 Nginx 透传须隔离 MySQL/部署环境。 |
+| [AUD-07](#task-aud-07) · B12 | 查单在凭证验证前先扣 IP 桶，再扣规范化订单共享桶。已知单号的错误请求可消耗订单预算。独立 queryToken 和 Redis 故障 503 已存在。见 [限流扣减顺序](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/OrderQueryLimiter.java#L23)、[凭证检查](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/BuyerOrderQueryService.java#L19)。 | 独立开工。模拟跨来源错凭证刷单号与合法领取，验证 Redis 原子计数、过期和异常策略。真实部署另核验共享出口误伤。 |
+| [AUD-08](#task-aud-08) · B11/B15 | 事件按本地创建时点筛日，渠道用交易时点；已有跨日差异分类和退款时间缺失巡检。应持久化可信发生时间及账单来源，不宜把所有本地 `created_at` 一次性当作旧数据的到账时间。见 [事件业务日过滤](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/PaymentEventMapper.java#L151)、[退款时间巡检](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/ReconciliationService.java#L195)。 | B11 与 B15 合并实现。业务日、部分导入及旧数据缺值场景先加用例，MySQL 验索引和回补，再用真实渠道账单验金额守恒。 |
+| [AUD-09](#task-aud-09) · B10/A9 | 官方接口明确 `sub_mchid` 表示原分账出资方，`return_mchid` 取原分账的 `receiver_account`。若原接收方是平台才使用对应的平台账号，不能统一用 `sp_mchid`。当前代码把同一个商户号写到两处，并用订单号代分账单号，退款固定取第一条预写明细。见 [适配器](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/WeChatPlatformCashierChannelAdapter.java#L332)、[退款选明细](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/RefundService.java#L194)、[微信官方契约](https://pay.wechatpay.cn/doc/v3/partner/4012477737)。 | 字段契约已核实，可先写请求测试。完整改造要存原分账回执并按明细核余额，随后真实验证未分账、已分账、多接收方和部分退款。属于平台开启前置。 |
+| [AUD-10](#task-aud-10) · B7/B21 | 过期请求经事务代理进入预占，先释放、写关闭，再由外层抛异常触发回滚。旧用例先手动跑定时任务两次，再断言无法预占，未测请求自身提交。见 [事务入口](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/impl/PeerPayServiceImpl.java#L411)、[现有 H2 测试](../shop-b2b2c-backend/src/test/java/com/shop/b2b2c/Sprint1SecurityIntegrationTest.java#L1777)。 | 独立开工。沿现有 H2 Spring 测试夹具补用例，先建 HELD、推过截止，直接请求预占且不先触发 job，另开事务读取订单、预占与库存。修复后仍拒绝新预占，且已有释放落库。并发付款及回执在 MySQL 验。 |
+
+### 12.1 对异议 11–20 的处理
+
+- **11、13，收录和分类。** 采纳把 AUD 关联到执行清单的做法。AUD-05/06 包含既有问题的新证据，AUD-07 包含旧口径更正，AUD-10 属历史路径复现设计。模块分类可保留，不能将 10 项都计为首次发现或从既有 D/F 范围再次累计。
+- **12、16、18、20，执行顺序。** 采纳把可本地实现的支付任务提前。B7、B12、B13 可独立实现，B8 先建立尝试契约，B9 依赖该契约，B10 的报文夹具可并行、完整退分依赖原分账回执。B3 与 B1/B2 并行于独立修复，阶段不以真实支付账户为前提。B21 归 B7 的同一提交范围，B11/B15 共用对账变更。
+- **14，H2 复现。** 采纳 H2 能验证单请求事务边界的判断。现有用例尚未覆盖，当前状态是源码已定位、复现用例待补、实际执行待验证。MySQL 验锁竞争、隔离与多实例，仍单列。
+- **15，财务审批。** 采纳统一四条财务入口的建议，批准主体从当前会话取得并绑定同一笔持久化申请。启动账号数量、下拉选择和真实第二人审批各自验证。
+- **17，微信回退。** 采纳官方契约前置，已完成字段角色核对。A9 剩余为原分账凭证模型、联调实值和资金验证，B10 应按接收方快照实施。
+- **19，对账。** 采纳可信时点修正。新事件捕获来源与发生时点，旧事件按可验证证据回补，无法证明的样本留人工核查，避免用接收时点反填到账。
+
+### 12.2 优先级与放行
+
+本地全景的逐项等级表将 AUD-05 标成 P0，合计及模块表却把它计入 P1，并把 AUD-10 计入 P0。审计采用可执行口径：AUD-01、AUD-05、AUD-06 是生产安全或发布门槛。AUD-10 放到首批独立修复，现有定时任务可兜底，暂按 P1 标注，若实库出现过期释放持续积压再上调。AUD-02/03/09 可在本地阶段开发，其对应缺口仍是平台代收上线前必须通过的门槛。
+
+AUD-10 新增用例后，可在仓库根目录手动执行 `mvn -f shop-b2b2c-backend/pom.xml "-Dtest=Sprint1SecurityIntegrationTest,ReservationExpiryJobTest" test`，预期直接预占的过期请求被拒、库存只释放一次、定时任务仍能兜底。Redis、MySQL、浏览器、部署和真实渠道按各自验收门槛执行，通用命令见第 6 节。统计分组和排期差异只回写文档，当前业务验收保留待验证。
