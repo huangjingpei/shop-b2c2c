@@ -4,7 +4,7 @@
 -->
 # B2B2C 全工程源码复诊与开发路线（2026-11-11）
 
-基线：`54c2a14`（最新业务代码 `5288e29`）。复核范围包括 Spring Boot 后端、MyBatis/SQL、管理端和商城 Vue、shared 规则、构建与 CI、两云部署、网关及备份。旧台账和设计用于定位问题；Sprint 文档与历史验证记录是交付历史，不能代替当前路径。两份最近执行清单在工作区处于删除状态，本次仅从 Git 基线读取其历史内容，未恢复或改动。DOCX/PDF 同名规格用仓库内 Markdown 对照；本轮没有做二进制逐版比对、线上探测、依赖 CVE 枚举、真实数据库或支付验收。代码定位以文件名和方法为准。
+基线：`54c2a14`（最新业务代码 `5288e29`）。复核范围包括 Spring Boot 后端、MyBatis/SQL、管理端和商城 Vue、shared 规则、构建与 CI、两云部署、网关及备份。旧台账和设计用于定位问题；Sprint 文档与历史验证记录是交付历史，不能代替当前路径。复审基线为文档提交 `afd9d95`，对照工作区内 11-10 全景统计及 11-11 开发清单，并核对当前业务源码、SQL 和两云部署脚本。DOCX/PDF 同名规格用仓库内 Markdown 对照；本轮没有做二进制逐版比对、线上探测、依赖 CVE 枚举、真实数据库或支付验收。代码定位以文件名和方法为准。
 
 **下一批优先处理凭据和真实双人审批，再收口入驻防滥用、迁移就绪与库存并发。支付渠道未开通期间保留总闸关闭，先完成本地支付尝试、补偿任务和可重放的渠道契约。** 现有 CAS、订单快照和幂等记录应复用；真实联调只解决外部契约和环境证据，不能替代本地状态机的修复。
 
@@ -16,6 +16,7 @@
 - [D01–D39 缺陷任务与回归要求](#defect-details)
 - [F01–F20 功能边界与交付要求](#feature-details)
 - [财务、对账和支付执行清单](#specialist-details)
+- [全景统计、开发清单与代码架构交叉审校](#landscape-cross-review)
 
 ## 1. 本轮新增证据与优先开发项
 
@@ -353,6 +354,8 @@
 
 ### AUD-03 按原支付尝试查单和关单，补齐首次关单恢复
 
+本轮补充了[候选渠道丢失与回执序号](#close-attempt-review)的实现与验收要求。
+
 **当前状态 · 平台预下单已有分流，主动查询和关单仍走直收。** `queryPayment`、`queryChannelPayment` 和 `closePaymentBestEffort` 查的是订单渠道或直收注册表。预下单可改写订单的 `payChannel`，因此现值也可能与仍可支付的旧二维码不同。买家取消在事务提交后调渠道，关单重试从已有回执找候选。定位见 [网关查单](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentGatewayService.java#L212)、[关单](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentGatewayService.java#L285)、[取消](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/OrderCancellationService.java#L41)、[回执重试](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentCloseRetryService.java#L37)。
 
 **触发与影响。** 平台单可能被发往直收适配器，或被记为跳过。取消成功提交后、关单请求或首个回执落库前若进程退出，定时重试缺候选。买家仍可能在有效旧页面支付，引入迟到款和客服处理。
@@ -424,6 +427,8 @@
 <a id="task-aud-09"></a>
 
 ### AUD-09 平台分账和回退按渠道契约建模
+
+联调顺序见[平台支付、分账与退分前置关系](#m6-dependencies)。
 
 **当前状态 · 有退款编排，退款回退报文和分账明细仍有缺口。** `WeChatPlatformCashierChannelAdapter.createPayment` 没传分账标识，Native 路径与服务商字段需核对目标支付产品。 `RefundService.returnSplitBeforeRefund` 取 `splits.get(0)`，用退款额减服务费冲正额作为回退额，再将该账户的 `sub_mchid` 传入 `receiverChannelId`。适配器将该值同时填为 `sub_mchid` 和 `return_mchid`，并以订单号代原分账单号。定位见 [退款编排](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/RefundService.java#L194)、[渠道回退请求](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/WeChatPlatformCashierChannelAdapter.java#L332)、[微信官方契约](https://pay.wechatpay.cn/doc/v3/partner/4012477737)。
 
@@ -1071,3 +1076,66 @@
 | B15 | 两云脚本、网关和探针已存在，按 D34/D35/D37 做实地演练。 |
 | B16 | 有本地审核，审核角色、费率和税率仍按 G16–G18 由业务定。 |
 | B17 | CHECK 是否强制需核对实库版本和样本，归 D32/AUD-06。 |
+
+<a id="landscape-cross-review"></a>
+
+## 11. 全景统计、开发清单与代码架构交叉审校
+
+复核输入为[全景统计（11-10）](2026-11-10-项目全景任务统计与处理等级.md)、[开发清单（11-11）](2026-11-11-开发清单-支付阻塞单列与非支付优先.md)、[收款双轨设计](2026-11-08-商家收款双轨与微信电商收付通进件设计.md)和 [Sprint 59 联调步骤](SPRINT_59_微信电商收付通真实适配器与M6联调准备.md)。两份清单提供优先级与历史状态，调用链、数据结构和部署配置提供当前行为证据。全景的 110 项、124 项及 18 项是该快照的统计口径，其中同一问题可能有多个别名，本节增补条目按实际修改范围归入原编号。
+
+<a id="m6-dependencies"></a>
+
+### 11.1 A1/A3/S59-2/S59-3 的联调依赖
+
+**当前状态。** Sprint 59 §5.3 第 3 步要求回调只写台账，第 6 步随即要求原分账回退。代码只在支付后调用 `prepareSettlementBestEffort`，没有从这条链路发起真实分账。退款编排却直接读取预写的 `split_detail`，用订单号构造退分请求。原全景把 S59-2、S59-3 放在 M6 之后，S59-3 网关查单、关单已存在的仅是适配器方法。依照现有顺序，开发者拿到凭据后仍无法凭“预写明细”验证已分账订单退款，也无法在失联时经正确渠道主动恢复。源码见 [支付回调与结算](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentGatewayService.java#L155)、[退分前置](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/RefundService.java#L194)。
+
+**实施任务。**
+
+1. 在 [AUD-02](#task-aud-02) 保存支付尝试后，先把 [AUD-03](#task-aud-03) 的网关主动查单与关单接线补齐，再做涉及查单和关单的联调验收。假渠道可在无凭据阶段覆盖直收/平台两条路由。
+2. [AUD-09](#task-aud-09) 将预写台账与“渠道分账已成功”区分。待发起、处理中、成功及失败需要可追溯的渠道分账标识与回执。未经确认是否分账的订单先查询或留待核，不能按无分账放行。经证实尚未分账时，依据目标产品允许的未分账退款或冻结款处理流程单测和联调。有成功分账凭证时才对对应明细发起退分，再退款。D3 时点与售后窗口沿用双轨设计，并由业务确认具体规则。
+3. 将 M6 验证分成“预下单、到账、错签名及重放”“无回调时主动查单与关单”“真实分账后退分及退款”三组。先证明支付与落账，再验证真实分账回执、退分金额和退款资金守恒。分账与查单接线属于相应全链验收的前置。保留直收原路退款的针对性验收，阶段一全面联调仍按原范围执行。
+
+### 11.2 收款开关的行为与部署契约（A1、M-R3、S53-4、S54–S59）
+
+**当前状态。** `MerchantCollectionModeService.effectiveMode` 在运营总闸关闭或应急开关打开时，将**新单**有效模式解析为直收；模式快照写入订单。随后 `modeForNewOrder` 对平台模式只检查分账开关及账户绑定，网关发起支付才使用 `PlatformCashierChannelRegistry` 检查适配器及凭据。关闭 `PLATFORM_CASHIER_ENABLED` 会同时拒绝平台发起支付、回调、退款申请及退款查单，因为这些入口共用注册表的启用校验。总闸写入以版本 CAS 更新当前值，商家切换另有审计，未看到全局总闸独立追加记录。源码见 [建单模式与应急回退](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantCollectionModeService.java#L179)、[运营总闸写入](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantCollectionModeService.java#L74)、[适配器入口保护](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PlatformCashierChannelRegistry.java#L43)、[退款查单](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/RefundService.java#L91)。
+
+**影响。** 分账开关和 BOUND 账户就绪但适配器禁用时，平台订单可能建成后无法付款。把渠道总开关当作流量灰度回滚会拒绝已发出的二维码所产生的合法回调，也会中断存量退款。运营总闸的当前值不足以复盘何时停止收款、谁恢复以及原因。
+
+**实施任务与验收。**
+
+1. 新增一份开关矩阵，分别覆盖新建订单、旧单首次发起支付、已发出支付尝试的回调、查单/关单、退款与退分。按“禁止新交易”和“处理历史资金”拆能力，并明确渠道凭据失效时走有凭证的人工对账。保持原订单模式与账户快照，新单在运营总闸关闭时的直收回退沿用现有设计，须确认商户具备直收能力并在 UI 解释。
+2. 在 M-R3/S53-4 把总闸变更与追加审计同事务写入，记录前后值、版本、当前会话和原因。与每商户切换历史分开查询。测试 CAS 冲突时不写成功审计、合法回滚时历史齐全。
+3. 核对部署变量。Sprint 59 §5.2 的 `SHOP_SETTLEMENT_PLATFORM_COLLECT_ENABLED` 和应用显式占位变量 `PLATFORM_COLLECT_ENABLED` 名称不同，按实际绑定路径定一个部署契约并用假值验证。两云服务从 `.env` 读取环境，部署脚本中未定位到平台凭据专用注入及预检。约定独立私密配置的安装位置、换版保留、多行 PEM 转义、权限及启动前缺参检查。可在无账户时用假值验证，真实签名再按 A1 验收。配置详情见 [应用支付配置](../shop-b2b2c-backend/src/main/resources/application.yml#L113)、[阿里云服务环境](../deploy/aliyun/server/04-deploy.sh#L326)。
+4. 覆盖“配置模式为平台但注册表关闭”“灰度停新单后原尝试成功回调”“关闭期间旧退款查单”“恢复后只对获准商户开新单”。独立验证未授权商户或签名错误仍拒绝。
+
+<a id="close-attempt-review"></a>
+
+### 11.3 关单回执的任务身份与次数限制（B5、S48-1、S48-3、S59-3）
+
+**当前状态。** 回执写入用 `INSERT ... SELECT MAX(attempt_no)+1`，基线对 `(order_sn, channel, attempt_no)` 建普通索引。候选 SQL 按订单与渠道判断最后一条失败，但只返回 `order_sn`。任务随后重新取订单并用订单当前 `payChannel` 关单。即使串行，历史微信尝试失败、订单现值为支付宝时也可能处理错渠道。跨实例可能同时领到同一候选，普通索引不提供唯一约束，真实 MySQL 下的序号与锁等待仍需复现。见 [回执 SQL](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/PaymentCloseReceiptMapper.java#L25)、[重试服务](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/payment/PaymentCloseRetryService.java#L37)、[基线表](../shop-b2b2c-backend/src/main/resources/db/schema.sql#L1309)。
+
+**实施任务。** 归入 [AUD-03](#task-aud-03)，候选保留不可变尝试 ID 或至少原订单与渠道复合身份。数据库以任务唯一键和带版本的认领状态分配执行权，按认领编号或稳定的尝试序号记回执；历史重复行先盘点。新增 Redis 锁可用于减轻竞争，其失效不能破坏数据库认领。补 S48-1 的 V21 存量升级验证，以及一单两渠道、双实例同步取候选、认领后崩溃、晚到响应及达到上限的真实 MySQL 用例。验收读原渠道回执与旧单最终状态，排除执行错渠道、重复消耗重试次数和丢失回执。
+
+### 11.4 首装双超管、迁移就绪与探针（B3/B4/B15/B17、S50-1/2、S47-1、G37）
+
+**当前状态。** 两云新环境写入 `FINANCE_DUAL_APPROVAL_REQUIRED=true`。 `AdminBootstrap` 只在没有超管时创建首位账号，随后 `DualApprovalAccountValidator` 要求至少两位启用超管。因此空库只执行常规首位引导会启动失败，重复替换 `BOOTSTRAP_ADMIN_*` 也不能创建第二位。校验按角色和启用状态计数，源码基线中未见与这两个列匹配的组合索引，是否有优化价值以实库规模和 `EXPLAIN` 定。两云正式和引导 Nginx 模板均有 `/healthz` 与 `/readyz`，G37 剩余项为 503 透传和实际流量切换。见 [首位超管引导](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/AdminBootstrap.java#L46)、[启动校验](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/config/DualApprovalAccountValidator.java#L53)、[阿里云探针](../deploy/aliyun/server/nginx-gmall.conf#L82)、[腾讯云探针](../deploy/tencent/server/nginx-shop.conf#L125)。
+
+**实施任务。** B4 增加可审计的第二位超管首装与灾后恢复操作路径，预发布先验证 0、1、2 位启用账号及禁用第二位的行为，再纳入生产手册。审批真实性仍归 [AUD-01](#task-aud-01)。B3 依 [AUD-06](#task-aud-06) 分别验新库 schema、代表性旧库升至当前 V23，覆盖 V20 回调审计表与索引、V21 回执、V22 异常处置、V23 双轨，再验证重复执行和中断恢复。老库排序规则核对外键两端的实际列定义，隔离演练前滚与还原。B15 从 Nginx 请求就绪端点，验证迁移期/失败期 503 不被 SPA 或重定向掩盖，Redis ACL 和写保护故障按真实服务演练。B17 单独记录 MySQL 版本和 CHECK 执行证据，应用 CAS 仍承担正常交易的并发保护。
+
+### 11.5 清单中需要调整的状态与实施范围
+
+| 来源 | 当前代码与架构判断 | 给开发者的任务或验收 |
+| --- | --- | --- |
+| B12/D13 商品、费率与模式校验 | 创建商品已经调用 `TradeGuards.requireMoney`、`requireInitialStock` 并校验规格 JSON。费率服务有 `validateRate`，模式切换有 `CollectionMode.requireKnown`。缺 Bean Validation 与业务值可入库是两个判断。见 [商品创建](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/ProductController.java#L209)、[费率规则](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/MerchantFeePolicyService.java#L253)。 | 按 [D13](#task-d13) 用请求样本核对创建、编辑、进件与费率入口，确定真实漏检后共用领域规则。优先测缺字段、类型错误、价格精度、负库存、批次含无效 SKU 后整批回滚。 |
+| B13/D10、B14/D20、P2 D23/D24 | 审计已经核对详情只读、过期任务、独立查单凭证、限流规范化、Redis 503，以及 CORS 白名单和通用异常拦截。旧描述适合作为复现用例来源。 | B13 改为 [AUD-10](#task-aud-10) 的预占事务出口，B14 改为 [AUD-07](#task-aud-07) 的共享配额。D23/D24 查实际路由授权、可信代理和残余单参异常，避免重复建同类拦截器。 |
+| B6/F10、B16/T39 | 月费代码当前用次月 10 日到期，TRIAL 免收；这两条和入驻审核角色、初始费率、税率均涉及业务政策。见 [账期](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/SaasFeeBillService.java#L100)、[免收判断](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/SaasFeeBillService.java#L231)。 | 先回归重复出账、缴费确认和欠费恢复审计。配置变更按生效期作用于后续账单，旧账保留快照。产品确定试用、到期、恢复及角色规则后再调整默认。 |
+| G44、G47、FB-F17–19 | `PaymentEventRecorder.recordEventStatus` 用 `updateById`，成功时传入 null 也可能留下旧错误原因。 `markFulfillmentFailed` 的 CASE 只保留既有 1，当前为 0 而入参未知时 SQL 可写回 NULL，实际调用是否可达还要跟踪。见 [事件写入](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/service/PaymentEventRecorder.java#L38)、[失败迁移](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/mapper/PaymentEventMapper.java#L111)。 | 给 Mapper 显式定义清空错误、保持旧证据及接收新证据的写法，按前置状态更新。先定 0、1、未知的语义和来源，避免把未知都当成未收款。测失败后成功、晚到旧状态、并发充值和同时间费率冲突，归 D06/F09/AUD-01。 |
+| B-P2 前端联调批，S49-1/3、M2/M3 | 管理端 Finance 已展示支付异常并可提交处置，列表加载直接调默认接口，未传分页参数。总闸和商家切换页面也已存在。见 [支付异常列表](../shop-admin-vue/src/views/admin/Finance.vue#L98)、[查询请求](../shop-admin-vue/src/views/admin/Finance.vue#L286)、[收款模式表单](../shop-admin-vue/src/views/admin/Merchants.vue#L829)。 | 优先补筛选、翻页、完整处置状态和角色验证。用大于接口默认页的数据确认页面不会把当前页条数标成总数。前端手验窄屏、长拒绝原因、过期会话、状态刷新，附截图和真实请求。 |
+| F14 广告与导流 | 付款成功页已加载 banner 并将 `targetUrl` 绑定到链接，后端已有公开读取端点。继续做配置后台时，入口应约束链接和字段；尚无本次发现的恶意配置写入路径证据。见 [页面链接](../shop-storefront-vue/src/views/PeerPayCashier.vue#L132)、[公开广告接口](../shop-b2b2c-backend/src/main/java/com/shop/b2b2c/controller/PeerPayController.java#L94)。 | 配置写入时限制角色、URL 协议与目标范围，公开端使用展示字段投影。点击与开店转化各有事件，按来源去重，拒绝无效链接且保留合法导航。归 [F14](#task-f14)。 |
+| B-P2 文档债、V1–V6 和旧外键重名 | F11/F12 主台账“当前状态”列仍有初版描述。外键已使用 `fk_payment_channel_statement_merchant`，V1–V6 保留等待用户复核。见 [基线外键](../shop-b2b2c-backend/src/main/resources/db/schema.sql#L845)、[吸收清单](2026-11-06-schema-absorption-audit.md)。 | 回写 F11 已有编辑、SKU、运营能力，F12 已有去重、作废、批次、核对与补发，保留验收状态和密钥治理残项。旧重名按真实 MySQL 建库验收。V1–V6 是否退役须在旧库升级证据与用户决策后单独交付。 |
+
+### 11.6 开工顺序与验收门槛
+
+- **首批非支付。** 按开发清单 B1/B2/B11 处理凭据、卡密密钥及异常处置。D13、AUD-10、AUD-07 和 D24 可按接口独立提交。AUD-01 与 AUD-04 归原 F14/F10/F13 安全范围，AUD-06 与 B3/B4/B15/B17 一起补生产首装和隔离库演练。
+- **支付本地前置。** AUD-02.1 的支付尝试先于 AUD-03 查单/关单与回执认领、AUD-09 分账与回退身份、§11.2 开关矩阵。A5 状态迁移、迟到支付处理、A7 回执分类和假渠道用例可在现有环境开发。真实自动退款需明确何种晚到事件可以自动执行，并核对原实收与可退金额。
+- **真实渠道验收。** A1–A8 的真实步骤保留账户、产品权限、回调公网、证书及相应代码前置。保留原 P4 的支付宝平台代收延后、SKIPPED 不自动补关、旧单不回填收款模式、员工敏感信息边界。退款回退用可验证的原分账成功凭证，账单验收用渠道资金记录。生产发布按用户手动验证约定执行。
